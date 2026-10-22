@@ -4,3 +4,4 @@ numpy>=1.24
 plotly>=5.20
 pykrx>=1.0.48
 finance-datareader>=0.9.90
+setuptools==80.9.0
