@@ -1,92 +1,129 @@
-from datetime import date, timedelta
-from io import BytesIO
-import zipfile
+from datetime import timedelta
+from pathlib import Path
+import numpy as np
 import pandas as pd
-import requests
+import plotly.graph_objects as go
 import streamlit as st
 
-st.set_page_config(page_title='오닐 RS · 1년 일봉 검증', page_icon='📈', layout='centered')
-st.title('📈 오닐 RS · 1년 일봉 검증')
-st.caption('한국투자증권 실전투자 API · 조회 전용 · 매매 주문 기능 없음')
-st.info('삼성전자·SK하이닉스·현대차 3종목의 1년 일봉을 분할 조회합니다. 전체시장 RS 등급은 아직 산출하지 않습니다.')
-BASE = 'https://openapi.koreainvestment.com:9443'
-STOCKS = {'삼성전자':'005930','SK하이닉스':'000660','현대차':'005380'}
+st.set_page_config(page_title='오닐 RS 추천 TOP 10', page_icon='📈', layout='centered')
+st.title('📈 오닐 RS 추천 TOP 10')
+st.caption('한국투자증권 일봉 기반 · 30종목 시험용 상대강도 · 투자 권유 아님')
+URL = 'https://raw.githubusercontent.com/asura2367-boop/oneil-rs-scanner/main/data/kis_daily_30stocks.csv'
+LOCAL = Path(__file__).resolve().parent / 'data' / 'kis_daily_30stocks.csv'
 
-@st.cache_data(ttl=20*3600, show_spinner=False)
-def access_token(key, secret):
-    r=requests.post(BASE+'/oauth2/tokenP', json={'grant_type':'client_credentials','appkey':key,'appsecret':secret}, timeout=20)
-    r.raise_for_status()
-    p=r.json()
-    if not p.get('access_token'): raise RuntimeError('토큰 발급 실패: '+str(p.get('msg1','응답 확인 필요')))
-    return p['access_token']
+@st.cache_data(ttl=900, show_spinner=False)
+def load_data():
+    try:
+        import requests
+        from io import BytesIO
+        response = requests.get(URL, timeout=20)
+        response.raise_for_status()
+        d = pd.read_csv(BytesIO(response.content), dtype={'ticker': str})
+    except Exception:
+        try:
+            import requests
+            from io import BytesIO
+            response = requests.get(URL, timeout=20)
+            response.raise_for_status()
+            d = pd.read_csv(BytesIO(response.content), dtype={'ticker': str})
+        except Exception as exc:
+            if not LOCAL.exists():
+                raise RuntimeError(f'GitHub CSV 다운로드 실패: {exc}') from exc
+            d = pd.read_csv(LOCAL, dtype={'ticker': str})
+    required = {'ticker','name','date','close','volume'}
+    if not required.issubset(d.columns):
+        raise ValueError('CSV 열 누락: ' + ', '.join(sorted(required - set(d.columns))))
+    d['ticker'] = d['ticker'].astype(str).str.zfill(6)
+    d['date'] = pd.to_datetime(d['date'], errors='coerce')
+    for col in ('close','volume'):
+        d[col] = pd.to_numeric(d[col], errors='coerce')
+    d = d.dropna(subset=['date','close','ticker']).query('close > 0')
+    return d.sort_values(['ticker','date']).drop_duplicates(['ticker','date'], keep='last')
 
-@st.cache_data(ttl=6*3600, show_spinner=False)
-def daily_chunk(code, start, end, key, secret):
-    token=access_token(key, secret)
-    r=requests.get(BASE+'/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
-        headers={'content-type':'application/json','authorization':'Bearer '+token,
-                 'appkey':key,'appsecret':secret,'tr_id':'FHKST03010100'},
-        params={'FID_COND_MRKT_DIV_CODE':'J','FID_INPUT_ISCD':code,
-                'FID_INPUT_DATE_1':start,'FID_INPUT_DATE_2':end,
-                'FID_PERIOD_DIV_CODE':'D','FID_ORG_ADJ_PRC':'1'},timeout=25)
-    r.raise_for_status()
-    p=r.json()
-    if p.get('rt_cd')!='0': raise RuntimeError('KIS 조회 실패: '+str(p.get('msg1',p.get('msg_cd','응답 오류'))))
-    d=pd.DataFrame(p.get('output2') or [])
-    cols={'stck_bsop_date':'날짜','stck_clpr':'종가','acml_vol':'거래량'}
-    if d.empty or not set(cols).issubset(d.columns): raise RuntimeError('일봉 데이터 없음')
-    d=d[list(cols)].rename(columns=cols)
-    d['날짜']=pd.to_datetime(d['날짜'],format='%Y%m%d',errors='coerce')
-    for c in ['종가','거래량']: d[c]=pd.to_numeric(d[c],errors='coerce')
-    return d.dropna().drop_duplicates('날짜').sort_values('날짜')
+def channel(d):
+    xdf = d.tail(60)
+    if len(xdf) < 40: return None
+    y = np.log(xdf['close'].to_numpy(dtype=float))
+    x = np.arange(len(y))
+    slope, intercept = np.polyfit(x, y, 1)
+    mid = intercept + slope*x
+    width = max(2*np.std(y-mid), 1e-6)
+    pos = float((y[-1]-mid[-1]+width)/(2*width))
+    return {'position':pos,'rising':slope>0,'dates':xdf.date,
+            'upper':np.exp(mid+width),'mid':np.exp(mid),'lower':np.exp(mid-width)}
 
-def year_history(code, key, secret, progress=None):
-    end=date.today()
-    begin=end-timedelta(days=410)
-    parts=[]
-    cursor=begin
-    # 각 요청 구간을 80달력일로 제한하여 일봉 응답 상한을 피합니다.
-    while cursor<=end:
-        last=min(cursor+timedelta(days=79),end)
-        part=daily_chunk(code,cursor.strftime('%Y%m%d'),last.strftime('%Y%m%d'),key,secret)
-        parts.append(part)
-        cursor=last+timedelta(days=1)
-    d=pd.concat(parts,ignore_index=True).drop_duplicates('날짜').sort_values('날짜')
-    d=d.reset_index(drop=True)  # 12개월(252거래일) 수익률 계산을 위해 여유분 유지
-    if len(d)<200: raise RuntimeError(f'수집된 일봉이 {len(d)}개뿐입니다. 최소 200개 이상 필요합니다.')
-    return d
+def score(d):
+    rows=[]
+    for ticker,g in d.groupby('ticker'):
+        g=g.sort_values('date')
+        end=g.date.iloc[-1]
+        last=float(g.close.iloc[-1])
+        ret=[]
+        ok=True
+        for months in (3,6,9,12):
+            target=end-pd.DateOffset(months=months)
+            prior=g[g.date<=target]
+            if prior.empty or (target-prior.date.iloc[-1]).days>10:
+                ok=False;break
+            ret.append(last/float(prior.close.iloc[-1])-1)
+        if not ok:continue
+        vbase=g.volume.iloc[-21:-1].mean() if len(g)>=21 else np.nan
+        vr=float(g.volume.iloc[-1]/vbase) if pd.notna(vbase) and vbase>0 else np.nan
+        ch=channel(g)
+        rows.append({'ticker':ticker,'name':str(g.name.iloc[-1]),'date':end,'close':last,
+                     'weighted':float(np.dot(ret,[.4,.2,.2,.2])),
+                     'volume_ratio':vr,'channel_pos':ch['position'] if ch else np.nan,
+                     'channel_good':bool(ch and ch['rising'] and 0<=ch['position']<=.65),
+                     'returns':ret})
+    out=pd.DataFrame(rows)
+    if out.empty:return out
+    out['RS_시험용']=np.ceil(out.weighted.rank(pct=True)*99).clip(1,99).astype(int)
+    out['보조점수']=(out.volume_ratio>=1.2).astype(int)+out.channel_good.astype(int)
+    return out.sort_values(['RS_시험용','보조점수','weighted'],ascending=False)
 
-def summary(d):
-    # 거래일 기준 대략 3/6/9/12개월: 63/126/189/252거래일
-    close=d['종가'].astype(float)
-    values={}
-    for label,n in [('3개월',63),('6개월',126),('9개월',189),('12개월',252)]:
-        values[label]=round((close.iloc[-1]/close.iloc[-n-1]-1)*100,2) if len(close)>n else None
-    return values
+if st.button('🔄 저장된 데이터 새로 불러오기'):
+    load_data.clear()
 
-if not all(x in st.secrets for x in ['KIS_APP_KEY','KIS_APP_SECRET']):
-    st.error('Streamlit Secrets에 KIS_APP_KEY, KIS_APP_SECRET이 필요합니다.')
+try:
+    with st.spinner('저장된 데이터 불러오는 중...'):
+        raw=load_data()
+        ranked=score(raw)
+except Exception as e:
+    st.error(str(e))
     st.stop()
 
-if st.button('🔎 3종목 1년치 일봉 수집',type='primary',use_container_width=True):
-    key,secret=st.secrets['KIS_APP_KEY'],st.secrets['KIS_APP_SECRET']
-    results={}
-    for name,code in STOCKS.items():
-        try:
-            with st.spinner(f'{name} 과거 주가 조회 중...'):
-                d=year_history(code,key,secret)
-            results[name]=d
-            st.success(f'{name} ({code}): {len(d)}개 일봉 · {d.날짜.min():%Y-%m-%d} ~ {d.날짜.max():%Y-%m-%d}')
-            st.metric(name+' 최근 종가',f'{int(d.종가.iloc[-1]):,}원')
-            st.dataframe(pd.DataFrame([summary(d)]),hide_index=True,use_container_width=True)
-        except Exception as exc:
-            st.error(f'{name} 조회 실패: {str(exc)[:250]}')
-    if results:
-        name=st.selectbox('차트 종목',list(results))
-        st.line_chart(results[name].set_index('날짜')['종가'])
-        b=BytesIO()
-        with zipfile.ZipFile(b,'w',zipfile.ZIP_DEFLATED) as z:
-            for name,d in results.items():
-                z.writestr(STOCKS[name]+'.csv',d.to_csv(index=False).encode('utf-8-sig'))
-        st.download_button('수집한 일봉 CSV 다운로드',b.getvalue(),file_name='kis_1year_3stocks.zip',mime='application/zip')
-        st.caption('수집 성공한 종목만 포함됩니다. 이 테스트는 서버에 자동 저장하거나 매일 갱신하지 않습니다.')
+st.info('현재 30종목 표본에서 계산한 **시험용 RS**입니다. 코스피·코스닥 전체시장 RS 90 이상 추천과 다릅니다. 외국인·기관 수급은 데이터가 없어 순위에 반영하지 않습니다.')
+st.caption(f'저장된 종목 {raw.ticker.nunique()}개 · RS 계산 가능 {len(ranked)}개 · 최종 데이터 {raw.date.max():%Y-%m-%d}')
+if ranked.empty:
+    st.warning('12개월 수익률 계산에 충분한 데이터가 없습니다. 수집 기간을 확인해 주세요.')
+    st.stop()
+
+min_rs=st.slider('시험용 최소 RS', 1, 99, 90)
+filtered=ranked[ranked['RS_시험용']>=min_rs]
+st.subheader('🏆 추천 후보 TOP 10')
+if filtered.empty: st.warning('현재 기준을 충족하는 종목이 없습니다.')
+for _,r in filtered.head(10).iterrows():
+    with st.container(border=True):
+        a,b=st.columns([3,1])
+        a.markdown(f"**{r['name']}** · {r['ticker']}")
+        b.metric('시험 RS',int(r['RS_시험용']))
+        vr=f"{r['volume_ratio']:.2f}배" if pd.notna(r['volume_ratio']) else '미확인'
+        cp=f"{r['channel_pos']*100:.0f}%" if pd.notna(r['channel_pos']) else '미확인'
+        st.caption(f"가중 수익률 {r['weighted']*100:+.1f}% · 거래량 {vr} · 채널 위치 {cp} · 상승채널 양호 {'예' if r['channel_good'] else '아니오'}")
+
+st.subheader('📊 종목별 차트')
+options={f"{r['name']} ({r['ticker']})":r['ticker'] for _,r in ranked.iterrows()}
+chosen=st.selectbox('종목 선택',list(options))
+g=raw[raw.ticker==options[chosen]].sort_values('date')
+fig=go.Figure()
+fig.add_trace(go.Scatter(x=g.date,y=g.close,name='종가',mode='lines'))
+for n in (20,60):
+    fig.add_trace(go.Scatter(x=g.date,y=g.close.rolling(n).mean(),name=f'{n}일선'))
+ch=channel(g)
+if ch:
+    for key,label in [('upper','채널 상단'),('mid','채널 중심'),('lower','채널 하단')]:
+        fig.add_trace(go.Scatter(x=ch['dates'],y=ch[key],name=label,line={'dash':'dot'}))
+fig.update_layout(height=410,margin={'l':5,'r':5,'t':20,'b':5},legend={'orientation':'h','y':-0.25})
+st.plotly_chart(fig,use_container_width=True)
+st.download_button('📥 분석 결과 CSV',ranked.drop(columns=['returns']).to_csv(index=False).encode('utf-8-sig'),file_name='oneil_rs_sample.csv',mime='text/csv')
+st.caption('상승채널은 최근 60거래일 로그종가 회귀 기반 추정치입니다. 장중 실시간 시세가 아닌 저장된 일봉을 사용합니다.')
