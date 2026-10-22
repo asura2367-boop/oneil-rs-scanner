@@ -168,14 +168,24 @@ def main():
         existing=seed
     today=datetime.now(ZoneInfo('Asia/Seoul')).date()
     start=today-timedelta(days=410)
-    batch_size=max(1,min(int(os.getenv('KIS_BATCH_SIZE','50')),50))
+    batch_size=max(1,min(int(os.getenv('KIS_BATCH_SIZE','20')),50))
     fresh_days=max(1,int(os.getenv('KIS_FRESH_DAYS','3')))
     latest=existing.groupby('ticker')['date'].max().to_dict() if not existing.empty else {}
     # 최초 구축 시 미수집 종목부터 처리. 기존 종목 갱신은 미수집 종목이 없을 때 진행.
     missing=[(code,name) for code,name in universe if code not in latest]
     stale=[(code,name) for code,name in universe if code in latest and (today-latest[code].date()).days>fresh_days]
-    pending=missing if missing else stale
-    batch=pending[:batch_size]
+    # Reserve capacity for stale symbols while continuing new-universe coverage.
+    refresh_quota = max(0, min(int(os.getenv('KIS_REFRESH_BATCH_SIZE', '10')), batch_size))
+    stale.sort(key=lambda item: latest[item[0]])
+    refresh = stale[:refresh_quota]
+    new = missing[:batch_size-len(refresh)]
+    # If either group is short, fill spare capacity from the other group.
+    if len(new)+len(refresh) < batch_size:
+        new += missing[len(new):len(new)+(batch_size-len(new)-len(refresh))]
+    if len(new)+len(refresh) < batch_size:
+        refresh += stale[len(refresh):len(refresh)+(batch_size-len(new)-len(refresh))]
+    batch = new + refresh
+    print(f'이번 배치 신규 {len(new)} / 갱신 {len(refresh)}', flush=True)
     print(f'전체 {len(universe)}개 / 저장 {len(latest)}개 / 미수집 {len(missing)}개 / 이번 {len(batch)}개',flush=True)
     if not batch:
         write_status(OUT/'collection_status.json', universe, existing, today, 0, 0)
@@ -187,19 +197,7 @@ def main():
     failures=[]
     for code,name in batch:
         try:
-            df=None
-            for attempt in range(3):
-                try:
-                    df=fetch_year(session,key,secret,token,code,start,today)
-                    break
-                except (requests.Timeout, requests.ConnectionError) as err:
-                    if attempt == 2: raise
-                    time.sleep(2 ** attempt)
-                except RuntimeError as err:
-                    if 'HTTP 429' not in str(err) and 'HTTP 50' not in str(err): raise
-                    if attempt == 2: raise
-                    time.sleep(2 ** attempt)
-            if df is None: raise RuntimeError('일봉 수집 실패')
+            df=fetch_year(session,key,secret,token,code,start,today)
             df.insert(0,'ticker',code)
             df.insert(1,'name',name)
             existing=pd.concat([existing,df],ignore_index=True)
@@ -212,8 +210,7 @@ def main():
         # 5개마다 저장해 중간 실패에도 수집 결과 보존
         if success and (success%5==0):
             save_atomic(destination,existing)
-            write_status(OUT/'collection_status.json', universe, existing, today, success, len(failures))
-        time.sleep(max(0.5, float(os.getenv('KIS_REQUEST_PAUSE','1.0'))))
+        time.sleep(float(os.getenv('KIS_REQUEST_PAUSE','0.8')))
     if success:
         save_atomic(destination,existing)
     write_status(OUT/'collection_status.json', universe, existing, today, success, len(failures))
