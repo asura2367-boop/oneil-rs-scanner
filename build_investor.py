@@ -36,11 +36,13 @@ def main():
     old=old.reindex(columns=FIELDS)
     if not old.empty: old["ticker"]=old["ticker"].str.zfill(6)
     today=datetime.now(ZoneInfo("Asia/Seoul")).date()
-    # Refresh existing tracked symbols first only if older than last available trading date.
+    # Prioritize missing symbols to broaden coverage; refresh stale data after coverage grows.
     latest_price=prices.groupby("ticker")["date"].max().to_dict()
     last_flow=old.groupby("ticker")["date"].max().to_dict() if not old.empty else {}
-    pending=[c for c,_ in candidates if c not in last_flow or pd.Timestamp(last_flow[c]) < latest_price[c]]
-    limit=max(1,min(int(os.getenv("KIS_FLOW_BATCH_SIZE","10")),30))
+    missing=[c for c,_ in candidates if c not in last_flow]
+    stale=[c for c,_ in candidates if c in last_flow and pd.Timestamp(last_flow[c]) < latest_price[c]]
+    pending=missing if missing else stale
+    limit=max(1,min(int(os.getenv("KIS_FLOW_BATCH_SIZE","20")),30))
     batch=pending[:limit]
     if not batch:
         print("수급 최신 상태. 요청 없음."); return
@@ -52,10 +54,20 @@ def main():
         frames=[old]; success=0; failed=0
         for code in batch:
             try:
-                resp=session.get(BASE+"/uapi/domestic-stock/v1/quotations/inquire-investor",
+                resp=None
+                for attempt in range(3):
+                    try:
+                        resp=session.get(BASE+"/uapi/domestic-stock/v1/quotations/inquire-investor",
                     headers={"authorization":f"Bearer {token}","appkey":key,"appsecret":secret,
                              "tr_id":"FHKST01010900","content-type":"application/json"},
                     params={"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":code},timeout=25)
+                        if resp.status_code in (429,500,502,503,504) and attempt < 2:
+                            time.sleep(2 ** attempt); continue
+                        break
+                    except (requests.Timeout, requests.ConnectionError):
+                        if attempt == 2: raise
+                        time.sleep(2 ** attempt)
+                if resp is None: raise RuntimeError("응답 없음")
                 if not resp.ok: raise RuntimeError(f"HTTP {resp.status_code}")
                 payload=resp.json()
                 if str(payload.get("rt_cd"))!="0":
@@ -77,7 +89,7 @@ def main():
                 print(f"OK {code}: {len(result)} rows")
             except Exception as e:
                 failed+=1; print(f"FAIL {code}: {type(e).__name__}: {str(e)[:100]}")
-            time.sleep(float(os.getenv("KIS_FLOW_PAUSE","0.8")))
+            time.sleep(max(0.5,float(os.getenv("KIS_FLOW_PAUSE","1.0"))))
     if success:
         merged=pd.concat(frames,ignore_index=True).dropna(subset=["ticker","date"])
         merged=merged.drop_duplicates(["ticker","date"],keep="last").sort_values(["ticker","date"])
