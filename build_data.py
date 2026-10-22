@@ -1,5 +1,6 @@
 """KIS read-only: incremental KOSPI/KOSDAQ daily OHLCV collection."""
 import os
+import json
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -28,7 +29,8 @@ def get_token(session, key, secret):
     response = session.post(f'{BASE}/oauth2/tokenP', json={
         'grant_type': 'client_credentials', 'appkey': key, 'appsecret': secret
     }, timeout=20)
-    response.raise_for_status()
+    if not response.ok:
+        raise RuntimeError(f'토큰 발급 HTTP {response.status_code}; KIS 발급 제한 또는 인증 상태 확인')
     payload = response.json()
     if not payload.get('access_token'):
         raise RuntimeError('토큰 발급 실패: ' + str(payload.get('error_description', '응답 확인 필요')))
@@ -53,6 +55,8 @@ def fetch_year(session, key, secret, token, symbol, start, end):
         }
         response = session.get(f'{BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
                                params=params, headers=headers, timeout=25)
+        if response.status_code in (429, 500, 502, 503, 504):
+            raise RuntimeError(f'{symbol} 일시적 API 오류 HTTP {response.status_code}')
         response.raise_for_status()
         payload = response.json()
         if str(payload.get('rt_cd')) != '0':
@@ -129,6 +133,26 @@ def save_atomic(path, data):
     return data
 
 
+def write_status(path, universe, data, today, succeeded, failed):
+    valid=set(data['ticker'].astype(str).str.zfill(6)) if not data.empty else set()
+    codes={code for code,_ in universe}
+    completed=len(valid & codes)
+    status={
+        'as_of': today.isoformat(),
+        'universe_total': len(codes),
+        'collected_symbols': completed,
+        'remaining_symbols': max(0,len(codes)-completed),
+        'progress_pct': round(100*completed/len(codes),2) if codes else 0,
+        'daily_rows': int(len(data)),
+        'last_run_success': succeeded,
+        'last_run_failures': failed,
+        'note': '수집 완료 수는 일봉이 1개 이상인 종목 기준이며 RS 계산 적격 종목 수와 다릅니다.'
+    }
+    tmp=path.with_suffix('.tmp')
+    tmp.write_text(json.dumps(status,ensure_ascii=False,indent=2),encoding='utf-8')
+    tmp.replace(path)
+
+
 def main():
     key=os.getenv('KIS_APP_KEY','').strip()
     secret=os.getenv('KIS_APP_SECRET','').strip()
@@ -147,11 +171,15 @@ def main():
     batch_size=max(1,min(int(os.getenv('KIS_BATCH_SIZE','20')),50))
     fresh_days=max(1,int(os.getenv('KIS_FRESH_DAYS','3')))
     latest=existing.groupby('ticker')['date'].max().to_dict() if not existing.empty else {}
-    pending=[(code,name) for code,name in universe if code not in latest or (today-latest[code].date()).days>fresh_days]
+    # 최초 구축 시 미수집 종목부터 처리. 기존 종목 갱신은 미수집 종목이 없을 때 진행.
+    missing=[(code,name) for code,name in universe if code not in latest]
+    stale=[(code,name) for code,name in universe if code in latest and (today-latest[code].date()).days>fresh_days]
+    pending=missing if missing else stale
     batch=pending[:batch_size]
-    print(f'종목 목록 {len(universe)}개, 기존 {existing.ticker.nunique()}개, 이번 시도 {len(batch)}개',flush=True)
+    print(f'전체 {len(universe)}개 / 저장 {len(latest)}개 / 미수집 {len(missing)}개 / 이번 {len(batch)}개',flush=True)
     if not batch:
-        print('최신 데이터 수집 완료. 재수집 생략.',flush=True)
+        write_status(OUT/'collection_status.json', universe, existing, today, 0, 0)
+        print('수집 대상 없음.',flush=True)
         return
     session=requests.Session()
     token=get_token(session,key,secret)  # 작업당 한 번만 발급. 토큰은 파일/로그에 저장하지 않음
@@ -172,9 +200,10 @@ def main():
         # 5개마다 저장해 중간 실패에도 수집 결과 보존
         if success and (success%5==0):
             save_atomic(destination,existing)
-        time.sleep(0.7)
+        time.sleep(float(os.getenv('KIS_REQUEST_PAUSE','0.8')))
     if success:
         save_atomic(destination,existing)
+    write_status(OUT/'collection_status.json', universe, existing, today, success, len(failures))
     print(f'이번 성공 {success}/{len(batch)}, 실패 {len(failures)}, 전체 저장 종목 {existing.ticker.nunique()}',flush=True)
     if success==0:
         raise RuntimeError('이번 실행 성공 종목 0개. 기존 CSV 보존. API 응답/토큰 발급 제한 확인')
