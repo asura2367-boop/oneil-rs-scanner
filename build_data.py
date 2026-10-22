@@ -8,7 +8,18 @@ import pandas as pd
 import requests
 
 BASE = 'https://openapi.koreainvestment.com:9443'
-SYMBOLS = {'005930': '삼성전자', '000660': 'SK하이닉스', '005380': '현대차'}
+SYMBOLS = {
+    '005930':'삼성전자','000660':'SK하이닉스','005380':'현대차',
+    '035420':'NAVER','035720':'카카오','005490':'POSCO홀딩스',
+    '051910':'LG화학','006400':'삼성SDI','068270':'셀트리온',
+    '105560':'KB금융','055550':'신한지주','086790':'하나금융지주',
+    '012330':'현대모비스','000270':'기아','028260':'삼성물산',
+    '066570':'LG전자','003550':'LG','034730':'SK',
+    '009150':'삼성전기','017670':'SK텔레콤','030200':'KT',
+    '015760':'한국전력','010130':'고려아연','032830':'삼성생명',
+    '000810':'삼성화재','010950':'S-Oil','003670':'포스코퓨처엠',
+    '247540':'에코프로비엠','086520':'에코프로','196170':'알테오젠',
+}
 OUT = Path(__file__).resolve().parent / 'data'
 
 
@@ -76,20 +87,53 @@ def main():
         raise RuntimeError('GitHub Actions Secrets: KIS_APP_KEY / KIS_APP_SECRET 미설정')
     today = datetime.now().date()
     start = today - timedelta(days=410)
+    OUT.mkdir(parents=True, exist_ok=True)
+    destination = OUT / 'kis_daily_30stocks.csv'
+    existing = pd.DataFrame(columns=['ticker', 'name', 'date', 'close', 'volume'])
+    if destination.exists():
+        existing = pd.read_csv(destination, dtype={'ticker': str})
+        existing['ticker'] = existing['ticker'].str.zfill(6)
+    # 매 실행 5종목씩 처리. 이미 수집한 종목은 날짜가 3일 이내라면 건너뜀.
+    pending = []
+    for code, name in SYMBOLS.items():
+        subset = existing[existing['ticker'] == code]
+        if not subset.empty:
+            latest = pd.to_datetime(subset['date'], errors='coerce').max()
+            if pd.notna(latest) and (today - latest.date()).days <= 3:
+                continue
+        pending.append((code, name))
+    batch_size = int(os.getenv('KIS_BATCH_SIZE', '5'))
+    batch_size = max(1, min(batch_size, 10))
+    batch = pending[:batch_size]
+    if not batch:
+        print('모든 30종목 최신 데이터 확보. 저장된 CSV 유지.', flush=True)
+        return
     session = requests.Session()
     token = get_token(session, key, secret)
-    frames = []
-    for code, name in SYMBOLS.items():
-        df = fetch_year(session, key, secret, token, code, start, today)
-        df.insert(0, 'ticker', code)
-        df.insert(1, 'name', name)
-        frames.append(df)
-        print(f'{name}: {len(df)}개 일봉 수집 성공', flush=True)
-        time.sleep(0.35)
-    OUT.mkdir(parents=True, exist_ok=True)
-    destination = OUT / 'kis_daily_3stocks.csv'
-    pd.concat(frames, ignore_index=True).to_csv(destination, index=False, encoding='utf-8-sig')
-    print(f'저장 완료: {destination} (3종목 테스트, 전체시장 RS 아님)', flush=True)
+    frames = [existing]
+    succeeded = 0
+    for code, name in batch:
+        try:
+            df = fetch_year(session, key, secret, token, code, start, today)
+            df.insert(0, 'ticker', code)
+            df.insert(1, 'name', name)
+            frames.append(df)
+            succeeded += 1
+            print(f'{name}({code}): {len(df)}개 일봉 수집 성공', flush=True)
+        except Exception as exc:
+            print(f'{name}({code}) 조회 실패: {type(exc).__name__}: {exc}', flush=True)
+        time.sleep(0.6)
+    if succeeded == 0:
+        raise RuntimeError('이번 배치에서 성공한 종목이 없습니다. 이전 CSV는 유지합니다.')
+    merged = pd.concat(frames, ignore_index=True)
+    merged['date'] = pd.to_datetime(merged['date'], errors='coerce')
+    merged = merged.dropna(subset=['date', 'close']).drop_duplicates(['ticker', 'date'], keep='last')
+    merged = merged.sort_values(['ticker', 'date'])
+    merged['date'] = merged['date'].dt.strftime('%Y-%m-%d')
+    tmp = destination.with_suffix('.tmp')
+    merged.to_csv(tmp, index=False, encoding='utf-8-sig')
+    tmp.replace(destination)
+    print(f'저장 완료: {merged.ticker.nunique()}/30종목, {len(merged)}행. 전체시장 RS 아님.', flush=True)
 
 
 if __name__ == '__main__':
