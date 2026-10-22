@@ -1,201 +1,87 @@
-from datetime import date, timedelta
+from pathlib import Path
+from datetime import date,timedelta
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from pykrx import stock
-import FinanceDataReader as fdr
-import time
 
-st.set_page_config(page_title='오닐 RS 스캐너', layout='centered', initial_sidebar_state='collapsed')
-st.title('📈 오닐 RS 종목추천 스캐너')
-st.caption('코스피·코스닥 | 일봉 기준 · 실시간 아님 · IBD 공식 RS가 아닌 근사치')
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def universe(day):
-    rows=[]
-    for market in ['KOSPI','KOSDAQ']:
-        try:
-            tickers=stock.get_market_ticker_list(day,market=market)
-            if tickers:
-                rows += [(str(t).zfill(6),stock.get_market_ticker_name(t),market) for t in tickers]
-        except Exception:
-            pass
-    if len(rows)<100:
-        rows=[]
-        for market in ['KOSPI','KOSDAQ']:
-            try:
-                d=fdr.StockListing(market)
-                code_col=next((c for c in ['Code','Symbol','종목코드'] if c in d.columns),None)
-                name_col=next((c for c in ['Name','종목명'] if c in d.columns),None)
-                if code_col and name_col:
-                    rows += [(str(t).zfill(6),str(n),market) for t,n in zip(d[code_col],d[name_col]) if pd.notna(t)]
-            except Exception:
-                pass
-    if len(rows)<100:
-        raise RuntimeError('pykrx와 FinanceDataReader 모두 종목 목록을 조회하지 못했습니다. 무료 데이터 제공처의 접근 상태를 확인해야 합니다.')
-    return pd.DataFrame(rows,columns=['ticker','종목명','시장']).drop_duplicates('ticker').set_index('ticker')
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def fdr_history(ticker,start,end):
-    d=fdr.DataReader(ticker, start, (pd.to_datetime(end)+pd.Timedelta(days=1)).strftime('%Y-%m-%d'))
-    if d is None or d.empty or 'Close' not in d.columns: return pd.DataFrame()
-    return d.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'}).sort_index()
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def returns(start,end):
-    d=stock.get_market_price_change_by_ticker(start,end,market='ALL')
-    if d is None or d.empty or '등락률' not in d.columns:
-        raise RuntimeError('pykrx 시장 전체 수익률 조회 실패')
-    s=pd.to_numeric(d['등락률'],errors='coerce')/100
-    s.index=s.index.astype(str).str.zfill(6)
-    return s
-
-@st.cache_data(ttl=3600)
-def flows(start,end,who):
-    d=stock.get_market_net_purchases_of_equities_by_ticker(start,end,'ALL',who)
-    if d.empty: raise RuntimeError(f'{who} 수급 데이터 없음')
-    s=pd.to_numeric(d['순매수거래대금'],errors='coerce')/1e8
-    s.index=s.index.astype(str).str.zfill(6)
-    return s
-
-@st.cache_data(ttl=3600)
-def history(ticker,start,end):
-    d=stock.get_market_ohlcv_by_date(start,end,ticker,adjusted=True)
-    if d.empty: return d
-    for c in ['시가','고가','저가','종가','거래량']:
-        d[c]=pd.to_numeric(d[c],errors='coerce')
-    return d.sort_index().dropna(subset=['종가'])
-
-def channel(d):
-    d=d.tail(60)
-    if len(d)<40 or (d['종가']<=0).any(): return None
-    x=np.arange(len(d)); y=np.log(d['종가'].to_numpy(float))
-    slope,intercept=np.polyfit(x,y,1)
-    mid=intercept+slope*x; width=max(2*np.std(y-mid),1e-6)
-    return {'slope':slope,'position':(y[-1]-mid[-1]+width)/(2*width),'dates':d.index,'upper':np.exp(mid+width),'mid':np.exp(mid),'lower':np.exp(mid-width)}
-
+st.set_page_config(page_title='오닐 RS 스캐너',layout='centered',initial_sidebar_state='collapsed')
+st.title('📈 오닐 RS 종목추천')
+st.caption('코스피·코스닥 · 일봉 · IBD 공식 RS가 아닌 근사치 · 투자 판단 참고용')
+DATA=Path(__file__).parent/'data'/'rs_latest.csv'
 with st.sidebar:
     threshold=st.slider('최소 RS',70,99,90)
-    prioritize=st.checkbox('외국인·기관 수급 우선',True)
-    volume_on=st.checkbox('거래량 증가 확인',True)
-    channel_on=st.checkbox('상승채널 위치 분석',True)
-    limit=st.slider('차트 후보 표시 수',10,100,30,10)
-    day=st.date_input('기준일',date.today()-timedelta(days=1),max_value=date.today())
-    run=st.button('🔎 실제 데이터 분석',type='primary')
-
-st.info('RS = 3·6·9·12개월 수익률 가중치 40/20/20/20 → 전체시장 백분위(1~99). KRX 원천 데이터 연결이 실패하면 결과를 만들어내지 않습니다.')
-if not run: st.stop()
-end=day.strftime('%Y%m%d')
-try:
-    with st.spinner('전체시장 RS 계산 중...'):
-        u=universe(end)
-        periods=[63,126,189,252]
-        try:
-            r=pd.concat([returns((day-timedelta(days=round(n*365/252)+8)).strftime('%Y%m%d'),end) for n in periods],axis=1)
-            r.columns=['3개월','6개월','9개월','12개월']
-            r=r.join(u,how='inner').dropna()
-            if len(r)<max(100,int(len(u)*.6)):
-                raise RuntimeError('시장 수익률 자료가 불완전함')
-            source='pykrx'
-        except Exception:
-            st.warning('pykrx 수익률 조회 실패. 무료 대체 소스로 전체 종목을 순차 조회합니다. 첫 실행은 오래 걸릴 수 있습니다.')
-            progress_all=st.progress(0)
-            records=[]
-            earliest=(day-timedelta(days=420)).strftime('%Y-%m-%d')
-            for i,(ticker,meta) in enumerate(u.iterrows()):
-                try:
-                    h=fdr_history(ticker,earliest,end)
-                    close=pd.to_numeric(h['종가'],errors='coerce').dropna()
-                    close=close[close.index<=pd.Timestamp(day)]
-                    if len(close)>=253 and close.iloc[-1]>0:
-                        vals=[close.iloc[-1]/close.iloc[-1-n]-1 for n in periods]
-                        records.append((ticker,*vals))
-                except Exception:
-                    pass
-                if (i+1)%10==0 or i+1==len(u): progress_all.progress((i+1)/len(u))
-                time.sleep(.03)
-            progress_all.empty()
-            if len(records)<max(100,int(len(u)*.6)):
-                raise RuntimeError(f'전체 {len(u)}종목 중 {len(records)}종목만 가격 데이터를 확보했습니다. 정확한 전체시장 RS를 계산할 수 없어 추천을 중단합니다.')
-            r=pd.DataFrame(records,columns=['ticker','3개월','6개월','9개월','12개월']).set_index('ticker').join(u,how='inner').dropna()
-            source='FinanceDataReader'
-        if len(r)<100: raise RuntimeError('RS 계산에 필요한 종목 데이터 부족')
-        r['가중수익률']=r[['3개월','6개월','9개월','12개월']].dot([.4,.2,.2,.2])
-        r['RS']=np.ceil(r['가중수익률'].rank(pct=True)*99).clip(1,99).astype(int)
-        selected=r[r.RS>=threshold].copy()
-        if selected.empty: raise RuntimeError('설정한 RS 기준에 맞는 종목이 없습니다.')
-        start=(day-timedelta(days=12)).strftime('%Y%m%d')
-        selected['외국인_억원']=flows(start,end,'외국인').reindex(selected.index)
-        selected['기관_억원']=flows(start,end,'기관합계').reindex(selected.index)
-        selected['수급점수']=np.where(selected[['외국인_억원','기관_억원']].notna().all(axis=1),(selected['외국인_억원']>0).astype(int)+(selected['기관_억원']>0).astype(int),np.nan)
-        start_hist=(day-timedelta(days=150)).strftime('%Y%m%d')
-        metrics=[]; progress=st.progress(0)
-        for i,ticker in enumerate(selected.index):
-            try:
-                try:
-                    h=history(ticker,start_hist,end)
-                    if h.empty: h=fdr_history(ticker,start_hist,end)
-                except Exception:
-                    h=fdr_history(ticker,start_hist,end)
-                c=channel(h)
-                base=h['거래량'].iloc[-21:-1].mean() if len(h)>=21 else np.nan
-                ratio=h['거래량'].iloc[-1]/base if base>0 else np.nan
-                pos=c['position'] if c else np.nan
-                good=bool(c and c['slope']>0 and 0<=pos<=.65)
-            except Exception: ratio,pos,good=np.nan,np.nan,False
-            metrics.append((ticker,ratio,pos,good))
-            progress.progress((i+1)/len(selected))
-        progress.empty()
-        m=pd.DataFrame(metrics,columns=['ticker','거래량배율','채널위치','채널양호']).set_index('ticker')
-        selected=selected.join(m)
-        selected['보조점수']=0
-        if prioritize: selected['보조점수']+=selected['수급점수'].fillna(0)*2
-        if volume_on: selected['보조점수']+=(selected['거래량배율']>=1.2).astype(int)
-        if channel_on: selected['보조점수']+=selected['채널양호'].astype(int)
-        selected=selected.sort_values(['RS','보조점수','가중수익률'],ascending=False)
-except Exception as e:
-    st.error(f'실제 데이터 조회 실패: {e}')
-    st.warning('데이터 제공 방식 변경 또는 서버 접근 제한일 수 있습니다. 기준일 변경으로 해결되지 않는 API 오류는 코드 수정이 필요합니다.')
+    flow_priority=st.checkbox('외국인·기관 수급 우선',True)
+    volume=st.checkbox('거래량 증가 확인 (상세 차트)',True)
+    channel_on=st.checkbox('상승채널 위치 분석 (상세 차트)',True)
+    top=st.slider('표시 종목 수',5,30,10)
+    if st.button('🔄 화면 새로고침'): st.rerun()
+if not DATA.exists():
+    st.warning('아직 RS 분석 데이터가 없습니다. GitHub Actions → Update RS data → Run workflow를 먼저 실행해 주세요. 데이터 수집이 실패하면 결과를 임의 생성하지 않습니다.')
     st.stop()
-
-st.caption(f'가격 데이터: {source} · RS 산출 대상: {len(r):,}/{len(u):,}종목 (데이터 부족 종목 제외)')
-st.success(f'{day} 기준 전체 {len(r):,}개 종목 중 RS {threshold}+ : {len(selected):,}개')
-a,b,c=st.columns(3)
-a.metric('RS 90 이상',int((r.RS>=90).sum()))
-b.metric('외국인·기관 동반 순매수',int((selected['수급점수']==2).sum()))
-c.metric('상승채널 양호',int(selected['채널양호'].sum()))
-st.subheader('📱 추천 TOP 10')
-for ticker,row in selected.head(10).iterrows():
-    with st.container(border=True):
-        left,right=st.columns([3,1])
-        left.markdown(f"**{row['종목명']}** · {ticker} · {row['시장']}")
-        right.metric('RS',int(row['RS']))
-        vr=row['거래량배율']
-        vol=f'{vr:.2f}배' if pd.notna(vr) else '미확인'
-        pos=row['채널위치']
-        position=f'{pos*100:.0f}%' if pd.notna(pos) else '미확인'
-        st.caption(f"외국인·기관 순매수: {str(int(row['수급점수'])) if pd.notna(row['수급점수']) else '미확인'}/2 | 거래량: {vol} | 채널: {position}")
-st.subheader('전체 후보 순위')
-display=selected.head(limit).copy()
-display['채널위치_%']=(display['채널위치']*100).round(1)
-st.dataframe(display[['종목명','시장','RS','외국인_억원','기관_억원','거래량배율','채널위치_%','채널양호']].round(2),use_container_width=True)
-st.download_button('전체 후보 CSV 다운로드',selected.reset_index().to_csv(index=False).encode('utf-8-sig'),file_name=f'rs_{end}.csv')
-st.subheader('개별 종목 차트')
-options={f'{row["종목명"]} ({ticker})':ticker for ticker,row in display.iterrows()}
-ticker=options[st.selectbox('종목 선택',list(options))]
 try:
-    h=history(ticker,(day-timedelta(days=220)).strftime('%Y%m%d'),end)
-    if h.empty: h=fdr_history(ticker,(day-timedelta(days=220)).strftime('%Y%m%d'),end)
-except Exception:
-    h=fdr_history(ticker,(day-timedelta(days=220)).strftime('%Y%m%d'),end)
-if not h.empty:
-    fig=go.Figure(go.Candlestick(x=h.index,open=h['시가'],high=h['고가'],low=h['저가'],close=h['종가'],name='일봉'))
-    for n in [20,60]: fig.add_trace(go.Scatter(x=h.index,y=h['종가'].rolling(n).mean(),name=f'{n}일선'))
-    ch=channel(h)
-    if ch:
-        for key,label in [('upper','채널상단'),('mid','채널중심'),('lower','채널하단')]:
-            fig.add_trace(go.Scatter(x=ch['dates'],y=ch[key],name=label,line=dict(dash='dot')))
-    fig.update_layout(height=390,xaxis_rangeslider_visible=False,margin=dict(l=5,r=5,t=20,b=5),legend=dict(orientation='h',y=-0.2))
-    st.plotly_chart(fig,use_container_width=True)
-st.caption('주의: 수익률 기간은 달력일 근사, 수급은 약 12달력일 합산(정확히 5거래일은 아님). 회귀채널은 통계적 추정이며 수익을 보장하지 않습니다. API의 종목·수급 조회 가능 여부는 배포 환경에서 별도 확인이 필요합니다.')
+    df=pd.read_csv(DATA,dtype={'ticker':str},encoding='utf-8-sig')
+    needed={'ticker','종목명','시장','RS','가중수익률','기준일','외국인_억원','기관_억원'}
+    if not needed.issubset(df): raise ValueError('저장된 데이터 형식 오류')
+except Exception as exc:
+    st.error(f'저장 데이터 읽기 실패: {exc}')
+    st.stop()
+if df.empty:
+    st.error('저장된 데이터가 비어 있습니다.')
+    st.stop()
+day=str(df['기준일'].iloc[0])
+st.success(f'분석 기준일: {day} · 전체 {len(df):,}개 종목')
+try:
+    age=(date.today()-date.fromisoformat(day)).days
+    if age>4: st.warning(f'저장 데이터가 {age}일 전 자료입니다. 최신 데이터 수집이 실패했을 수 있습니다.')
+except ValueError: pass
+selected=df[df['RS']>=threshold].copy()
+if flow_priority:
+    selected['수급점수']=((selected['외국인_억원']>0).astype(int)+(selected['기관_억원']>0).astype(int))
+    selected=selected.sort_values(['RS','수급점수','가중수익률'],ascending=False)
+else: selected=selected.sort_values(['RS','가중수익률'],ascending=False)
+st.metric('RS 기준 충족',len(selected))
+st.caption('수급은 약 12달력일 누적이며 미확인 값은 0으로 대체하지 않습니다. 거래량·채널은 전체 순위에 반영되지 않고 선택 종목 상세에서만 확인합니다.')
+if selected.empty:
+    st.info('해당 조건의 종목이 없습니다.')
+    st.stop()
+st.subheader('🏅 RS 추천 TOP')
+for _,r in selected.head(top).iterrows():
+    with st.container(border=True):
+        a,b=st.columns([4,1])
+        a.markdown(f"**{r['종목명']}** · {r['ticker']} · {r['시장']}")
+        b.metric('RS',int(r['RS']))
+        def fmt(v): return f'{v:+,.1f}억' if pd.notna(v) else '미확인'
+        st.caption(f"외국인 {fmt(r['외국인_억원'])} | 기관 {fmt(r['기관_억원'])}")
+st.download_button('전체 후보 CSV',selected.to_csv(index=False).encode('utf-8-sig'),file_name=f'oneil_rs_{day}.csv')
+st.subheader('📉 선택 종목 상세')
+opts={f"{r['종목명']} ({r['ticker']})":r['ticker'] for _,r in selected.head(100).iterrows()}
+choice=st.selectbox('종목',list(opts))
+if st.button('선택 종목 차트 조회'):
+    ticker=opts[choice]
+    try:
+        import FinanceDataReader as fdr
+        with st.spinner('선택한 종목만 조회 중...'):
+            h=fdr.DataReader(ticker,(date.today()-timedelta(days=180)).isoformat())
+        if h is None or len(h)<40: raise RuntimeError('차트에 필요한 가격 자료 부족')
+        h=h.sort_index().tail(100)
+        fig=go.Figure(go.Candlestick(x=h.index,open=h.Open,high=h.High,low=h.Low,close=h.Close,name='일봉'))
+        for n in (20,60): fig.add_trace(go.Scatter(x=h.index,y=h.Close.rolling(n).mean(),name=f'{n}일선'))
+        if volume:
+            base=h.Volume.iloc[-21:-1].mean() if len(h)>=21 else np.nan
+            st.write('최근 거래량 / 직전 20일 평균:',f'{h.Volume.iloc[-1]/base:.2f}배' if pd.notna(base) and base>0 else '미확인')
+        if channel_on:
+            d=h.tail(60)
+            x=np.arange(len(d)); y=np.log(d.Close.to_numpy(float))
+            slope,intercept=np.polyfit(x,y,1)
+            mid=intercept+slope*x
+            width=max(2*np.std(y-mid),1e-6)
+            pos=(y[-1]-mid[-1]+width)/(2*width)
+            for offset,label in ((width,'상단'),(0,'중심'),(-width,'하단')):
+                fig.add_trace(go.Scatter(x=d.index,y=np.exp(mid+offset),name='채널 '+label,line=dict(dash='dot')))
+            st.write('상승채널:', '상승' if slope>0 else '하락/횡보','· 위치:',f'{pos*100:.0f}% (0%=하단, 100%=상단)')
+        fig.update_layout(height=420,xaxis_rangeslider_visible=False,margin=dict(l=0,r=0,t=15,b=0))
+        st.plotly_chart(fig,use_container_width=True)
+    except Exception as exc:
+        st.error(f'차트 데이터 조회 실패: {exc}')
+st.caption('데이터 공급처가 차단되면 갱신 및 상세 차트가 실패할 수 있습니다. 저장된 RS 순위는 마지막 정상 수집일 기준입니다.')

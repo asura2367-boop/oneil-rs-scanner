@@ -1,7 +1,7 @@
-streamlit>=1.35
-pandas>=2.0
-numpy>=1.24
-plotly>=5.20
+streamlit>=1.35,<2
+pandas>=2.0,<3
+numpy>=1.24,<3
+plotly>=5.20,<7
 pykrx>=1.0.48
 finance-datareader>=0.9.90
 setuptools==80.9.0
