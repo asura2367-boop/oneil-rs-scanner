@@ -4,24 +4,49 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from pykrx import stock
+import FinanceDataReader as fdr
+import time
 
 st.set_page_config(page_title='오닐 RS 스캐너', layout='centered', initial_sidebar_state='collapsed')
 st.title('📈 오닐 RS 종목추천 스캐너')
 st.caption('코스피·코스닥 | 일봉 기준 · 실시간 아님 · IBD 공식 RS가 아닌 근사치')
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400, show_spinner=False)
 def universe(day):
     rows=[]
     for market in ['KOSPI','KOSDAQ']:
-        tickers=stock.get_market_ticker_list(day,market=market)
-        rows += [(str(t).zfill(6),stock.get_market_ticker_name(t),market) for t in tickers]
-    if not rows: raise RuntimeError('코스피·코스닥 종목 목록을 조회하지 못했습니다. 거래일과 데이터 제공 상태를 확인하세요.')
+        try:
+            tickers=stock.get_market_ticker_list(day,market=market)
+            if tickers:
+                rows += [(str(t).zfill(6),stock.get_market_ticker_name(t),market) for t in tickers]
+        except Exception:
+            pass
+    if len(rows)<100:
+        rows=[]
+        for market in ['KOSPI','KOSDAQ']:
+            try:
+                d=fdr.StockListing(market)
+                code_col=next((c for c in ['Code','Symbol','종목코드'] if c in d.columns),None)
+                name_col=next((c for c in ['Name','종목명'] if c in d.columns),None)
+                if code_col and name_col:
+                    rows += [(str(t).zfill(6),str(n),market) for t,n in zip(d[code_col],d[name_col]) if pd.notna(t)]
+            except Exception:
+                pass
+    if len(rows)<100:
+        raise RuntimeError('pykrx와 FinanceDataReader 모두 종목 목록을 조회하지 못했습니다. 무료 데이터 제공처의 접근 상태를 확인해야 합니다.')
     return pd.DataFrame(rows,columns=['ticker','종목명','시장']).drop_duplicates('ticker').set_index('ticker')
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400, show_spinner=False)
+def fdr_history(ticker,start,end):
+    d=fdr.DataReader(ticker, start, (pd.to_datetime(end)+pd.Timedelta(days=1)).strftime('%Y-%m-%d'))
+    if d is None or d.empty or 'Close' not in d.columns: return pd.DataFrame()
+    return d.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'}).sort_index()
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def returns(start,end):
     d=stock.get_market_price_change_by_ticker(start,end,market='ALL')
-    if d.empty: raise RuntimeError('기간별 가격 데이터 없음')
+    if d is None or d.empty or '등락률' not in d.columns:
+        raise RuntimeError('pykrx 시장 전체 수익률 조회 실패')
     s=pd.to_numeric(d['등락률'],errors='coerce')/100
     s.index=s.index.astype(str).str.zfill(6)
     return s
@@ -66,9 +91,35 @@ try:
     with st.spinner('전체시장 RS 계산 중...'):
         u=universe(end)
         periods=[63,126,189,252]
-        r=pd.concat([returns((day-timedelta(days=round(n*365/252)+8)).strftime('%Y%m%d'),end) for n in periods],axis=1)
-        r.columns=['3개월','6개월','9개월','12개월']
-        r=r.join(u,how='inner').dropna()
+        try:
+            r=pd.concat([returns((day-timedelta(days=round(n*365/252)+8)).strftime('%Y%m%d'),end) for n in periods],axis=1)
+            r.columns=['3개월','6개월','9개월','12개월']
+            r=r.join(u,how='inner').dropna()
+            if len(r)<max(100,int(len(u)*.6)):
+                raise RuntimeError('시장 수익률 자료가 불완전함')
+            source='pykrx'
+        except Exception:
+            st.warning('pykrx 수익률 조회 실패. 무료 대체 소스로 전체 종목을 순차 조회합니다. 첫 실행은 오래 걸릴 수 있습니다.')
+            progress_all=st.progress(0)
+            records=[]
+            earliest=(day-timedelta(days=420)).strftime('%Y-%m-%d')
+            for i,(ticker,meta) in enumerate(u.iterrows()):
+                try:
+                    h=fdr_history(ticker,earliest,end)
+                    close=pd.to_numeric(h['종가'],errors='coerce').dropna()
+                    close=close[close.index<=pd.Timestamp(day)]
+                    if len(close)>=253 and close.iloc[-1]>0:
+                        vals=[close.iloc[-1]/close.iloc[-1-n]-1 for n in periods]
+                        records.append((ticker,*vals))
+                except Exception:
+                    pass
+                if (i+1)%10==0 or i+1==len(u): progress_all.progress((i+1)/len(u))
+                time.sleep(.03)
+            progress_all.empty()
+            if len(records)<max(100,int(len(u)*.6)):
+                raise RuntimeError(f'전체 {len(u)}종목 중 {len(records)}종목만 가격 데이터를 확보했습니다. 정확한 전체시장 RS를 계산할 수 없어 추천을 중단합니다.')
+            r=pd.DataFrame(records,columns=['ticker','3개월','6개월','9개월','12개월']).set_index('ticker').join(u,how='inner').dropna()
+            source='FinanceDataReader'
         if len(r)<100: raise RuntimeError('RS 계산에 필요한 종목 데이터 부족')
         r['가중수익률']=r[['3개월','6개월','9개월','12개월']].dot([.4,.2,.2,.2])
         r['RS']=np.ceil(r['가중수익률'].rank(pct=True)*99).clip(1,99).astype(int)
@@ -77,12 +128,16 @@ try:
         start=(day-timedelta(days=12)).strftime('%Y%m%d')
         selected['외국인_억원']=flows(start,end,'외국인').reindex(selected.index)
         selected['기관_억원']=flows(start,end,'기관합계').reindex(selected.index)
-        selected['수급점수']=(selected['외국인_억원']>0).astype(int)+(selected['기관_억원']>0).astype(int)
+        selected['수급점수']=np.where(selected[['외국인_억원','기관_억원']].notna().all(axis=1),(selected['외국인_억원']>0).astype(int)+(selected['기관_억원']>0).astype(int),np.nan)
         start_hist=(day-timedelta(days=150)).strftime('%Y%m%d')
         metrics=[]; progress=st.progress(0)
         for i,ticker in enumerate(selected.index):
             try:
-                h=history(ticker,start_hist,end)
+                try:
+                    h=history(ticker,start_hist,end)
+                    if h.empty: h=fdr_history(ticker,start_hist,end)
+                except Exception:
+                    h=fdr_history(ticker,start_hist,end)
                 c=channel(h)
                 base=h['거래량'].iloc[-21:-1].mean() if len(h)>=21 else np.nan
                 ratio=h['거래량'].iloc[-1]/base if base>0 else np.nan
@@ -95,7 +150,7 @@ try:
         m=pd.DataFrame(metrics,columns=['ticker','거래량배율','채널위치','채널양호']).set_index('ticker')
         selected=selected.join(m)
         selected['보조점수']=0
-        if prioritize: selected['보조점수']+=selected['수급점수']*2
+        if prioritize: selected['보조점수']+=selected['수급점수'].fillna(0)*2
         if volume_on: selected['보조점수']+=(selected['거래량배율']>=1.2).astype(int)
         if channel_on: selected['보조점수']+=selected['채널양호'].astype(int)
         selected=selected.sort_values(['RS','보조점수','가중수익률'],ascending=False)
@@ -104,6 +159,7 @@ except Exception as e:
     st.warning('데이터 제공 방식 변경 또는 서버 접근 제한일 수 있습니다. 기준일 변경으로 해결되지 않는 API 오류는 코드 수정이 필요합니다.')
     st.stop()
 
+st.caption(f'가격 데이터: {source} · RS 산출 대상: {len(r):,}/{len(u):,}종목 (데이터 부족 종목 제외)')
 st.success(f'{day} 기준 전체 {len(r):,}개 종목 중 RS {threshold}+ : {len(selected):,}개')
 a,b,c=st.columns(3)
 a.metric('RS 90 이상',int((r.RS>=90).sum()))
@@ -119,7 +175,7 @@ for ticker,row in selected.head(10).iterrows():
         vol=f'{vr:.2f}배' if pd.notna(vr) else '미확인'
         pos=row['채널위치']
         position=f'{pos*100:.0f}%' if pd.notna(pos) else '미확인'
-        st.caption(f"외국인·기관 순매수: {int(row['수급점수'])}/2 | 거래량: {vol} | 채널: {position}")
+        st.caption(f"외국인·기관 순매수: {str(int(row['수급점수'])) if pd.notna(row['수급점수']) else '미확인'}/2 | 거래량: {vol} | 채널: {position}")
 st.subheader('전체 후보 순위')
 display=selected.head(limit).copy()
 display['채널위치_%']=(display['채널위치']*100).round(1)
@@ -128,7 +184,11 @@ st.download_button('전체 후보 CSV 다운로드',selected.reset_index().to_cs
 st.subheader('개별 종목 차트')
 options={f'{row["종목명"]} ({ticker})':ticker for ticker,row in display.iterrows()}
 ticker=options[st.selectbox('종목 선택',list(options))]
-h=history(ticker,(day-timedelta(days=220)).strftime('%Y%m%d'),end)
+try:
+    h=history(ticker,(day-timedelta(days=220)).strftime('%Y%m%d'),end)
+    if h.empty: h=fdr_history(ticker,(day-timedelta(days=220)).strftime('%Y%m%d'),end)
+except Exception:
+    h=fdr_history(ticker,(day-timedelta(days=220)).strftime('%Y%m%d'),end)
 if not h.empty:
     fig=go.Figure(go.Candlestick(x=h.index,open=h['시가'],high=h['고가'],low=h['저가'],close=h['종가'],name='일봉'))
     for n in [20,60]: fig.add_trace(go.Scatter(x=h.index,y=h['종가'].rolling(n).mean(),name=f'{n}일선'))
