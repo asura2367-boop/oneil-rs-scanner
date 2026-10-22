@@ -148,6 +148,29 @@ if ranked.empty:
     st.stop()
 latest_date = pd.to_datetime(ranked['date']).max().date()
 st.caption(f'일봉 최신일 {latest_date} · RS 계산 가능 {len(ranked):,}종목 · {source}')
+
+# V7: unified collection overview; all counts are computed from loaded files.
+with st.expander('📊 일봉·수급 통합 수집 현황', expanded=True):
+    daily_codes = set(df['ticker'].astype(str).str.strip().str.zfill(6))
+    flow_codes = set(flow['ticker'].astype(str).str.strip().str.zfill(6)) if not flow.empty else set()
+    common_codes = daily_codes & flow_codes
+    universe_total = int(status.get('universe_total', 0)) if status else 0
+    a, b, c = st.columns(3)
+    a.metric('일봉 종목', f'{len(daily_codes):,}')
+    b.metric('수급 종목', f'{len(flow_codes):,}')
+    c.metric('둘 다 확보', f'{len(common_codes):,}')
+    if universe_total:
+        st.progress(min(1.0, len(daily_codes) / universe_total))
+        st.caption(f'일봉 확보 {len(daily_codes):,}/{universe_total:,}종목 ({len(daily_codes)/universe_total*100:.2f}%) · 수급 확보 {len(flow_codes):,}/{universe_total:,}종목 ({len(flow_codes)/universe_total*100:.2f}%)')
+    st.caption(f"일봉 최신일 {pd.to_datetime(df['date'], errors='coerce').max().date()} · 수급 최신일 {flow['date'].max().date() if not flow.empty else '미확인'}")
+    st.caption(f'일봉 출처: {source} · 수급 출처: {flow_source} · 수집 상태: {status_source}')
+    st.caption('수집 완료는 파일에 1개 이상 유효한 날짜가 있는 종목 수입니다. RS 계산 가능(253거래일 이상)과 다릅니다.')
+    rs_codes = set(ranked.loc[ranked['sample_rs'] >= threshold, 'ticker'])
+    missing_flow = ranked[(ranked['sample_rs'] >= threshold) & (~ranked['ticker'].isin(flow_codes))]
+    st.write(f'RS {threshold} 이상 {len(rs_codes):,}종목 · 수급 파일에 없는 종목 {len(missing_flow):,}개')
+    if not missing_flow.empty:
+        st.dataframe(missing_flow[['ticker', 'name', 'sample_rs']].rename(columns={'ticker':'종목코드','name':'종목명','sample_rs':'시험 RS'}), hide_index=True, use_container_width=True)
+
 # RS >= threshold is the eligibility gate; within eligible stocks, prefer
 # recent verified foreign/institution accumulation before technical tie-breakers.
 latest_by_ticker = ranked.set_index('ticker')['date'].to_dict()
