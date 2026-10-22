@@ -1,77 +1,96 @@
-from datetime import date, timedelta
+"""KIS 실전 API: 3종목 1년 일봉 수집 테스트. 주문 기능 없음."""
+import os
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
-import numpy as np
+
 import pandas as pd
-from pykrx import stock
-import FinanceDataReader as fdr
+import requests
 
-OUT=Path(__file__).parent/'data'/'rs_latest.csv'
+BASE = 'https://openapi.koreainvestment.com:9443'
+SYMBOLS = {'005930': '삼성전자', '000660': 'SK하이닉스', '005380': '현대차'}
+OUT = Path(__file__).resolve().parent / 'data'
 
-def universe(day):
-    rows=[]
-    for market in ('KOSPI','KOSDAQ'):
-        try:
-            codes=stock.get_market_ticker_list(day,market=market)
-            rows.extend((str(t).zfill(6),stock.get_market_ticker_name(t),market) for t in codes)
-        except Exception as exc: print('pykrx universe:',market,exc)
-    if len(rows)<100:
-        rows=[]
-        for market in ('KOSPI','KOSDAQ'):
-            try:
-                d=fdr.StockListing(market)
-                code=next(c for c in ('Code','Symbol','종목코드') if c in d)
-                name=next(c for c in ('Name','종목명') if c in d)
-                rows.extend((str(t).zfill(6),str(n),market) for t,n in zip(d[code],d[name]))
-            except Exception as exc: print('FDR universe:',market,exc)
-    u=pd.DataFrame(rows,columns=['ticker','종목명','시장']).drop_duplicates('ticker').set_index('ticker')
-    if len(u)<100: raise RuntimeError('종목 목록 수집 실패; 기존 저장 파일은 유지합니다')
-    return u
 
-def collect(day):
-    end=day.strftime('%Y%m%d')
-    u=universe(end)
-    series=[]
-    for days in (91,182,273,365):
-        start=(day-timedelta(days=days)).strftime('%Y%m%d')
-        d=stock.get_market_price_change_by_ticker(start,end,market='ALL')
-        if d is None or d.empty or '등락률' not in d: raise RuntimeError(f'전체 시장 수익률 조회 실패: {days}일')
-        s=pd.to_numeric(d['등락률'],errors='coerce')/100
-        s.index=s.index.astype(str).str.zfill(6)
-        series.append(s)
-    r=pd.concat(series,axis=1)
-    r.columns=['r3','r6','r9','r12']
-    r=r.join(u,how='inner').dropna()
-    if len(r)<max(100,int(len(u)*0.6)): raise RuntimeError('시장 수익률 데이터 불완전')
-    r['가중수익률']=r[['r3','r6','r9','r12']].dot([.4,.2,.2,.2])
-    r['RS']=np.ceil(r['가중수익률'].rank(pct=True)*99).clip(1,99).astype(int)
-    start=(day-timedelta(days=12)).strftime('%Y%m%d')
-    for who,col in [('외국인','외국인_억원'),('기관합계','기관_억원')]:
-        r[col]=np.nan
-        try:
-            d=stock.get_market_net_purchases_of_equities_by_ticker(start,end,'ALL',who)
-            if d is not None and not d.empty and '순매수거래대금' in d:
-                s=pd.to_numeric(d['순매수거래대금'],errors='coerce')/1e8
-                s.index=s.index.astype(str).str.zfill(6)
-                r[col]=s.reindex(r.index)
-        except Exception as exc: print('flows unavailable:',who,exc)
-    r['기준일']=day.isoformat()
-    return r.sort_values(['RS','가중수익률'],ascending=False).reset_index().rename(columns={'index':'ticker'})
+def get_token(session, key, secret):
+    response = session.post(f'{BASE}/oauth2/tokenP', json={
+        'grant_type': 'client_credentials', 'appkey': key, 'appsecret': secret
+    }, timeout=20)
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get('access_token'):
+        raise RuntimeError('토큰 발급 실패: ' + str(payload.get('error_description', '응답 확인 필요')))
+    return payload['access_token']
 
-if __name__=='__main__':
-    errors=[]
-    for back in range(0,8):
-        day=date.today()-timedelta(days=back)
-        if day.weekday()>=5: continue
-        try:
-            df=collect(day)
-            OUT.parent.mkdir(parents=True,exist_ok=True)
-            tmp=OUT.with_suffix('.tmp')
-            df.to_csv(tmp,index=False,encoding='utf-8-sig')
-            tmp.replace(OUT)
-            print('saved',OUT,len(df),day)
+
+def fetch_year(session, key, secret, token, symbol, start, end):
+    rows = []
+    cursor = end
+    for _ in range(7):
+        params = {
+            'FID_COND_MRKT_DIV_CODE': 'J',
+            'FID_INPUT_ISCD': symbol,
+            'FID_INPUT_DATE_1': start.strftime('%Y%m%d'),
+            'FID_INPUT_DATE_2': cursor.strftime('%Y%m%d'),
+            'FID_PERIOD_DIV_CODE': 'D',
+            'FID_ORG_ADJ_PRC': '0',
+        }
+        headers = {
+            'authorization': f'Bearer {token}', 'appkey': key, 'appsecret': secret,
+            'tr_id': 'FHKST03010100', 'content-type': 'application/json',
+        }
+        response = session.get(f'{BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
+                               params=params, headers=headers, timeout=25)
+        response.raise_for_status()
+        payload = response.json()
+        if str(payload.get('rt_cd')) != '0':
+            raise RuntimeError(f'{symbol} API 오류: {payload.get("msg_cd")} {payload.get("msg1")}')
+        batch = payload.get('output2') or []
+        if not batch:
             break
-        except Exception as exc:
-            print(day,'failed:',exc)
-            errors.append(str(exc))
-    else:
-        raise RuntimeError('최근 거래일 자료 수집 실패: '+'; '.join(errors))
+        rows.extend(batch)
+        oldest = min(datetime.strptime(x['stck_bsop_date'], '%Y%m%d').date() for x in batch)
+        if oldest <= start:
+            break
+        cursor = oldest - timedelta(days=1)
+        time.sleep(0.35)
+    if not rows:
+        raise RuntimeError(f'{symbol} 일봉 응답 없음')
+    df = pd.DataFrame(rows)
+    df = df.rename(columns={'stck_bsop_date':'date','stck_clpr':'close','acml_vol':'volume'})
+    df = df[['date','close','volume']].copy()
+    df['date'] = pd.to_datetime(df['date'], format='%Y%m%d', errors='coerce')
+    for col in ('close','volume'):
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.dropna().drop_duplicates('date').sort_values('date')
+    df = df[(df['date'].dt.date >= start) & (df['date'].dt.date <= end)]
+    if len(df) < 200:
+        raise RuntimeError(f'{symbol} 수집 부족: {len(df)}개 일봉 (200개 이상 필요)')
+    return df
+
+
+def main():
+    key = os.environ.get('KIS_APP_KEY', '').strip()
+    secret = os.environ.get('KIS_APP_SECRET', '').strip()
+    if not key or not secret:
+        raise RuntimeError('GitHub Actions Secrets: KIS_APP_KEY / KIS_APP_SECRET 미설정')
+    today = datetime.now().date()
+    start = today - timedelta(days=410)
+    session = requests.Session()
+    token = get_token(session, key, secret)
+    frames = []
+    for code, name in SYMBOLS.items():
+        df = fetch_year(session, key, secret, token, code, start, today)
+        df.insert(0, 'ticker', code)
+        df.insert(1, 'name', name)
+        frames.append(df)
+        print(f'{name}: {len(df)}개 일봉 수집 성공', flush=True)
+        time.sleep(0.35)
+    OUT.mkdir(parents=True, exist_ok=True)
+    destination = OUT / 'kis_daily_3stocks.csv'
+    pd.concat(frames, ignore_index=True).to_csv(destination, index=False, encoding='utf-8-sig')
+    print(f'저장 완료: {destination} (3종목 테스트, 전체시장 RS 아님)', flush=True)
+
+
+if __name__ == '__main__':
+    main()
