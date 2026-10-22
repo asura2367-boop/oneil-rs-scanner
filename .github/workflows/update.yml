@@ -12,10 +12,6 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    jobs:
-  update:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
     env:
       KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
       KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
@@ -25,7 +21,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install -r requirements.txt 'setuptools<81'
+        run: pip install -r requirements.txt
       - name: Build RS data
         run: python build_data.py
       - name: Save data
