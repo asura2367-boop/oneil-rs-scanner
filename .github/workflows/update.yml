@@ -12,6 +12,13 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
