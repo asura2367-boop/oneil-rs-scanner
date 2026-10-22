@@ -171,6 +171,30 @@ ranked[['flow_both','flow_positive','flow_long']] = pd.DataFrame(
 ranked = ranked.sort_values(
     ['flow_both','flow_positive','flow_long','sample_rs','volume_ratio','channel_good','weighted_return'],
     ascending=[False,False,False,False,False,False,False])
+# Diagnostic panel: distinguish missing, stale, and valid investor flow.
+with st.expander('🔎 수급 데이터 연결 진단', expanded=False):
+    st.write(f'수급 CSV 출처: {flow_source}')
+    st.write(f'수급 데이터 행: {len(flow):,}개 / 고유 종목: {len(flow_summary):,}개')
+    if not flow.empty:
+        st.write(f"수급 최신 날짜: {flow['date'].max().date()}")
+    st.write(f'RS 계산 가능 종목: {len(ranked):,}개')
+    valid_count = int((ranked['flow_both'] >= 0).sum())
+    st.write(f'RS 대상 중 최근 수급 5일 확인: {valid_count:,}개')
+    candidates = ranked[ranked['sample_rs'] >= threshold]
+    valid_candidates = candidates[candidates['flow_both'] >= 0]
+    st.write(f'RS 기준 통과: {len(candidates):,}개 / 이 중 수급 확인: {len(valid_candidates):,}개')
+    if valid_candidates.empty:
+        st.info('현재 RS 기준을 통과한 종목 중 최근 수급이 확인된 종목이 없습니다. 수급 파일의 종목 구성·최신일을 확인하세요.')
+    else:
+        diag = []
+        for _, item in valid_candidates.head(15).iterrows():
+            f = flow_summary[item['ticker']]
+            diag.append({'종목':item['name'], '코드':item['ticker'], 'RS':int(item['sample_rs']),
+                         '수급일':str(f['date'].date()), '외국인 5일(주)':f['f5'], '기관 5일(주)':f['i5']})
+        st.dataframe(pd.DataFrame(diag), hide_index=True, use_container_width=True)
+    with st.container():
+        st.caption('최근 수급은 일봉 최신일 대비 0~7일 차이, 5거래일 자료가 있을 때만 유효로 판정합니다. 전체시장 RS가 아닌 부분 표본 RS입니다.')
+
 filtered = ranked[ranked['sample_rs'] >= threshold].copy()
 if only_good: filtered = filtered[filtered['channel_good']]
 if vol_check: filtered = filtered[filtered['volume_ratio'] >= 1.2]
@@ -199,7 +223,7 @@ else:
             a.markdown(f'**{i}. {r["name"]}**  ·  `{r["ticker"]}`')
             b.markdown(f'**RS {int(r["sample_rs"])}**')
             f = flow_summary.get(r['ticker'])
-            if f and f['f5'] is not None and f['i5'] is not None and (pd.Timestamp(r['date'])-f['date']).days <= 7:
+            if f and f['f5'] is not None and f['i5'] is not None and 0 <= (pd.Timestamp(r['date'])-f['date']).days <= 7:
                 flow_text = f"외국인 5일 {f['f5']:+,.0f}주 · 기관 5일 {f['i5']:+,.0f}주"
                 if f['f20'] is not None:
                     flow_text += f" · 20일 외국인 {f['f20']:+,.0f}주 / 기관 {f['i20']:+,.0f}주"
