@@ -77,36 +77,37 @@ def rank_candidates(df):
     result = result.sort_values(['sample_rs','channel_good','volume_ratio','weighted_return'],ascending=[False,False,False,False])
     return result, histories
 
-st.title('📈 오닐 RS 종목추천')
-st.caption('한국투자증권 일봉 기반 · 저장된 데이터 · 실시간 아님')
+st.markdown("""<style>
+.block-container{padding-top:1.2rem;padding-bottom:2rem}
+h1{font-size:1.65rem!important;margin-bottom:.1rem!important}
+h2,h3{font-size:1.15rem!important;margin-top:.7rem!important}
+[data-testid="stMetricValue"]{font-size:1.35rem!important}
+[data-testid="stVerticalBlockBorderWrapper"]{padding:0!important}
+</style>""", unsafe_allow_html=True)
+st.title('📈 오닐 RS 스캐너')
+st.caption('한국투자증권 일봉 · 저장 데이터 · 실시간 아님')
 status, status_source = load_status()
 if status:
     total = int(status.get('universe_total',0))
     collected = int(status.get('collected_symbols',0))
     pct = min(100.,100*collected/total) if total else 0
-    st.subheader('전체시장 수집 진행률')
-    c1,c2,c3=st.columns(3)
-    c1.metric('전체 종목',f'{total:,}')
-    c2.metric('수집 완료',f'{collected:,}')
-    c3.metric('진행률',f'{pct:.2f}%')
+    st.markdown(f'**전체시장 수집** · {collected:,} / {total:,}종목 ({pct:.2f}%)')
     st.progress(pct/100)
-    st.caption(f"기준일 {status.get('as_of','미확인')} · 최근 성공 {status.get('last_run_success','?')}종목 · 최근 실패 {status.get('last_run_failures','?')}종목 · {status_source}")
+    st.caption(f"기준 {status.get('as_of','미확인')} · 최근 성공 {status.get('last_run_success','?')} / 실패 {status.get('last_run_failures','?')} · {status_source}")
 else:
-    st.warning('수집 진행률을 불러오지 못했습니다. GitHub의 collection_status.json을 확인하세요.')
-
+    st.warning('수집 진행률 조회 실패 — 기존 저장 일봉으로만 분석합니다.')
 with st.sidebar:
     st.header('추천 설정')
     threshold = st.slider('부분 표본 RS 최소값',70,99,90)
-    only_good = st.checkbox('상승채널 양호 종목만',False)
-    vol_check = st.checkbox('거래량 20일 평균 이상만',False)
+    only_good = st.checkbox('상승채널 양호만 표시',False)
+    vol_check = st.checkbox('거래량 1.2배 이상만 표시',False)
     top_n = st.slider('표시 종목 수',5,30,10,5)
-    if st.button('데이터 새로 불러오기'):
+    if st.button('저장 데이터 새로고침'):
         load_csv.clear(); load_status.clear(); st.rerun()
-
-st.info('현재 RS는 **수집된 종목만 비교한 시험용 상대강도**입니다. 전체 2,675종목의 공식 RS 또는 전체시장 RS 90으로 해석하면 안 됩니다. 외국인·기관 수급은 아직 반영되지 않았습니다.')
+st.caption('※ RS는 **수집된 종목끼리 비교한 시험 등급**이며 전체시장 RS가 아닙니다. 외국인·기관 수급은 미연동입니다.')
 df, source = load_csv('kis_daily_universe.csv')
 if df is None:
-    st.error('전체시장 일봉 CSV를 불러오지 못했습니다. GitHub data/kis_daily_universe.csv를 확인하세요.')
+    st.error('일봉 CSV 조회 실패: data/kis_daily_universe.csv')
     st.stop()
 try:
     ranked, histories = rank_candidates(df)
@@ -114,25 +115,39 @@ except Exception as e:
     st.error(f'데이터 분석 오류: {e}')
     st.stop()
 if ranked.empty:
-    st.warning('253거래일 이상의 일봉이 확보된 종목이 없어 RS를 계산할 수 없습니다.')
+    st.warning('253거래일 이상 확보된 종목이 없습니다.')
     st.stop()
-
-st.caption(f'데이터 출처: {source} · RS 계산 가능 종목 {len(ranked):,}개 · 전체 수집 완료 전 임시 순위')
+latest_date = pd.to_datetime(ranked['date']).max().date()
+st.caption(f'일봉 최신일 {latest_date} · RS 계산 가능 {len(ranked):,}종목 · {source}')
 filtered = ranked[ranked['sample_rs'] >= threshold].copy()
-if only_good: filtered=filtered[filtered['channel_good']]
-if vol_check: filtered=filtered[filtered['volume_ratio']>=1]
-st.subheader('📱 부분 표본 추천 TOP 10')
+if only_good: filtered = filtered[filtered['channel_good']]
+if vol_check: filtered = filtered[filtered['volume_ratio'] >= 1.2]
+st.subheader('추천 후보 TOP 10')
 if filtered.empty:
-    st.warning('현재 조건을 만족하는 종목이 없습니다. 사이드바에서 조건을 완화하세요.')
+    st.warning('조건을 충족하는 종목이 없습니다. 설정을 조정하세요.')
 else:
-    for _,r in filtered.head(top_n).iterrows():
+    for i, (_,r) in enumerate(filtered.head(top_n).iterrows(),1):
+        ratio = r['volume_ratio']
+        pos = r['channel_position']
+        good = bool(r['channel_good'])
+        if pd.isna(ratio) or pd.isna(pos):
+            verdict = '데이터 확인'
+        elif pos < 0 or pos > 1:
+            verdict = '주의 · 채널 이탈'
+        elif good and ratio >= 1.2:
+            verdict = '관심 · 채널/거래량 양호'
+        elif good:
+            verdict = '관찰 · 거래량 확인'
+        else:
+            verdict = '관찰 · 채널 위치 확인'
+        volume_text = f'{ratio:.2f}배' if pd.notna(ratio) else '미확인'
+        channel_text = f'{pos*100:.0f}%' if pd.notna(pos) else '미확인'
         with st.container(border=True):
-            a,b=st.columns([3,1])
-            a.markdown(f"**{r['name']} · {r['ticker']}**")
-            b.metric('시험 RS',int(r['sample_rs']))
-            vr=f"{r['volume_ratio']:.2f}배" if pd.notna(r['volume_ratio']) else '미확인'
-            st.caption(f"가중수익률 {r['weighted_return']:+.1f}% · 거래량 {vr} · 채널 위치 {r['channel_position']*100:.0f}% · 채널 양호 {'예' if r['channel_good'] else '아니오'}")
-
+            a,b=st.columns([4,1],vertical_alignment='center')
+            a.markdown(f'**{i}. {r["name"]}**  ·  `{r["ticker"]}`')
+            b.markdown(f'**RS {int(r["sample_rs"])}**')
+            st.caption(f'{verdict}  |  거래량 {volume_text}  |  채널 {channel_text}  |  수급 미확인')
+st.caption('판정은 참고용 기술적 분류이며 매수 지시가 아닙니다. RS 우선 정렬, 거래량·채널은 동점 보조 조건입니다.')
 st.subheader('종목별 상세 차트')
 choices = {f"{r['name']} ({r['ticker']})":r['ticker'] for _,r in ranked.iterrows()}
 selected = st.selectbox('종목 선택', list(choices))
