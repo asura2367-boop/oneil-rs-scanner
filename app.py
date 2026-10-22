@@ -198,42 +198,73 @@ with st.expander('🔎 수급 데이터 연결 진단', expanded=False):
 filtered = ranked[ranked['sample_rs'] >= threshold].copy()
 if only_good: filtered = filtered[filtered['channel_good']]
 if vol_check: filtered = filtered[filtered['volume_ratio'] >= 1.2]
-st.subheader('RS 기준 통과 · 수급 우선 TOP 10')
-if filtered.empty:
-    st.warning('조건을 충족하는 종목이 없습니다. 설정을 조정하세요.')
-else:
-    for i, (_,r) in enumerate(filtered.head(top_n).iterrows(),1):
-        ratio = r['volume_ratio']
-        pos = r['channel_position']
-        good = bool(r['channel_good'])
-        if pd.isna(ratio) or pd.isna(pos):
-            verdict = '데이터 확인'
-        elif pos < 0 or pos > 1:
-            verdict = '주의 · 채널 이탈'
-        elif good and ratio >= 1.2:
-            verdict = '관심 · 채널/거래량 양호'
-        elif good:
-            verdict = '관찰 · 거래량 확인'
+
+def flow_details(r):
+    f = flow_summary.get(r['ticker'])
+    if not f or f['f5'] is None or f['i5'] is None:
+        return None
+    age = (pd.Timestamp(r['date']) - f['date']).days
+    if not (0 <= age <= 7):
+        return None
+    return f
+
+def candidate_group(r):
+    f = flow_details(r)
+    ratio, pos = r['volume_ratio'], r['channel_position']
+    if pd.notna(pos) and (pos < 0 or pos > 1):
+        return '주의', '상승채널 이탈'
+    if f is None:
+        return '관찰', '수급 미확인 또는 오래됨'
+    if f['f5'] <= 0 or f['i5'] <= 0:
+        return '관찰', '외국인·기관 동반 순매수 미충족'
+    if not bool(r['channel_good']):
+        return '관찰', '상승채널 조건 미충족'
+    if pd.isna(ratio) or ratio < 1.2:
+        return '관찰', '거래량 1.2배 미만'
+    return '매수 관심', 'RS·수급·거래량·상승채널 조건 충족'
+
+def show_candidate(r, i):
+    group, reason = candidate_group(r)
+    ratio, pos = r['volume_ratio'], r['channel_position']
+    with st.container(border=True):
+        st.markdown(f'**{i}. {r["name"]}** · `{r["ticker"]}` · **RS {int(r["sample_rs"])}**')
+        st.caption(f'{group} · {reason} | 거래량 {ratio:.2f}배' if pd.notna(ratio) else f'{group} · {reason} | 거래량 미확인')
+        st.caption(f'채널 위치 {pos*100:.0f}%' if pd.notna(pos) else '채널 위치 미확인')
+        f = flow_details(r)
+        if f is None:
+            st.caption('외국인·기관 수급 미확인/오래됨')
         else:
-            verdict = '관찰 · 채널 위치 확인'
-        volume_text = f'{ratio:.2f}배' if pd.notna(ratio) else '미확인'
-        channel_text = f'{pos*100:.0f}%' if pd.notna(pos) else '미확인'
-        with st.container(border=True):
-            a,b=st.columns([4,1],vertical_alignment='center')
-            a.markdown(f'**{i}. {r["name"]}**  ·  `{r["ticker"]}`')
-            b.markdown(f'**RS {int(r["sample_rs"])}**')
-            f = flow_summary.get(r['ticker'])
-            if f and f['f5'] is not None and f['i5'] is not None and 0 <= (pd.Timestamp(r['date'])-f['date']).days <= 7:
-                flow_text = f"외국인 5일 {f['f5']:+,.0f}주 · 기관 5일 {f['i5']:+,.0f}주"
-                if f['f20'] is not None:
-                    flow_text += f" · 20일 외국인 {f['f20']:+,.0f}주 / 기관 {f['i20']:+,.0f}주"
-                else:
-                    flow_text += ' · 20일 데이터 부족'
+            st.caption(f"외국인 5일 {f['f5']:+,.0f}주 · 기관 5일 {f['i5']:+,.0f}주")
+            if f['f20'] is not None and f['i20'] is not None:
+                st.caption(f"20일 외국인 {f['f20']:+,.0f}주 · 기관 {f['i20']:+,.0f}주")
             else:
-                flow_text = '수급 미확인/오래됨'
-            st.caption(f'{verdict} | 거래량 {volume_text} | 채널 {channel_text}')
-            st.caption(flow_text)
-st.caption('RS 기준 통과 종목 중 외국인·기관 최근 5일 수급을 우선합니다. 수급 미확인·오래된 데이터는 후순위이며, 거래량·채널은 보조 조건입니다. 매수 지시가 아닙니다.')
+                st.caption('20일 수급 데이터 부족')
+
+st.subheader('매수 관심 · 조건 충족 후보')
+st.caption('부분 표본 RS 90 이상, 최근 5일 외국인·기관 동반 순매수, 거래량 1.2배 이상, 상승채널 양호')
+interested = filtered[filtered.apply(lambda r: candidate_group(r)[0] == '매수 관심', axis=1)]
+if interested.empty:
+    st.info('현재 모든 조건을 충족하는 종목이 없습니다. 기준을 임의로 완화하지 않습니다.')
+else:
+    for i, (_, r) in enumerate(interested.head(top_n).iterrows(), 1):
+        show_candidate(r, i)
+
+st.subheader('관찰 · RS 상위 후보')
+watch = filtered[filtered.apply(lambda r: candidate_group(r)[0] == '관찰', axis=1)]
+if watch.empty:
+    st.caption('관찰 후보 없음')
+else:
+    for i, (_, r) in enumerate(watch.head(top_n).iterrows(), 1):
+        show_candidate(r, i)
+
+with st.expander('주의 · 채널 이탈 종목', expanded=False):
+    caution = filtered[filtered.apply(lambda r: candidate_group(r)[0] == '주의', axis=1)]
+    if caution.empty:
+        st.caption('주의 후보 없음')
+    else:
+        for i, (_, r) in enumerate(caution.head(top_n).iterrows(), 1):
+            show_candidate(r, i)
+st.caption('위 분류는 투자 참고용 기술적 필터입니다. 전체시장 수집 완료 전에는 부분 표본 시험 RS이며 매수 지시가 아닙니다.')
 st.subheader('종목별 상세 차트')
 choices = {f"{r['name']} ({r['ticker']})":r['ticker'] for _,r in ranked.iterrows()}
 selected = st.selectbox('종목 선택', list(choices))
