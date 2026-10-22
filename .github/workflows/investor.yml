@@ -15,7 +15,7 @@ jobs:
     env:
       KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
       KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
-      KIS_FLOW_BATCH_SIZE: '10'
+      KIS_FLOW_BATCH_SIZE: '20'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
