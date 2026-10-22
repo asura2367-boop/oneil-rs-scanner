@@ -13,8 +13,9 @@ st.caption('코스피·코스닥 | 일봉 기준 · 실시간 아님 · IBD 공�
 def universe(day):
     rows=[]
     for market in ['KOSPI','KOSDAQ']:
-        names=stock.get_market_ticker_and_name(day,market=market)
-        rows += [(str(t).zfill(6),n,market) for t,n in names.items()]
+        tickers=stock.get_market_ticker_list(day,market=market)
+        rows += [(str(t).zfill(6),stock.get_market_ticker_name(t),market) for t in tickers]
+    if not rows: raise RuntimeError('코스피·코스닥 종목 목록을 조회하지 못했습니다. 거래일과 데이터 제공 상태를 확인하세요.')
     return pd.DataFrame(rows,columns=['ticker','종목명','시장']).drop_duplicates('ticker').set_index('ticker')
 
 @st.cache_data(ttl=3600)
@@ -72,9 +73,10 @@ try:
         r['가중수익률']=r[['3개월','6개월','9개월','12개월']].dot([.4,.2,.2,.2])
         r['RS']=np.ceil(r['가중수익률'].rank(pct=True)*99).clip(1,99).astype(int)
         selected=r[r.RS>=threshold].copy()
+        if selected.empty: raise RuntimeError('설정한 RS 기준에 맞는 종목이 없습니다.')
         start=(day-timedelta(days=12)).strftime('%Y%m%d')
-        selected['외국인_억원']=flows(start,end,'외국인').reindex(selected.index).fillna(0)
-        selected['기관_억원']=flows(start,end,'기관합계').reindex(selected.index).fillna(0)
+        selected['외국인_억원']=flows(start,end,'외국인').reindex(selected.index)
+        selected['기관_억원']=flows(start,end,'기관합계').reindex(selected.index)
         selected['수급점수']=(selected['외국인_억원']>0).astype(int)+(selected['기관_억원']>0).astype(int)
         start_hist=(day-timedelta(days=150)).strftime('%Y%m%d')
         metrics=[]; progress=st.progress(0)
@@ -99,7 +101,7 @@ try:
         selected=selected.sort_values(['RS','보조점수','가중수익률'],ascending=False)
 except Exception as e:
     st.error(f'실제 데이터 조회 실패: {e}')
-    st.warning('휴장일·API 응답 제한·데이터 제공 방식 변경 가능성이 있습니다. 기준일을 바꿔 다시 시도하세요.')
+    st.warning('데이터 제공 방식 변경 또는 서버 접근 제한일 수 있습니다. 기준일 변경으로 해결되지 않는 API 오류는 코드 수정이 필요합니다.')
     st.stop()
 
 st.success(f'{day} 기준 전체 {len(r):,}개 종목 중 RS {threshold}+ : {len(selected):,}개')
@@ -136,4 +138,4 @@ if not h.empty:
             fig.add_trace(go.Scatter(x=ch['dates'],y=ch[key],name=label,line=dict(dash='dot')))
     fig.update_layout(height=390,xaxis_rangeslider_visible=False,margin=dict(l=5,r=5,t=20,b=5),legend=dict(orientation='h',y=-0.2))
     st.plotly_chart(fig,use_container_width=True)
-st.caption('주의: 수익률 기간은 달력일 근사, 수급은 약 12달력일 합산(정확히 5거래일은 아님). 회귀채널은 통계적 추정이며 수익을 보장하지 않습니다.')
+st.caption('주의: 수익률 기간은 달력일 근사, 수급은 약 12달력일 합산(정확히 5거래일은 아님). 회귀채널은 통계적 추정이며 수익을 보장하지 않습니다. API의 종목·수급 조회 가능 여부는 배포 환경에서 별도 확인이 필요합니다.')
