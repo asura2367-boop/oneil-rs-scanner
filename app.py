@@ -104,6 +104,62 @@ with st.sidebar:
     top_n = st.slider('표시 종목 수',5,30,10,5)
     if st.button('저장 데이터 새로고침'):
         load_csv.clear(); load_status.clear(); st.rerun()
+
+# 별도 pages 라우팅에 의존하지 않는 KIS 수급 연결 테스트
+with st.expander('🔎 외국인·기관 수급 API 연결 테스트 (삼성전자)', expanded=False):
+    st.caption('실전투자 API · 조회 전용 · 주문 기능 없음. 수급 값의 단위와 기간은 API 응답을 확인한 후 적용합니다.')
+    if st.button('삼성전자 수급 조회', key='investor_probe'):
+        import requests
+        try:
+            key = st.secrets.get('KIS_APP_KEY', '')
+            secret = st.secrets.get('KIS_APP_SECRET', '')
+            if not key or not secret:
+                st.error('Streamlit Secrets에 KIS_APP_KEY와 KIS_APP_SECRET이 필요합니다.')
+            else:
+                base = 'https://openapi.koreainvestment.com:9443'
+                with requests.Session() as session:
+                    auth = session.post(base + '/oauth2/tokenP', json={
+                        'grant_type':'client_credentials', 'appkey':key, 'appsecret':secret
+                    }, timeout=20)
+                    if not auth.ok:
+                        st.error(f'토큰 발급 HTTP {auth.status_code}. 연속 재시도하지 말고 API 발급 제한을 확인하세요.')
+                    else:
+                        token = auth.json().get('access_token')
+                        if not token:
+                            st.error('토큰 응답에 access_token이 없습니다.')
+                        else:
+                            resp = session.get(base + '/uapi/domestic-stock/v1/quotations/inquire-investor',
+                                headers={'authorization':f'Bearer {token}', 'appkey':key,
+                                         'appsecret':secret, 'tr_id':'FHKST01010900',
+                                         'content-type':'application/json'},
+                                params={'FID_COND_MRKT_DIV_CODE':'J', 'FID_INPUT_ISCD':'005930'},
+                                timeout=25)
+                            if not resp.ok:
+                                st.error(f'수급 조회 HTTP {resp.status_code}. API 권한·TR ID·호출 제한을 확인하세요.')
+                            else:
+                                payload = resp.json()
+                                st.write('응답 코드:', payload.get('rt_cd', '없음'))
+                                st.write('메시지 코드:', payload.get('msg_cd', '없음'))
+                                st.write('응답 메시지:', str(payload.get('msg1', ''))[:200])
+                                if str(payload.get('rt_cd')) == '0':
+                                    for field in ('output', 'output1', 'output2'):
+                                        value = payload.get(field)
+                                        if value is not None:
+                                            if isinstance(value, list):
+                                                st.write(f'{field}: {len(value)}개 행')
+                                                if value: st.dataframe(pd.DataFrame(value).head(10), use_container_width=True)
+                                            elif isinstance(value, dict):
+                                                st.write(field)
+                                                st.dataframe(pd.DataFrame([value]), use_container_width=True)
+                                else:
+                                    st.warning('수급 API가 성공 응답을 반환하지 않았습니다. 화면의 메시지 코드를 확인하세요.')
+        except requests.RequestException as exc:
+            st.error(f'연결 오류: {type(exc).__name__}. 잠시 후 다시 확인하세요.')
+        except ValueError:
+            st.error('API가 올바른 JSON 응답을 반환하지 않았습니다.')
+        except Exception as exc:
+            st.error(f'테스트 처리 오류: {type(exc).__name__}.')
+
 st.caption('※ RS는 **수집된 종목끼리 비교한 시험 등급**이며 전체시장 RS가 아닙니다. 외국인·기관 수급은 미연동입니다.')
 df, source = load_csv('kis_daily_universe.csv')
 if df is None:
