@@ -104,63 +104,36 @@ with st.sidebar:
     top_n = st.slider('표시 종목 수',5,30,10,5)
     if st.button('저장 데이터 새로고침'):
         load_csv.clear(); load_status.clear(); st.rerun()
+st.caption('※ RS는 수집된 종목끼리 비교한 시험 등급입니다. 외국인·기관 수급은 저장된 종목만 반영하며, 미수집은 미확인입니다.')
 
-# 별도 pages 라우팅에 의존하지 않는 KIS 수급 연결 테스트
-with st.expander('🔎 외국인·기관 수급 API 연결 테스트 (삼성전자)', expanded=False):
-    st.caption('실전투자 API · 조회 전용 · 주문 기능 없음. 수급 값의 단위와 기간은 API 응답을 확인한 후 적용합니다.')
-    if st.button('삼성전자 수급 조회', key='investor_probe'):
-        import requests
-        try:
-            key = st.secrets.get('KIS_APP_KEY', '')
-            secret = st.secrets.get('KIS_APP_SECRET', '')
-            if not key or not secret:
-                st.error('Streamlit Secrets에 KIS_APP_KEY와 KIS_APP_SECRET이 필요합니다.')
-            else:
-                base = 'https://openapi.koreainvestment.com:9443'
-                with requests.Session() as session:
-                    auth = session.post(base + '/oauth2/tokenP', json={
-                        'grant_type':'client_credentials', 'appkey':key, 'appsecret':secret
-                    }, timeout=20)
-                    if not auth.ok:
-                        st.error(f'토큰 발급 HTTP {auth.status_code}. 연속 재시도하지 말고 API 발급 제한을 확인하세요.')
-                    else:
-                        token = auth.json().get('access_token')
-                        if not token:
-                            st.error('토큰 응답에 access_token이 없습니다.')
-                        else:
-                            resp = session.get(base + '/uapi/domestic-stock/v1/quotations/inquire-investor',
-                                headers={'authorization':f'Bearer {token}', 'appkey':key,
-                                         'appsecret':secret, 'tr_id':'FHKST01010900',
-                                         'content-type':'application/json'},
-                                params={'FID_COND_MRKT_DIV_CODE':'J', 'FID_INPUT_ISCD':'005930'},
-                                timeout=25)
-                            if not resp.ok:
-                                st.error(f'수급 조회 HTTP {resp.status_code}. API 권한·TR ID·호출 제한을 확인하세요.')
-                            else:
-                                payload = resp.json()
-                                st.write('응답 코드:', payload.get('rt_cd', '없음'))
-                                st.write('메시지 코드:', payload.get('msg_cd', '없음'))
-                                st.write('응답 메시지:', str(payload.get('msg1', ''))[:200])
-                                if str(payload.get('rt_cd')) == '0':
-                                    for field in ('output', 'output1', 'output2'):
-                                        value = payload.get(field)
-                                        if value is not None:
-                                            if isinstance(value, list):
-                                                st.write(f'{field}: {len(value)}개 행')
-                                                if value: st.dataframe(pd.DataFrame(value).head(10), use_container_width=True)
-                                            elif isinstance(value, dict):
-                                                st.write(field)
-                                                st.dataframe(pd.DataFrame([value]), use_container_width=True)
-                                else:
-                                    st.warning('수급 API가 성공 응답을 반환하지 않았습니다. 화면의 메시지 코드를 확인하세요.')
-        except requests.RequestException as exc:
-            st.error(f'연결 오류: {type(exc).__name__}. 잠시 후 다시 확인하세요.')
-        except ValueError:
-            st.error('API가 올바른 JSON 응답을 반환하지 않았습니다.')
-        except Exception as exc:
-            st.error(f'테스트 처리 오류: {type(exc).__name__}.')
+@st.cache_data(ttl=900, show_spinner=False)
+def load_flow():
+    d, source = load_csv('kis_investor_flow.csv')
+    if d is None: return pd.DataFrame(), source
+    needed = {'ticker','date','foreign_net_qty','institution_net_qty'}
+    if not needed.issubset(d.columns): return pd.DataFrame(), '수급 CSV 열 불일치'
+    d['ticker'] = d['ticker'].astype(str).str.zfill(6)
+    d['date'] = pd.to_datetime(d['date'], errors='coerce')
+    for c in ('foreign_net_qty','institution_net_qty'):
+        d[c] = pd.to_numeric(d[c], errors='coerce')
+    return d.dropna(subset=['date']).sort_values('date').drop_duplicates(['ticker','date'],keep='last'), source
 
-st.caption('※ RS는 **수집된 종목끼리 비교한 시험 등급**이며 전체시장 RS가 아닙니다. 외국인·기관 수급은 미연동입니다.')
+flow, flow_source = load_flow()
+flow_summary = {}
+if not flow.empty:
+    for code, h in flow.groupby('ticker'):
+        h=h.sort_values('date').dropna(subset=['foreign_net_qty','institution_net_qty'])
+        if h.empty: continue
+        last5=h.tail(5)
+        flow_summary[code] = {
+            'n':len(h), 'date':h['date'].max(),
+            'f5':float(last5['foreign_net_qty'].sum()) if len(last5)==5 else None,
+            'i5':float(last5['institution_net_qty'].sum()) if len(last5)==5 else None,
+            'f20':float(h.tail(20)['foreign_net_qty'].sum()) if len(h)>=20 else None,
+            'i20':float(h.tail(20)['institution_net_qty'].sum()) if len(h)>=20 else None,
+        }
+st.caption(f'외국인·기관 수급 저장 종목: {len(flow_summary)}개 · {flow_source}')
+
 df, source = load_csv('kis_daily_universe.csv')
 if df is None:
     st.error('일봉 CSV 조회 실패: data/kis_daily_universe.csv')
@@ -175,10 +148,33 @@ if ranked.empty:
     st.stop()
 latest_date = pd.to_datetime(ranked['date']).max().date()
 st.caption(f'일봉 최신일 {latest_date} · RS 계산 가능 {len(ranked):,}종목 · {source}')
+# RS >= threshold is the eligibility gate; within eligible stocks, prefer
+# recent verified foreign/institution accumulation before technical tie-breakers.
+latest_by_ticker = ranked.set_index('ticker')['date'].to_dict()
+def flow_rank(code):
+    f = flow_summary.get(code)
+    if not f or f['f5'] is None or f['i5'] is None:
+        return (-1, -1, -1)
+    age = (pd.Timestamp(latest_by_ticker[code]) - f['date']).days
+    if age < 0 or age > 7:
+        return (-1, -1, -1)
+    f5, i5 = f['f5'], f['i5']
+    # Signs, not absolute share counts, are compared across companies.
+    both = int(f5 > 0 and i5 > 0)
+    positive = int(f5 > 0) + int(i5 > 0)
+    long_confirm = (int(f['f20'] > 0) + int(f['i20'] > 0)
+                    if f['f20'] is not None and f['i20'] is not None else -1)
+    return (both, positive, long_confirm)
+
+ranked[['flow_both','flow_positive','flow_long']] = pd.DataFrame(
+    [flow_rank(c) for c in ranked['ticker']], index=ranked.index)
+ranked = ranked.sort_values(
+    ['flow_both','flow_positive','flow_long','sample_rs','volume_ratio','channel_good','weighted_return'],
+    ascending=[False,False,False,False,False,False,False])
 filtered = ranked[ranked['sample_rs'] >= threshold].copy()
 if only_good: filtered = filtered[filtered['channel_good']]
 if vol_check: filtered = filtered[filtered['volume_ratio'] >= 1.2]
-st.subheader('추천 후보 TOP 10')
+st.subheader('RS 기준 통과 · 수급 우선 TOP 10')
 if filtered.empty:
     st.warning('조건을 충족하는 종목이 없습니다. 설정을 조정하세요.')
 else:
@@ -202,8 +198,18 @@ else:
             a,b=st.columns([4,1],vertical_alignment='center')
             a.markdown(f'**{i}. {r["name"]}**  ·  `{r["ticker"]}`')
             b.markdown(f'**RS {int(r["sample_rs"])}**')
-            st.caption(f'{verdict}  |  거래량 {volume_text}  |  채널 {channel_text}  |  수급 미확인')
-st.caption('판정은 참고용 기술적 분류이며 매수 지시가 아닙니다. RS 우선 정렬, 거래량·채널은 동점 보조 조건입니다.')
+            f = flow_summary.get(r['ticker'])
+            if f and f['f5'] is not None and f['i5'] is not None and (pd.Timestamp(r['date'])-f['date']).days <= 7:
+                flow_text = f"외국인 5일 {f['f5']:+,.0f}주 · 기관 5일 {f['i5']:+,.0f}주"
+                if f['f20'] is not None:
+                    flow_text += f" · 20일 외국인 {f['f20']:+,.0f}주 / 기관 {f['i20']:+,.0f}주"
+                else:
+                    flow_text += ' · 20일 데이터 부족'
+            else:
+                flow_text = '수급 미확인/오래됨'
+            st.caption(f'{verdict} | 거래량 {volume_text} | 채널 {channel_text}')
+            st.caption(flow_text)
+st.caption('RS 기준 통과 종목 중 외국인·기관 최근 5일 수급을 우선합니다. 수급 미확인·오래된 데이터는 후순위이며, 거래량·채널은 보조 조건입니다. 매수 지시가 아닙니다.')
 st.subheader('종목별 상세 차트')
 choices = {f"{r['name']} ({r['ticker']})":r['ticker'] for _,r in ranked.iterrows()}
 selected = st.selectbox('종목 선택', list(choices))
