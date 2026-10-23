@@ -1,0 +1,31 @@
+name: KIS Balance Read Only (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  balance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate secrets (names only)
+        run: |
+          python - <<'PY'
+          import os,sys
+          names=['KIS_APP_KEY','KIS_APP_SECRET','KIS_ACCOUNT_NO','KIS_ACCOUNT_PRODUCT']
+          missing=[k for k in names if not os.getenv(k)]
+          print('Required secrets configured:',len(names)-len(missing),'/',len(names))
+          if missing: sys.exit('Missing secret names: '+', '.join(missing))
+          PY
+      - name: Query domestic balance (read only)
+        run: python kis_balance_readonly.py
