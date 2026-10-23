@@ -2,7 +2,7 @@
 import os
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as clock_time
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
@@ -166,7 +166,23 @@ def main():
     if existing.empty:
         seed=read_existing(OUT/'kis_daily_30stocks.csv')
         existing=seed
-    today=datetime.now(ZoneInfo('Asia/Seoul')).date()
+    now_kst=datetime.now(ZoneInfo('Asia/Seoul'))
+    today=now_kst.date()
+    # During the session, today's daily candle is provisional. Even after
+    # market close, a zero-volume row must not be treated as a confirmed bar.
+    allow_today = now_kst.time() >= clock_time(16, 0)
+    def confirmed_rows(frame):
+        if frame.empty:
+            return frame
+        dates=pd.to_datetime(frame['date'],errors='coerce').dt.date
+        volume=pd.to_numeric(frame['volume'],errors='coerce')
+        provisional=(dates == today) & ((not allow_today) | volume.isna() | (volume <= 0))
+        if provisional.any():
+            print(f'당일 미확정/거래량 0 일봉 {int(provisional.sum())}행 제외 (원본 API 응답 변경 없음)',flush=True)
+        return frame.loc[~provisional].copy()
+    # Remove provisional rows already committed by previous runs as well.
+    # Historical zero-volume rows remain untouched: they may be real suspensions.
+    existing=confirmed_rows(existing)
     start=today-timedelta(days=410)
     batch_size=max(1,min(int(os.getenv('KIS_BATCH_SIZE','20')),50))
     fresh_days=max(1,int(os.getenv('KIS_FRESH_DAYS','3')))
@@ -188,6 +204,8 @@ def main():
     print(f'이번 배치 신규 {len(new)} / 갱신 {len(refresh)}', flush=True)
     print(f'전체 {len(universe)}개 / 저장 {len(latest)}개 / 미수집 {len(missing)}개 / 이번 {len(batch)}개',flush=True)
     if not batch:
+        if destination.exists():
+            save_atomic(destination,existing)
         write_status(OUT/'collection_status.json', universe, existing, today, 0, 0)
         print('수집 대상 없음.',flush=True)
         return
@@ -198,6 +216,9 @@ def main():
     for code,name in batch:
         try:
             df=fetch_year(session,key,secret,token,code,start,today)
+            df=confirmed_rows(df)
+            if df.empty:
+                raise RuntimeError('확정된 일봉 없음')
             df.insert(0,'ticker',code)
             df.insert(1,'name',name)
             existing=pd.concat([existing,df],ignore_index=True)
@@ -211,7 +232,8 @@ def main():
         if success and (success%5==0):
             save_atomic(destination,existing)
         time.sleep(float(os.getenv('KIS_REQUEST_PAUSE','0.8')))
-    if success:
+    # Persist cleanup even when API calls fail; don't discard other historical bars.
+    if success or destination.exists():
         save_atomic(destination,existing)
     write_status(OUT/'collection_status.json', universe, existing, today, success, len(failures))
     print(f'이번 성공 {success}/{len(batch)}, 실패 {len(failures)}, 전체 저장 종목 {existing.ticker.nunique()}',flush=True)
