@@ -149,6 +149,46 @@ if ranked.empty:
 latest_date = pd.to_datetime(ranked['date']).max().date()
 st.caption(f'일봉 최신일 {latest_date} · RS 계산 가능 {len(ranked):,}종목 · {source}')
 
+# V11: Compare against observed market sessions, not calendar days.
+# The dataset's union of dates is a proxy for the trading calendar; holidays
+# are excluded if no instrument in the collected sample traded on that day.
+def session_lag(date_value, market_sessions):
+    if pd.isna(date_value) or len(market_sessions) == 0:
+        return None
+    day = pd.Timestamp(date_value).normalize()
+    return int(len(market_sessions) - market_sessions.searchsorted(day, side='right'))
+
+price_dates = pd.to_datetime(df['date'], errors='coerce').dropna().dt.normalize()
+market_sessions = pd.DatetimeIndex(sorted(price_dates.unique()))
+price_last = (df.assign(ticker=df['ticker'].astype(str).str.strip().str.zfill(6),
+                        date=pd.to_datetime(df['date'], errors='coerce'))
+                .dropna(subset=['date']).groupby('ticker')['date'].max())
+price_lags = {code: session_lag(day, market_sessions) for code, day in price_last.items()}
+flow_last = flow.groupby('ticker')['date'].max() if not flow.empty else pd.Series(dtype='datetime64[ns]')
+flow_lags = {code: session_lag(day, market_sessions) for code, day in flow_last.items()}
+
+ranked['price_lag'] = ranked['ticker'].map(price_lags)
+ranked_all = ranked.copy()
+# A lag of 3 means three observed market sessions occurred after the stock's last bar.
+ranked = ranked[ranked['price_lag'].notna() & (ranked['price_lag'] < 3)].copy()
+
+with st.expander('🕒 데이터 최신성 관리', expanded=True):
+    st.caption(f'기준 거래일: {market_sessions.max().date()} · 저장된 시장 거래일을 기준으로 계산 (공식 휴장일 캘린더 아님)')
+    a,b,c = st.columns(3)
+    a.metric('일봉 최신', sum(v == 0 for v in price_lags.values()))
+    b.metric('수급 최신', sum(v == 0 for v in flow_lags.values()))
+    c.metric('일봉 3일+ 지연', sum(v is not None and v >= 3 for v in price_lags.values()))
+    st.caption(f'일봉 1~2거래일 지연: {sum(v is not None and 1 <= v < 3 for v in price_lags.values()):,}종목 · 수급 1~2거래일 지연: {sum(v is not None and 1 <= v < 3 for v in flow_lags.values()):,}종목 · 수급 3거래일+ 지연: {sum(v is not None and v >= 3 for v in flow_lags.values()):,}종목')
+    st.caption(f'RS 계산 가능 {len(ranked_all):,}종목 중 일봉 지연으로 추천 제외 {len(ranked_all)-len(ranked):,}종목')
+    delayed = ranked_all[ranked_all['price_lag'] >= 3]
+    if not delayed.empty:
+        st.dataframe(delayed[['ticker','name','date','price_lag']].rename(columns={'ticker':'종목코드','name':'종목명','date':'일봉 최신일','price_lag':'지연 거래일'}).head(30), hide_index=True, use_container_width=True)
+    st.caption('수급 미확인은 수급 파일에 없거나 5거래일 자료가 부족한 경우를 포함합니다. 실제 거래정지 종목은 별도 확인이 필요합니다.')
+if ranked.empty:
+    st.warning('최신성 조건을 충족하는 RS 종목이 없습니다. 데이터 수집 상태를 확인하세요.')
+    st.stop()
+
+
 # V7: unified collection overview; all counts are computed from loaded files.
 with st.expander('📊 일봉·수급 통합 수집 현황', expanded=True):
     daily_codes = set(df['ticker'].astype(str).str.strip().str.zfill(6))
@@ -178,8 +218,8 @@ def flow_rank(code):
     f = flow_summary.get(code)
     if not f or f['f5'] is None or f['i5'] is None:
         return (-1, -1, -1)
-    age = (pd.Timestamp(latest_by_ticker[code]) - f['date']).days
-    if age < 0 or age > 7:
+    age = flow_lags.get(code)
+    if age is None or age < 0 or age >= 3:
         return (-1, -1, -1)
     f5, i5 = f['f5'], f['i5']
     # Signs, not absolute share counts, are compared across companies.
@@ -216,7 +256,7 @@ with st.expander('🔎 수급 데이터 연결 진단', expanded=False):
                          '수급일':str(f['date'].date()), '외국인 5일(주)':f['f5'], '기관 5일(주)':f['i5']})
         st.dataframe(pd.DataFrame(diag), hide_index=True, use_container_width=True)
     with st.container():
-        st.caption('최근 수급은 일봉 최신일 대비 0~7일 차이, 5거래일 자료가 있을 때만 유효로 판정합니다. 전체시장 RS가 아닌 부분 표본 RS입니다.')
+        st.caption('수급은 기준 거래일 대비 0~2거래일 지연, 5거래일 자료가 있을 때만 추천에 사용합니다. 전체시장 RS가 아닌 부분 표본 RS입니다.')
 
 filtered = ranked[ranked['sample_rs'] >= threshold].copy()
 if only_good: filtered = filtered[filtered['channel_good']]
@@ -226,8 +266,8 @@ def flow_details(r):
     f = flow_summary.get(r['ticker'])
     if not f or f['f5'] is None or f['i5'] is None:
         return None
-    age = (pd.Timestamp(r['date']) - f['date']).days
-    if not (0 <= age <= 7):
+    age = flow_lags.get(r['ticker'])
+    if age is None or not (0 <= age < 3):
         return None
     return f
 
@@ -255,9 +295,9 @@ def show_candidate(r, i):
         st.caption(f'채널 위치 {pos*100:.0f}%' if pd.notna(pos) else '채널 위치 미확인')
         f = flow_details(r)
         if f is None:
-            st.caption('외국인·기관 수급 미확인/오래됨')
+            st.caption('외국인·기관 수급 미확인 또는 3거래일 이상 지연')
         else:
-            st.caption(f"외국인 5일 {f['f5']:+,.0f}주 · 기관 5일 {f['i5']:+,.0f}주")
+            st.caption(f"수급 {'최신' if flow_lags.get(r['ticker']) == 0 else '1~2거래일 지연'} · 외국인 5일 {f['f5']:+,.0f}주 · 기관 5일 {f['i5']:+,.0f}주")
             if f['f20'] is not None and f['i20'] is not None:
                 st.caption(f"20일 외국인 {f['f20']:+,.0f}주 · 기관 {f['i20']:+,.0f}주")
             else:
@@ -287,7 +327,7 @@ with st.expander('주의 · 채널 이탈 종목', expanded=False):
     else:
         for i, (_, r) in enumerate(caution.head(top_n).iterrows(), 1):
             show_candidate(r, i)
-st.caption('위 분류는 투자 참고용 기술적 필터입니다. 전체시장 수집 완료 전에는 부분 표본 시험 RS이며 매수 지시가 아닙니다.')
+st.caption('일봉이 3거래일 이상 지연된 종목은 추천에서 제외합니다. 위 분류는 투자 참고용 기술적 필터입니다. 전체시장 수집 완료 전에는 부분 표본 시험 RS이며 매수 지시가 아닙니다.')
 st.subheader('종목별 상세 차트')
 choices = {f"{r['name']} ({r['ticker']})":r['ticker'] for _,r in ranked.iterrows()}
 selected = st.selectbox('종목 선택', list(choices))
