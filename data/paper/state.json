@@ -3,7 +3,22 @@
   "initial_cash": 10000000,
   "cash": 10000000.0,
   "positions": {},
-  "pending": [],
-  "last_processed": "2026-10-22",
-  "session_index": 0
+  "pending": [
+    {
+      "signal_date": "2026-10-23",
+      "side": "BUY",
+      "ticker": "052460",
+      "name": "아이크래프트",
+      "reason": "RS 98 + 수급/거래량/채널"
+    },
+    {
+      "signal_date": "2026-10-23",
+      "side": "BUY",
+      "ticker": "048910",
+      "name": "대원미디어",
+      "reason": "RS 95 + 수급/거래량/채널"
+    }
+  ],
+  "last_processed": "2026-10-23",
+  "session_index": 1
 }
