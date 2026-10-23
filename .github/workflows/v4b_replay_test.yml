@@ -1,0 +1,48 @@
+name: V4-B Paper Replay Test (no orders)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check required files
+        shell: bash
+        run: |
+          test -f paper_v4b_replay.py
+          test -f data/intraday_v4a/quotes_2026-10-23.csv
+      - name: Replay saved quote snapshots (no orders)
+        run: |
+          python paper_v4b_replay.py --quotes data/intraday_v4a/quotes_2026-10-23.csv --output data/paper_v4b_replay
+      - name: Validate replay outputs
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('data/paper_v4b_replay/summary_2026-10-23.json')
+          s=json.loads(p.read_text(encoding='utf-8'))
+          assert s['mode']=='v4b_replay_only'
+          assert s['valid_snapshots']>0
+          assert Path('data/paper_v4b_replay/trades_2026-10-23.csv').exists()
+          print('Valid snapshots:',s['valid_snapshots'])
+          print('Candidate count:',s['candidate_count'])
+          print('Trade count:',s['trade_count'])
+          print('Simulated equity:',s['equity'])
+          PY
+      - name: Upload isolated replay outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4b-replay-2026-10-23
+          path: data/paper_v4b_replay/
+          retention-days: 14
