@@ -1,0 +1,4 @@
+﻿received_at_kst,ticker,price,cumulative_volume,api_code,quote_status
+2026-10-23T13:45:35+09:00,005930,212500,11241757,MCA00000,snapshot_only
+2026-10-23T13:45:36+09:00,022220,773,0,MCA00000,snapshot_only
+2026-10-23T13:45:38+09:00,024950,4710,30816,MCA00000,snapshot_only
