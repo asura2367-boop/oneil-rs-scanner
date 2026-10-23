@@ -11,6 +11,13 @@ DATA=ROOT/'data'; OUT=DATA/'paper'
 STATE=OUT/'state.json'; TRADES=OUT/'trades.csv'; EQUITY=OUT/'equity.csv'
 TC=['date','ticker','name','side','qty','price','cost','cash_change','reason']
 EC=['date','cash','holdings_value','equity','positions','pending']
+COMPARISON=OUT/'signal_comparison.csv'
+CC=['date','original_signals','balanced_signals','additional_signals','original_tickers','balanced_tickers']
+ORIGINAL={'rs':90,'volume':1.2,'channel':.65}
+BALANCED={'rs':85,'volume':1.0,'channel':.75}
+STRATEGY=os.getenv('PAPER_STRATEGY','balanced').lower()
+if STRATEGY not in ('original','balanced'): raise ValueError('PAPER_STRATEGY must be original or balanced')
+
 FEE_BUY=float(os.getenv('PAPER_BUY_FEE','0.00015'))
 FEE_SELL=float(os.getenv('PAPER_SELL_FEE','0.00015'))
 TAX_SELL=float(os.getenv('PAPER_SELL_TAX','0.002'))
@@ -44,7 +51,8 @@ def load_data():
         f=f.dropna(subset=list(required)).sort_values(['ticker','date']).drop_duplicates(['ticker','date'],keep='last')
     return p,f
 
-def signals(day, prices, flows, sessions):
+def signals(day, prices, flows, sessions, config=None):
+    config = (BALANCED if STRATEGY == "balanced" else ORIGINAL) if config is None else config
     rows=[]
     for code,h0 in prices.items():
         h=h0.loc[:day]
@@ -57,10 +65,10 @@ def signals(day, prices, flows, sessions):
         mid=intercept+slope*x; width=max(2*np.std(y-mid),1e-8)
         channel=(y[-1]-mid[-1]+width)/(2*width)
         rows.append({'ticker':code,'name':str(h.name.iloc[-1]),'score':score,
-                     'ratio':ratio,'channel_good':bool(slope>0 and 0<=channel<=.65)})
+                     'ratio':ratio,'channel_position':float(channel),'channel_up':bool(slope>0)})
     if not rows:return []
     df=pd.DataFrame(rows); df['rs']=np.ceil(df.score.rank(pct=True)*99).clip(1,99)
-    df=df[(df.rs>=90)&(df.ratio>=1.2)&df.channel_good]
+    df=df[(df.rs>=config['rs'])&(df.ratio>=config['volume'])&df.channel_up&(df.channel_position>=0)&(df.channel_position<=config['channel'])]
     selected=[]
     for _,r in df.iterrows():
         fh=flows.get(r.ticker)
@@ -73,6 +81,21 @@ def signals(day, prices, flows, sessions):
         if five.foreign_net_qty.sum()>0 and five.institution_net_qty.sum()>0:
             selected.append({'ticker':r.ticker,'name':r['name'],'rs':int(r.rs),'score':float(r.score)})
     return sorted(selected,key=lambda r:(-r['rs'],-r['score'],r['ticker']))
+
+def compare_signals(day, prices, flows, sessions):
+    old=signals(day,prices,flows,sessions,ORIGINAL)
+    new=signals(day,prices,flows,sessions,BALANCED)
+    a={x['ticker'] for x in old}; b={x['ticker'] for x in new}
+    return {'date':day.strftime('%Y-%m-%d'),'original_signals':len(a),
+            'balanced_signals':len(b),'additional_signals':len(b-a),
+            'original_tickers':';'.join(sorted(a)),'balanced_tickers':';'.join(sorted(b))}
+
+def save_comparison(row):
+    path=OUT/'signal_comparison.csv'
+    old=pd.read_csv(path,dtype=str).to_dict('records') if path.exists() else []
+    old=[r for r in old if r['date']!=row['date']]
+    save_csv(path,sorted(old+[row],key=lambda r:r['date']),CC)
+
 
 def main():
     if any(not 0<=v<.1 for v in (FEE_BUY,FEE_SELL,TAX_SELL,SLIP)):raise ValueError('수수료·슬리피지 설정 오류')
@@ -97,7 +120,10 @@ def main():
         todo=[sessions[-1]]
         print('신규 계좌: 과거 거래를 소급 생성하지 않고 마지막 확정 거래일부터 시작')
     if not todo:
-        print('새 거래일 없음: 중복 처리하지 않음');return
+        row=compare_signals(sessions[-1],prices,flows,sessions)
+        save_comparison(row)
+        print(f"새 거래일 없음: 중복 처리하지 않음 / 기존 {row['original_signals']}개, 완화 {row['balanced_signals']}개")
+        return
     for day in todo:
         date=day.strftime('%Y-%m-%d');state['session_index']+=1;idx=state['session_index']
         closes={c:float(h.loc[day,'close']) for c,h in prices.items() if day in h.index and h.loc[day,'volume']>0}
@@ -147,6 +173,9 @@ def main():
             else:continue
             pending.append({'signal_date':date,'side':'SELL','ticker':code,'name':pos['name'],
                             'qty':qty,'reason':reason})
+        row=compare_signals(day,prices,flows,sessions)
+        save_comparison(row)
+        print(f"신호 비교 {date}: 기존 {row['original_signals']} / 완화 {row['balanced_signals']} / 추가 {row['additional_signals']}")
         picks=signals(day,prices,flows,sessions)
         slots=max(0,5-len(state['positions']))
         for pick in picks:
