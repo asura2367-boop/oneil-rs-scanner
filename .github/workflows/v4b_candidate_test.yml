@@ -1,0 +1,25 @@
+name: V4-B Candidate Replay Check (no orders)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  candidate-replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pandas numpy
+      - name: Build strictly pre-session candidates
+        run: python build_v4b_candidates.py --date 2026-10-23
+      - name: Replay saved quotes without broker orders
+        run: python paper_v4b_replay.py --quotes data/intraday_v4a/quotes_2026-10-23.csv --candidates data/v4b/candidates.csv --output data/paper_v4b_replay
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v4b-candidate-replay
+          path: |
+            data/v4b/candidates.csv
+            data/paper_v4b_replay/
