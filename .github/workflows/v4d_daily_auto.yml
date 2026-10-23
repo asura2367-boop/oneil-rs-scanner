@@ -1,0 +1,56 @@
+name: V4-D Safe Daily Paper (no broker orders)
+on:
+  workflow_dispatch:
+  schedule:
+    # 16:30 Korea Standard Time (UTC+9), Monday-Friday; holidays skipped by data gate
+    - cron: '30 7 * * 1-5'
+permissions:
+  contents: write
+concurrency:
+  group: v4c-paper-account-writer
+  cancel-in-progress: false
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Determine Korean date and validate source snapshots
+        id: gate
+        shell: bash
+        run: |
+          DAY=$(TZ=Asia/Seoul date +%F)
+          echo "day=$DAY" >> "$GITHUB_OUTPUT"
+          set +e
+          python v4d_gate.py --day "$DAY" \
+            --quotes "data/intraday_v4a/quotes_${DAY}.csv" \
+            --candidates data/v4b/candidates.csv \
+            --state data/paper_v4c/state.json
+          RC=$?
+          set -e
+          if [ "$RC" -eq 0 ]; then echo 'ready=true' >> "$GITHUB_OUTPUT";
+          elif [ "$RC" -eq 3 ]; then echo 'ready=false' >> "$GITHUB_OUTPUT";
+          else exit "$RC"; fi
+      - name: Process one paper session only
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          python paper_v4c.py \
+            --quotes "data/intraday_v4a/quotes_${{ steps.gate.outputs.day }}.csv" \
+            --candidates data/v4b/candidates.csv \
+            --output data/paper_v4c
+      - name: Commit only V4-C account files
+        if: steps.gate.outputs.ready == 'true'
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- data/paper_v4c/state.json data/paper_v4c/trades.csv data/paper_v4c/equity.csv
+          if ! git diff --cached --quiet; then
+            git commit -m "V4-C paper session ${{ steps.gate.outputs.day }}"
+            git push
+          fi
