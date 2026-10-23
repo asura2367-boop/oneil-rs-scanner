@@ -1,0 +1,24 @@
+{
+  "mode": "v4c_paper_only",
+  "initial_cash": 10000000.0,
+  "cash": 8000663.1044,
+  "positions": {
+    "024950": {
+      "qty": 424,
+      "entry": 4714.709999999999,
+      "partial_done": false,
+      "entry_date": "2026-10-23",
+      "entry_session": 1
+    }
+  },
+  "last_prices": {
+    "005930": 214750.0,
+    "024950": 4750.0
+  },
+  "last_processed_day": "2026-10-23",
+  "session_index": 1,
+  "processed_dates": [
+    "2026-10-23"
+  ],
+  "last_event": "2026-10-23T14:45:07+09:00"
+}
