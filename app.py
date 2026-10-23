@@ -96,8 +96,118 @@ h2,h3{font-size:1.15rem!important;margin-top:.7rem!important}
 [data-testid="stMetricValue"]{font-size:1.35rem!important}
 [data-testid="stVerticalBlockBorderWrapper"]{padding:0!important}
 </style>""", unsafe_allow_html=True)
-st.title('📈 오닐 RS 스캐너 V12')
+st.title('📈 오닐 RS 스캐너 · 모의투자')
 st.caption('한국투자증권 일봉 · 저장 데이터 · 실시간 아님')
+
+# Read-only paper portfolio panel. No brokerage order endpoints are used.
+@st.cache_data(ttl=300, show_spinner=False)
+def load_paper_state():
+    import requests
+    url = RAW + 'paper/state.json'
+    try:
+        response = requests.get(url, timeout=12)
+        response.raise_for_status()
+        obj = response.json()
+        if not isinstance(obj, dict):
+            raise ValueError('state.json 형식 오류')
+        return obj, 'GitHub 최신 파일'
+    except Exception:
+        local = ROOT / 'data' / 'paper' / 'state.json'
+        if local.exists():
+            try:
+                return json.loads(local.read_text(encoding='utf-8-sig')), '배포 시점 파일 (최신 아닐 수 있음)'
+            except Exception:
+                pass
+        return None, '조회 실패'
+
+def paper_number(value, default=0.0):
+    try:
+        n = float(value)
+        return n if np.isfinite(n) else default
+    except (TypeError, ValueError):
+        return default
+
+def paper_positions(state):
+    raw = state.get('positions', {})
+    if isinstance(raw, dict):
+        return [(str(code).zfill(6), pos) for code, pos in raw.items() if isinstance(pos, dict)]
+    if isinstance(raw, list):
+        return [(str(pos.get('ticker', pos.get('code', ''))).zfill(6), pos)
+                for pos in raw if isinstance(pos, dict)]
+    return []
+
+def show_paper_account():
+    with st.expander('💰 모의투자 계좌 · 조회 전용', expanded=True):
+        st.caption('실제 주문 없음 · GitHub에 저장된 가상 계좌를 표시합니다.')
+        state, state_source = load_paper_state()
+        if state is None:
+            st.info('모의 계좌 파일을 불러오지 못했습니다. data/paper/state.json 저장 여부를 확인하세요.')
+            return
+        initial = paper_number(state.get('initial_cash'), 10_000_000)
+        cash = paper_number(state.get('cash'), initial)
+        positions = paper_positions(state)
+        st.caption(f"모드: {state.get('mode', '미확인')} · 마지막 처리: {state.get('last_processed', '미확인')} · {state_source}")
+        # Historical equity is shown only when recorded; no unverified real-time prices.
+        equity, eq_source = load_csv('paper/equity.csv')
+        trades, tr_source = load_csv('paper/trades.csv')
+        total = None
+        date_col = next((c for c in ('date','session','as_of') if equity is not None and c in equity.columns), None)
+        equity_col = next((c for c in ('equity','total_equity','total_assets','portfolio_value','nav') if equity is not None and c in equity.columns), None)
+        if equity is not None and not equity.empty and equity_col:
+            history = equity.copy()
+            history[equity_col] = pd.to_numeric(history[equity_col], errors='coerce')
+            if date_col:
+                history[date_col] = pd.to_datetime(history[date_col], errors='coerce')
+                history = history.sort_values(date_col)
+            history = history.dropna(subset=[equity_col])
+            if not history.empty:
+                total = float(history[equity_col].iloc[-1])
+        if total is None and not positions:
+            total = cash
+        a, b = st.columns(2)
+        a.metric('가상 현금', f'{cash:,.0f}원')
+        b.metric('기록된 총자산', f'{total:,.0f}원' if total is not None else '미확인')
+        c, d = st.columns(2)
+        c.metric('보유 종목', f'{len(positions)}개')
+        d.metric('누적 수익률', f'{(total / initial - 1) * 100:+.2f}%' if total is not None and initial > 0 else '미확인')
+        st.caption(f'초기 가상자금 {initial:,.0f}원 · 대기 주문 {len(state.get("pending", [])) if isinstance(state.get("pending"), list) else "미확인"}건')
+        if positions:
+            pos_rows = []
+            for code, pos in positions:
+                pos_rows.append({'종목코드':code,
+                                 '종목명':pos.get('name', ''),
+                                 '보유 수량':pos.get('qty', pos.get('shares', pos.get('quantity', '미확인'))),
+                                 '매수가':pos.get('entry_price', pos.get('avg_price', pos.get('buy_price', '미확인'))),
+                                 '매수일':pos.get('entry_date', pos.get('buy_date', '미확인'))})
+            st.markdown('**가상 보유 종목**')
+            st.dataframe(pd.DataFrame(pos_rows), hide_index=True, use_container_width=True)
+            st.caption('현재가·평가손익은 기록된 총자산과 다를 수 있으므로 미검증 시 표시하지 않습니다.')
+        else:
+            st.info('현재 가상 보유 종목이 없습니다. 매수 조건을 충족할 때까지 현금을 유지합니다.')
+        if equity is not None and not equity.empty:
+            st.markdown('**가상 자산 변화**')
+            if date_col and equity_col:
+                chart = equity.copy()
+                chart[date_col] = pd.to_datetime(chart[date_col], errors='coerce')
+                chart[equity_col] = pd.to_numeric(chart[equity_col], errors='coerce')
+                chart = chart.dropna(subset=[date_col,equity_col]).sort_values(date_col)
+                if not chart.empty:
+                    st.line_chart(chart.set_index(date_col)[equity_col])
+                else:
+                    st.caption('차트로 표시할 수 있는 자산 기록이 없습니다.')
+            else:
+                st.caption('자산 기록은 있지만 날짜·총자산 열 이름을 확인해야 합니다.')
+            with st.expander('가상 자산 원본 기록'):
+                st.dataframe(equity.tail(30), hide_index=True, use_container_width=True)
+        if trades is not None and not trades.empty:
+            st.markdown('**모의 매매 내역**')
+            st.dataframe(trades.tail(30).iloc[::-1], hide_index=True, use_container_width=True)
+        else:
+            st.caption('아직 기록된 모의 매수·매도가 없습니다.')
+        st.caption(f'자산 데이터: {eq_source} · 매매 내역: {tr_source} · 최대 5분 캐시. 이 화면은 거래를 실행하지 않습니다.')
+
+show_paper_account()
+
 status, status_source = load_status()
 if status:
     total = int(status.get('universe_total',0))
@@ -115,7 +225,7 @@ with st.sidebar:
     vol_check = st.checkbox('거래량 1.2배 이상만 표시',False)
     top_n = st.slider('표시 종목 수',5,30,10,5)
     if st.button('저장 데이터 새로고침'):
-        load_csv.clear(); load_status.clear(); st.rerun()
+        load_csv.clear(); load_status.clear(); load_paper_state.clear(); st.rerun()
 st.caption('※ RS는 수집된 종목끼리 비교한 시험 등급입니다. 외국인·기관 수급은 저장된 종목만 반영하며, 미수집은 미확인입니다.')
 
 @st.cache_data(ttl=900, show_spinner=False)
