@@ -1,0 +1,74 @@
+name: V10 Extra Market Data Collection (no orders)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # UTC 01:00,04:00,12:00 = KST 10:00,13:00,21:00 weekdays
+    # V9 already runs 18:30 KST. GitHub schedules can be delayed/skipped.
+    - cron: '0 1,4,12 * * 1-5'
+
+permissions:
+  contents: write
+
+# Must match update.yml (V9) to prevent simultaneous data writers.
+concurrency:
+  group: kis-collectors
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_BATCH_SIZE: '50'
+      KIS_REFRESH_BATCH_SIZE: '5'
+      KIS_FLOW_BATCH_SIZE: '20'
+      KIS_FLOW_REFRESH_BATCH_SIZE: '3'
+      KIS_REQUEST_PAUSE: '0.8'
+      KIS_FLOW_PAUSE: '0.8'
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Refresh checkout before collection
+        run: git pull --ff-only origin main
+      - name: Collect daily prices (read-only KIS API)
+        run: python build_data.py
+      - name: Commit only daily data and status
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- data/kis_daily_universe.csv data/collection_status.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'V10 extra daily data collection'
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+      - name: Wait between KIS token requests
+        run: sleep 90
+      - name: Collect investor flow (read-only KIS API)
+        run: python build_investor.py
+      - name: Commit only investor flow data
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -- data/kis_investor_flow.csv
+          if ! git diff --cached --quiet; then
+            git commit -m 'V10 extra investor flow collection'
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
