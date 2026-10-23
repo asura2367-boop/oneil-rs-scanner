@@ -57,9 +57,13 @@ def main():
     print('No account identifiers, tokens, position details, or response bodies stored.')
     print('LIVE_ENABLED=false; BUY/SELL API absent; orders sent: 0')
 
-if __name__=='__main__':
-    try: main()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except ValueError:
+        print("READ-ONLY CHECK FAILED: Invalid configuration value or account format")
+        sys.exit(1)
     except Exception as ex:
-        # No exception from URL/HTTP response bodies; avoid printing credentials
-        print('READ-ONLY CHECK FAILED:',type(ex).__name__,file=sys.stderr)
+        print("READ-ONLY CHECK FAILED:", type(ex).__name__)
         sys.exit(1)
