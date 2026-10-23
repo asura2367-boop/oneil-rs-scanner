@@ -87,6 +87,34 @@ class PaperTradingTests(unittest.TestCase):
         self.assertTrue(any('+15%' in str(x) for x in trades.get('reason', [])))
         self.assertEqual(len(state['positions']), 0)
 
+    def test_unfilled_partial_profit_retries_and_marks_only_on_fill(self):
+        self.seed()
+        # Signal on day 2; no quote on day 3; quote resumes on day 4.
+        dates=self.dates
+        prices=[100,109,109,109]+[109]*11
+        daily,flow=self.feed(prices)
+        daily=daily[daily.date != dates[2]].copy()
+        with patch.object(pt,'load_data',return_value=(daily,flow)), patch.object(pt,'signals',return_value=[]):
+            pt.main()
+        trades=pd.read_csv(pt.TRADES)
+        partial=trades[trades.reason.astype(str).str.contains('1차 익절')]
+        self.assertEqual(len(partial),1)
+        self.assertEqual(partial.iloc[0]['date'],dates[3].strftime('%Y-%m-%d'))
+        state=json.loads(pt.STATE.read_text(encoding='utf-8'))
+        self.assertTrue(state['positions'].get('000001',{}).get('partial',False) or
+                        any('10거래일' in str(x) for x in trades.reason))
+
+    def test_unfilled_partial_does_not_mark_complete(self):
+        self.seed()
+        daily,flow=self.feed([100,109]+[109]*13)
+        daily=daily[daily.date <= self.dates[1]].copy()
+        with patch.object(pt,'load_data',return_value=(daily,flow)), patch.object(pt,'signals',return_value=[]):
+            pt.main()
+        state=json.loads(pt.STATE.read_text(encoding='utf-8'))
+        self.assertFalse(state['positions']['000001']['partial'])
+        self.assertEqual(len(state['pending']),1)
+        self.assertEqual(state['pending'][0]['side'],'SELL')
+
     def test_ten_session_exit(self):
         self.seed()
         state, trades = self.run_engine([100]*15)

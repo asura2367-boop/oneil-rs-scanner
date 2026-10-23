@@ -103,14 +103,22 @@ def main():
         closes={c:float(h.loc[day,'close']) for c,h in prices.items() if day in h.index and h.loc[day,'volume']>0}
         due=[o for o in state['pending'] if o['signal_date']<date]
         state['pending']=[o for o in state['pending'] if o['signal_date']>=date]
+        unfilled=[]
         for o in sorted(due,key=lambda o:0 if o['side']=='SELL' else 1):
             code=o['ticker'];pos=state['positions'].get(code)
-            if code not in closes:continue  # missing quote: cancel, do not fabricate fills
+            if code not in closes:
+                # Keep a pending sell until a valid quote becomes available.
+                # Do not pretend that an unfilled take-profit was executed.
+                if o['side']=='SELL' and pos:
+                    unfilled.append(o)
+                continue
             if o['side']=='SELL':
                 if not pos:continue
                 qty=min(int(o['qty']),pos['qty']);fill=closes[code]*(1-SLIP)
                 cost=qty*fill*(FEE_SELL+TAX_SELL);change=qty*fill-cost
                 state['cash']+=change;pos['qty']-=qty
+                if '1차 익절' in o.get('reason','') and qty>0:
+                    pos['partial']=True
                 if pos['qty']==0:del state['positions'][code]
             else:
                 if pos or len(state['positions'])>=5:continue
@@ -126,15 +134,16 @@ def main():
                            'cash_change':round(change,2),'reason':o['reason']})
         for code,pos in state['positions'].items():
             if code in closes:pos['last_close']=closes[code]
-        pending=[]
+        pending=list(unfilled)
         for code,pos in state['positions'].items():
-            if code not in closes:continue
+            if code not in closes or any(o['ticker']==code and o['side']=='SELL' for o in pending):
+                continue
             ret=closes[code]/pos['entry']-1;held=idx-pos['entry_idx']
             if ret<=-.05:reason,qty='손절 신호 -5%',pos['qty']
             elif ret>=.15:reason,qty='익절 신호 +15%',pos['qty']
             elif held>=10:reason,qty='10거래일 청산',pos['qty']
             elif ret>=.08 and not pos['partial']:
-                reason,qty='1차 익절 신호 +8%',max(1,pos['qty']//2);pos['partial']=True
+                reason,qty='1차 익절 신호 +8%',max(1,pos['qty']//2)
             else:continue
             pending.append({'signal_date':date,'side':'SELL','ticker':code,'name':pos['name'],
                             'qty':qty,'reason':reason})
