@@ -1,0 +1,46 @@
+name: V4-D Daily Paper Account (no broker orders)
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: v4d-paper-account-main
+  cancel-in-progress: false
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run existing V4-C regression tests
+        run: python -m unittest -v test_v4c_multiday
+      - name: Validate inputs and candidate file
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f paper_v4c.py
+          test -f data/v4b/candidates.csv || { echo 'Missing pre-session candidate CSV. Refusing to run.'; exit 1; }
+          test -f "data/intraday_v4a/quotes_$(TZ=Asia/Seoul date +%F).csv" || { echo 'Missing today quote CSV. Refusing to run.'; exit 1; }
+      - name: Run V4-C once per date, separately from V3
+        shell: bash
+        run: |
+          set -euo pipefail
+          DAY=$(TZ=Asia/Seoul date +%F)
+          python paper_v4c.py --quotes "data/intraday_v4a/quotes_${DAY}.csv" --candidates data/v4b/candidates.csv --output data/paper_v4c
+      - name: Commit V4-C account only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/paper_v4c/state.json data/paper_v4c/trades.csv data/paper_v4c/equity.csv
+          if git diff --cached --quiet; then echo 'No account changes'; exit 0; fi
+          git commit -m 'Update isolated V4-C paper account'
+          git pull --rebase origin main
+          git push origin HEAD:main
