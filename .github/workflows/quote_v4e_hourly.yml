@@ -1,0 +1,89 @@
+name: V4-E Intraday Quotes (hourly windows, no orders)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # UTC 00:05..06:05 => KST 09:05..15:05, weekdays
+    - cron: '5 0-6 * * 1-5'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v4e-quote-writer
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install requests
+      - name: Collect for 65 minutes, stop by 15:20 KST
+        shell: bash
+        run: |
+          python - <<'PY'
+          import time
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          from quote_collector_v4a import QuoteClient, collect, regular_session
+          zone=ZoneInfo('Asia/Seoul')
+          end=time.monotonic()+65*60
+          last_slot=None
+          client=None
+          try:
+              while time.monotonic()<end:
+                  now=datetime.now(zone)
+                  if now.weekday()>=5 or (now.hour,now.minute)>(15,20):
+                      print('Outside weekday session window; stopping',flush=True)
+                      break
+                  slot=now.strftime('%Y-%m-%d %H:%M')
+                  if regular_session(now) and now.minute%5==0 and slot!=last_slot:
+                      last_slot=slot
+                      if client is None: client=QuoteClient()
+                      print('Snapshot slot',slot,flush=True)
+                      collect(client,['005930','022220','024950'])
+                  time.sleep(8)
+          finally:
+              if client is not None: client.close()
+          PY
+      - name: Merge and commit snapshots only
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import csv,subprocess
+          from pathlib import Path
+          folder=Path('data/intraday_v4a')
+          local={p.name:p.read_bytes() for p in folder.glob('quotes_*.csv')}
+          subprocess.run(['git','fetch','origin','main'],check=True)
+          subprocess.run(['git','reset','--hard','origin/main'],check=True)
+          fields=['received_at_kst','ticker','price','cumulative_volume','api_code','quote_status']
+          for name,data in local.items():
+              import io
+              incoming=list(csv.DictReader(io.StringIO(data.decode('utf-8-sig'))))
+              dest=folder/name
+              current=[]
+              if dest.exists():
+                  with dest.open(encoding='utf-8-sig',newline='') as f:current=list(csv.DictReader(f))
+              combined={ (r['received_at_kst'],r['ticker']):r for r in current+incoming }
+              with dest.open('w',encoding='utf-8-sig',newline='') as f:
+                  w=csv.DictWriter(f,fieldnames=fields);w.writeheader()
+                  w.writerows(sorted(combined.values(),key=lambda r:(r['received_at_kst'],r['ticker'])))
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/intraday_v4a/quotes_*.csv
+          if ! git diff --cached --quiet; then
+            git commit -m 'V4-E merge intraday quote snapshots'
+            git push origin HEAD:main
+          else
+            echo 'No new snapshots'
+          fi
