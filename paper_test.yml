@@ -1,0 +1,28 @@
+name: Oneil RS Paper Trading Tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'paper_trade.py'
+      - 'test_paper_trade.py'
+      - '.github/workflows/paper_test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install numpy pandas
+      - name: Run isolated paper trading tests
+        run: python -m unittest -v test_paper_trade.py
