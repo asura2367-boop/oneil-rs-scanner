@@ -84,7 +84,7 @@ h2,h3{font-size:1.15rem!important;margin-top:.7rem!important}
 [data-testid="stMetricValue"]{font-size:1.35rem!important}
 [data-testid="stVerticalBlockBorderWrapper"]{padding:0!important}
 </style>""", unsafe_allow_html=True)
-st.title('📈 오닐 RS 스캐너')
+st.title('📈 오닐 RS 스캐너 V12')
 st.caption('한국투자증권 일봉 · 저장 데이터 · 실시간 아님')
 status, status_source = load_status()
 if status:
@@ -167,6 +167,22 @@ price_lags = {code: session_lag(day, market_sessions) for code, day in price_las
 flow_last = flow.groupby('ticker')['date'].max() if not flow.empty else pd.Series(dtype='datetime64[ns]')
 flow_lags = {code: session_lag(day, market_sessions) for code, day in flow_last.items()}
 
+def flow_status(code):
+    lag = flow_lags.get(code)
+    f = flow_summary.get(code)
+    if f is None or f['f5'] is None or f['i5'] is None:
+        return '미확인'
+    if lag is None or lag < 0:
+        return '날짜 확인 필요'
+    if lag == 0:
+        return '당일 기준'
+    if lag == 1:
+        return '전 거래일 기준'
+    if lag == 2:
+        return '2거래일 지연'
+    return '3거래일 이상 지연'
+
+
 ranked['price_lag'] = ranked['ticker'].map(price_lags)
 ranked_all = ranked.copy()
 # A lag of 3 means three observed market sessions occurred after the stock's last bar.
@@ -176,14 +192,14 @@ with st.expander('🕒 데이터 최신성 관리', expanded=True):
     st.caption(f'기준 거래일: {market_sessions.max().date()} · 저장된 시장 거래일을 기준으로 계산 (공식 휴장일 캘린더 아님)')
     a,b,c = st.columns(3)
     a.metric('일봉 최신', sum(v == 0 for v in price_lags.values()))
-    b.metric('수급 최신', sum(v == 0 for v in flow_lags.values()))
+    b.metric('수급 당일', sum(flow_status(code) == '당일 기준' for code in flow_summary))
     c.metric('일봉 3일+ 지연', sum(v is not None and v >= 3 for v in price_lags.values()))
-    st.caption(f'일봉 1~2거래일 지연: {sum(v is not None and 1 <= v < 3 for v in price_lags.values()):,}종목 · 수급 1~2거래일 지연: {sum(v is not None and 1 <= v < 3 for v in flow_lags.values()):,}종목 · 수급 3거래일+ 지연: {sum(v is not None and v >= 3 for v in flow_lags.values()):,}종목')
+    st.caption(f'일봉 1~2거래일 지연: {sum(v is not None and 1 <= v < 3 for v in price_lags.values()):,}종목 · 수급 전 거래일: {sum(flow_status(code) == "전 거래일 기준" for code in flow_summary):,}종목 · 수급 2거래일 지연: {sum(flow_status(code) == "2거래일 지연" for code in flow_summary):,}종목 · 수급 3거래일+ 지연: {sum(flow_status(code) == "3거래일 이상 지연" for code in flow_summary):,}종목')
     st.caption(f'RS 계산 가능 {len(ranked_all):,}종목 중 일봉 지연으로 추천 제외 {len(ranked_all)-len(ranked):,}종목')
     delayed = ranked_all[ranked_all['price_lag'] >= 3]
     if not delayed.empty:
         st.dataframe(delayed[['ticker','name','date','price_lag']].rename(columns={'ticker':'종목코드','name':'종목명','date':'일봉 최신일','price_lag':'지연 거래일'}).head(30), hide_index=True, use_container_width=True)
-    st.caption('수급 미확인은 수급 파일에 없거나 5거래일 자료가 부족한 경우를 포함합니다. 실제 거래정지 종목은 별도 확인이 필요합니다.')
+    st.caption('전 거래일 수급은 추천 분석에 사용합니다. 2거래일 지연 수급은 관찰용이며 매수 관심에서는 제외합니다. 3거래일 이상 지연은 추천 수급 평가에 사용하지 않습니다. 실제 거래정지·휴장 여부는 별도 확인이 필요합니다.')
 if ranked.empty:
     st.warning('최신성 조건을 충족하는 RS 종목이 없습니다. 데이터 수집 상태를 확인하세요.')
     st.stop()
@@ -219,7 +235,7 @@ def flow_rank(code):
     if not f or f['f5'] is None or f['i5'] is None:
         return (-1, -1, -1)
     age = flow_lags.get(code)
-    if age is None or age < 0 or age >= 3:
+    if age is None or age < 0 or age >= 2:
         return (-1, -1, -1)
     f5, i5 = f['f5'], f['i5']
     # Signs, not absolute share counts, are compared across companies.
@@ -256,7 +272,7 @@ with st.expander('🔎 수급 데이터 연결 진단', expanded=False):
                          '수급일':str(f['date'].date()), '외국인 5일(주)':f['f5'], '기관 5일(주)':f['i5']})
         st.dataframe(pd.DataFrame(diag), hide_index=True, use_container_width=True)
     with st.container():
-        st.caption('수급은 기준 거래일 대비 0~2거래일 지연, 5거래일 자료가 있을 때만 추천에 사용합니다. 전체시장 RS가 아닌 부분 표본 RS입니다.')
+        st.caption('추천 수급 우선순위에는 당일 또는 전 거래일의 5거래일 수급만 사용합니다. 2거래일 지연 자료는 관찰용으로만 표시합니다. 전체시장 RS가 아닌 부분 표본 RS입니다.')
 
 filtered = ranked[ranked['sample_rs'] >= threshold].copy()
 if only_good: filtered = filtered[filtered['channel_good']]
@@ -278,6 +294,8 @@ def candidate_group(r):
         return '주의', '상승채널 이탈'
     if f is None:
         return '관찰', '수급 미확인 또는 오래됨'
+    if flow_lags.get(r['ticker']) == 2:
+        return '관찰', '수급 2거래일 지연 · 매수 관심 제외'
     if f['f5'] <= 0 or f['i5'] <= 0:
         return '관찰', '외국인·기관 동반 순매수 미충족'
     if not bool(r['channel_good']):
@@ -295,9 +313,9 @@ def show_candidate(r, i):
         st.caption(f'채널 위치 {pos*100:.0f}%' if pd.notna(pos) else '채널 위치 미확인')
         f = flow_details(r)
         if f is None:
-            st.caption('외국인·기관 수급 미확인 또는 3거래일 이상 지연')
+            st.caption(f'수급 {flow_status(r["ticker"])} · 분석 가능한 최신 수급 없음')
         else:
-            st.caption(f"수급 {'최신' if flow_lags.get(r['ticker']) == 0 else '1~2거래일 지연'} · 외국인 5일 {f['f5']:+,.0f}주 · 기관 5일 {f['i5']:+,.0f}주")
+            st.caption(f"수급 {flow_status(r['ticker'])} ({f['date'].date()}) · 외국인 5일 {f['f5']:+,.0f}주 · 기관 5일 {f['i5']:+,.0f}주")
             if f['f20'] is not None and f['i20'] is not None:
                 st.caption(f"20일 외국인 {f['f20']:+,.0f}주 · 기관 {f['i20']:+,.0f}주")
             else:
@@ -327,7 +345,7 @@ with st.expander('주의 · 채널 이탈 종목', expanded=False):
     else:
         for i, (_, r) in enumerate(caution.head(top_n).iterrows(), 1):
             show_candidate(r, i)
-st.caption('일봉이 3거래일 이상 지연된 종목은 추천에서 제외합니다. 위 분류는 투자 참고용 기술적 필터입니다. 전체시장 수집 완료 전에는 부분 표본 시험 RS이며 매수 지시가 아닙니다.')
+st.caption('일봉이 3거래일 이상 지연된 종목은 추천에서 제외하고, 수급 2거래일 지연 종목은 매수 관심에서 제외합니다. 위 분류는 투자 참고용 기술적 필터입니다. 전체시장 수집 완료 전에는 부분 표본 시험 RS이며 매수 지시가 아닙니다.')
 st.subheader('종목별 상세 차트')
 choices = {f"{r['name']} ({r['ticker']})":r['ticker'] for _,r in ranked.iterrows()}
 selected = st.selectbox('종목 선택', list(choices))
