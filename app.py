@@ -59,7 +59,18 @@ def rank_candidates(df):
         score = float(np.dot(returns, [.4,.2,.2,.2]))
         recent = h['volume'].iloc[-1]
         base = h['volume'].iloc[-21:-1].mean()
-        vr = float(recent/base) if pd.notna(base) and base > 0 else np.nan
+        recent_volumes = pd.to_numeric(h['volume'].tail(20), errors='coerce')
+        zero_days_20 = int((recent_volumes == 0).sum())
+        invalid_days_20 = int((recent_volumes.isna() | (recent_volumes < 0)).sum())
+        # Never substitute historical volume for a zero/missing latest observation.
+        volume_issue = ('최신 거래량 0' if pd.notna(recent) and recent == 0 else
+                        '최신 거래량 누락/음수' if pd.isna(recent) or recent < 0 else
+                        '최근 20일 거래량 0 반복' if zero_days_20 >= 3 else
+                        '최근 20일 거래량 누락/음수' if invalid_days_20 else '')
+        vr = (float(recent/base) if not volume_issue and pd.notna(base) and base > 0
+              else np.nan)
+        if not volume_issue and (pd.isna(base) or base <= 0):
+            volume_issue = '20일 평균 거래량 계산 불가'
         y = np.log(p[-60:]); x = np.arange(60)
         slope, intercept = np.polyfit(x,y,1)
         mid = intercept + slope*x
@@ -67,7 +78,8 @@ def rank_candidates(df):
         position = float((y[-1]-mid[-1]+width)/(2*width))
         channel_good = bool(slope>0 and 0 <= position <= .65)
         rows.append({'ticker':ticker,'name':str(h['name'].iloc[-1]),'date':h['date'].iloc[-1],
-                     'weighted_return':score,'volume_ratio':vr,'channel_position':position,
+                     'weighted_return':score,'volume_ratio':vr,'volume_issue':volume_issue,
+                     'zero_days_20':zero_days_20,'channel_position':position,
                      'channel_good':channel_good,'r3':returns[0],'r6':returns[1],
                      'r9':returns[2],'r12':returns[3]})
         histories[ticker] = h
@@ -290,6 +302,8 @@ def flow_details(r):
 def candidate_group(r):
     f = flow_details(r)
     ratio, pos = r['volume_ratio'], r['channel_position']
+    if r['volume_issue']:
+        return '주의', '거래량 확인 필요 · ' + str(r['volume_issue'])
     if pd.notna(pos) and (pos < 0 or pos > 1):
         return '주의', '상승채널 이탈'
     if f is None:
@@ -309,7 +323,9 @@ def show_candidate(r, i):
     ratio, pos = r['volume_ratio'], r['channel_position']
     with st.container(border=True):
         st.markdown(f'**{i}. {r["name"]}** · `{r["ticker"]}` · **RS {int(r["sample_rs"])}**')
-        st.caption(f'{group} · {reason} | 거래량 {ratio:.2f}배' if pd.notna(ratio) else f'{group} · {reason} | 거래량 미확인')
+        st.caption(f'{group} · {reason} | 거래량 {ratio:.2f}배' if pd.notna(ratio) else f'{group} · {reason} | 거래량 평가 제외')
+        if r['volume_issue']:
+            st.warning(f'거래량 확인 필요: {r["volume_issue"]} · 최근 20일 거래량 0인 날 {int(r["zero_days_20"])}일. 실제 거래정지 여부는 별도 확인 필요')
         st.caption(f'채널 위치 {pos*100:.0f}%' if pd.notna(pos) else '채널 위치 미확인')
         f = flow_details(r)
         if f is None:
@@ -320,6 +336,16 @@ def show_candidate(r, i):
                 st.caption(f"20일 외국인 {f['f20']:+,.0f}주 · 기관 {f['i20']:+,.0f}주")
             else:
                 st.caption('20일 수급 데이터 부족')
+
+with st.expander('🔎 거래량 데이터 품질 점검', expanded=False):
+    bad = ranked[ranked['volume_issue'].astype(str).ne('')]
+    st.write(f'거래량 확인 필요: {len(bad):,}종목 / RS 계산 가능 {len(ranked):,}종목')
+    if not bad.empty:
+        st.dataframe(bad[['ticker','name','date','volume_issue','zero_days_20']].rename(
+            columns={'ticker':'종목코드','name':'종목명','date':'일봉 최신일',
+                     'volume_issue':'문제','zero_days_20':'최근 20일 거래량 0일 수'}),
+            hide_index=True, use_container_width=True)
+    st.caption('거래량 0이 반드시 거래정지를 뜻하지는 않습니다. 데이터 제공 오류와 실제 거래정지는 별도 확인해야 합니다.')
 
 st.subheader('매수 관심 · 조건 충족 후보')
 st.caption('부분 표본 RS 90 이상, 최근 5일 외국인·기관 동반 순매수, 거래량 1.2배 이상, 상승채널 양호')
@@ -338,7 +364,7 @@ else:
     for i, (_, r) in enumerate(watch.head(top_n).iterrows(), 1):
         show_candidate(r, i)
 
-with st.expander('주의 · 채널 이탈 종목', expanded=False):
+with st.expander('주의 · 채널 이탈/거래량 확인 필요', expanded=False):
     caution = filtered[filtered.apply(lambda r: candidate_group(r)[0] == '주의', axis=1)]
     if caution.empty:
         st.caption('주의 후보 없음')
