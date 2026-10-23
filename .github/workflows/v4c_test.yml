@@ -1,0 +1,31 @@
+name: V4-C Isolated Paper Test (no orders)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check V4-C syntax
+        run: python -m py_compile paper_v4c.py
+      - name: Run isolated replay with saved snapshots
+        run: |
+          python paper_v4c.py --quotes data/intraday_v4a/quotes_2026-10-23.csv --output "$RUNNER_TEMP/v4c"
+          python paper_v4c.py --quotes data/intraday_v4a/quotes_2026-10-23.csv --output "$RUNNER_TEMP/v4c"
+          python - "$RUNNER_TEMP/v4c" <<'PY'
+          import json,sys
+          from pathlib import Path
+          d=Path(sys.argv[1]);s=json.loads((d/'state.json').read_text())
+          assert s['initial_cash']==10_000_000
+          assert len(s['processed_dates'])==1
+          print('PASS: persistent account and duplicate-day protection')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v4c-isolated-results
+          path: ${{ runner.temp }}/v4c/
