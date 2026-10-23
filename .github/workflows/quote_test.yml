@@ -1,0 +1,61 @@
+name: V4-A Read-only Quote Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kis-v4a-quote-test
+  cancel-in-progress: false
+
+jobs:
+  quote-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install requests
+      - name: Query 3 stock quotes once (no orders)
+        run: python quote_collector_v4a.py --once --tickers 005930 022220 024950
+      - name: Verify quote snapshot file
+        shell: bash
+        run: |
+          python - <<'PY'
+          import csv
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+          today = datetime.now(ZoneInfo('Asia/Seoul')).date().isoformat()
+          path = Path('data/intraday_v4a') / f'quotes_{today}.csv'
+          if not path.exists():
+              raise SystemExit('FAIL: 오늘 시세 CSV 없음 (API 조회 실패 가능)')
+          with path.open(encoding='utf-8-sig', newline='') as f:
+              rows = list(csv.DictReader(f))
+          found = {row['ticker'] for row in rows if int(row['price']) > 0}
+          expected = {'005930', '022220', '024950'}
+          print(f'저장된 유효 시세 종목: {sorted(found)}')
+          if not expected.issubset(found):
+              raise SystemExit(f'FAIL: 조회 누락 {sorted(expected - found)}')
+          print('PASS: 세 종목 현재가 스냅샷 저장 확인')
+          PY
+      - name: Commit quote snapshot only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/intraday_v4a/quotes_*.csv
+          if ! git diff --cached --quiet; then
+            git commit -m 'Save V4-A quote test snapshot'
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
