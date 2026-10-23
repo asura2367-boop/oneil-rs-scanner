@@ -1,0 +1,79 @@
+name: V4-B Save Pre-session Candidates (no orders)
+on:
+  workflow_dispatch:
+    inputs:
+      trading_date:
+        description: 'Replay date (YYYY-MM-DD), e.g. 2026-10-23'
+        required: true
+        default: '2026-10-23'
+permissions:
+  contents: write
+concurrency:
+  group: v4b-candidate-save-main
+  cancel-in-progress: false
+jobs:
+  save-candidates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install candidate builder dependencies
+        run: python -m pip install pandas numpy
+      - name: Validate input date and source files
+        env:
+          TRADE_DAY: ${{ inputs.trading_date }}
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import date
+          from pathlib import Path
+          d=date.fromisoformat(os.environ['TRADE_DAY'])
+          assert d <= date.today(), 'Future date refused'
+          for f in ('build_v4b_candidates.py','data/kis_daily_universe.csv','data/kis_investor_flow.csv'):
+              assert Path(f).is_file(), f'Missing source file: {f}'
+          print('Validated target:',d)
+          PY
+      - name: Generate strictly pre-session candidates
+        env:
+          TRADE_DAY: ${{ inputs.trading_date }}
+        run: |
+          python build_v4b_candidates.py --date "$TRADE_DAY" --output data/v4b/candidates.csv
+      - name: Validate generated candidate CSV
+        env:
+          TRADE_DAY: ${{ inputs.trading_date }}
+        run: |
+          python - <<'PY'
+          import csv,os
+          from pathlib import Path
+          p=Path('data/v4b/candidates.csv')
+          assert p.is_file(), 'Candidate output missing'
+          with p.open(encoding='utf-8-sig',newline='') as f:
+              reader=csv.DictReader(f)
+              required={'date','ticker','rs','foreign_5d','institution_5d','volume_ratio','channel_position','signal_date'}
+              assert required.issubset(reader.fieldnames or []), 'Missing candidate columns'
+              records=list(reader)
+          for r in records:
+              assert r['date']==os.environ['TRADE_DAY'], 'Wrong target date'
+              assert r['signal_date']<r['date'], 'Lookahead candidate rejected'
+              assert len(r['ticker'])==6, 'Invalid ticker'
+          print('Candidate records:',len(records))
+          PY
+      - name: Commit only candidate file
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- data/v4b/candidates.csv
+          if git diff --cached --quiet; then
+            echo 'No candidate changes'
+            exit 0
+          fi
+          git commit -m 'Save pre-session V4-B candidates'
+          git pull --rebase origin main
+          git push origin HEAD:main
