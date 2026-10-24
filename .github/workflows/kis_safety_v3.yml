@@ -1,0 +1,22 @@
+name: KIS V3 Safety Review (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Read-only V3 safety inspection
+        run: python kis_safety_v3.py
