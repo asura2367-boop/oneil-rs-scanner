@@ -1,0 +1,31 @@
+name: KIS Buying Power Read Only (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check secret presence
+        run: |
+          python - <<'PY'
+          import os,sys
+          keys=('KIS_APP_KEY','KIS_APP_SECRET','KIS_ACCOUNT_NO','KIS_ACCOUNT_PRODUCT')
+          missing=[k for k in keys if not os.getenv(k)]
+          if missing: sys.exit('Missing required secret names: '+', '.join(missing))
+          print('Secrets configured:',len(keys))
+          PY
+      - name: Check buying power and duplicate holdings (NO ORDERS)
+        run: python kis_buying_power_readonly.py
