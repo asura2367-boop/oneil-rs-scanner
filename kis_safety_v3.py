@@ -14,6 +14,7 @@ KST = ZoneInfo('Asia/Seoul')
 CAP = 1_000_000
 STOCK_CAP = 200_000
 # Even after success this program can NEVER place orders.
+STAGE = 'initialization'  # predefined safe stage names only; never log credential contents
 
 def headers(key, secret, token, tr_id):
     return {'authorization': 'Bearer '+token, 'appkey':key,
@@ -104,17 +105,34 @@ def decide(plan,held,unfilled,invested,quote_lookup,power_lookup):
     return answers
 
 def main():
+    global STAGE
+    STAGE = 'credentials_format'
     key,secret,cano,product=credentials() # enforces LIVE_ENABLED=false
     now=dt.datetime.now(KST)
+    STAGE = 'market_session'
+    # Closed weekends / outside regular market hours: NOT an API failure.
+    # No brokerage request and no actionable candidates are produced.
+    # Weekday exchange holidays are handled by quote-date checks (fail closed).
+    if now.weekday() >= 5 or not (dt.time(9,0) <= now.time() < dt.time(15,30)):
+        print('V3 STATUS: MARKET_CLOSED_OR_OUTSIDE_HOURS')
+        print('All candidates: BLOCKED_MARKET_CLOSED; orders sent: 0; LIVE_ENABLED=false')
+        print('No brokerage request performed. Weekday holiday calendar not verified.')
+        return
+    STAGE = 'candidate_plan'
     plan=make_plan(Path('data/paper/state.json'),Path('data/paper/paper_summary.json'))['plans']
     if not plan:
         print('V3 READ ONLY: no pending candidates; orders sent: 0'); return
+    STAGE = 'authentication'
     auth=request('POST','/oauth2/tokenP',{'grant_type':'client_credentials','appkey':key,'appsecret':secret})
     token=auth.get('access_token')
     if not token: raise RuntimeError('Authentication failed')
+    STAGE = 'balance'
     held=get_balance(key,secret,cano,product,token)
+    STAGE = 'valuation'
     invested=balance_valuation(key,secret,cano,product,token)
+    STAGE = 'unfilled_orders'
     unfilled=unfilled_codes(key,secret,cano,product,token)
+    STAGE = 'quote_and_buying_power'
     answers=decide(plan,held,unfilled,invested,
         lambda t:current_quote(key,secret,token,t,now),
         lambda t,p:get_buying_power(key,secret,cano,product,token,t,p))
@@ -128,5 +146,5 @@ def main():
 if __name__=='__main__':
     try: main()
     except Exception as ex:
-        print('V3 SAFETY CHECK FAILED:',type(ex).__name__,'(all candidates blocked)',file=sys.stderr)
+        print('V3 STATUS: BLOCKED_API_OR_DATA_ERROR; stage='+STAGE+'; error_type='+type(ex).__name__+'; orders sent: 0',file=sys.stderr)
         sys.exit(1)
