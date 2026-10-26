@@ -1,0 +1,28 @@
+name: KIS V4.7 Daily Loss Fail Closed (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  risk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Unit tests (offline)
+        run: python -m unittest discover -s tests -p 'test_kis_live_v4_7.py' -v
+      - name: Assess evidence (unverified unless securely supplied)
+        run: python kis_live_v4_7.py --report data/live/v4_7_risk_report.json
+      - name: Upload sanitized DENY report
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-7-risk-deny-report
+          path: data/live/v4_7_risk_report.json
+          retention-days: 7
