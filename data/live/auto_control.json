@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "analysis_enabled": false,
+  "analysis_enabled": true,
   "real_order_enabled": false,
   "orders_authorized": false,
-  "changed_utc": "2026-10-26T10:14:32.924439+00:00",
+  "changed_utc": "2026-10-26T10:27:31.628560+00:00",
   "description": "ON schedules read-only analysis only; never submits an order"
 }
