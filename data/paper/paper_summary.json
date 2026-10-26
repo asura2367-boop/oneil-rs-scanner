@@ -1,46 +1,17 @@
 {
-  "report_generated_at_kst": "2026-10-26T17:44:27.892830+09:00",
-  "last_processed": "2026-10-23",
+  "report_generated_at_kst": "2026-10-26T18:16:32.593885+09:00",
+  "last_processed": "2026-10-26",
   "initial_cash": 10000000.0,
-  "cash": 10000000.0,
-  "equity": 10000000.0,
-  "total_return_pct": 0.0,
-  "positions": 0,
-  "pending_orders": 2,
+  "cash": 6013510.2062135,
+  "equity": 9995420.21,
+  "total_return_pct": -0.046,
+  "positions": 2,
+  "pending_orders": 0,
   "closed_lots": 0,
   "wins": 0,
   "win_rate_pct": null,
   "realized_pnl": 0.0,
-  "max_drawdown_pct": 0.0,
+  "max_drawdown_pct": -0.046,
   "estimate_warning": "Pending prices/quantities are indicative only, not live quotes or actual fills.",
-  "pending": [
-    {
-      "signal_date": "2026-10-23",
-      "side": "BUY",
-      "ticker": "052460",
-      "name": "아이크래프트",
-      "reason": "RS 98 + 수급/거래량/채널",
-      "reference_date": "2026-10-23",
-      "reference_close": 5980.0,
-      "indicative_price": 5985.98,
-      "estimated_qty": 334,
-      "estimated_gross": 1999317.32,
-      "estimated_fee": 299.9,
-      "note": "ESTIMATE ONLY; execution depends on next session close and available cash"
-    },
-    {
-      "signal_date": "2026-10-23",
-      "side": "BUY",
-      "ticker": "048910",
-      "name": "대원미디어",
-      "reason": "RS 95 + 수급/거래량/채널",
-      "reference_date": "2026-10-23",
-      "reference_close": 8650.0,
-      "indicative_price": 8658.65,
-      "estimated_qty": 230,
-      "estimated_gross": 1991489.5,
-      "estimated_fee": 298.72,
-      "note": "ESTIMATE ONLY; execution depends on next session close and available cash"
-    }
-  ]
+  "pending": []
 }

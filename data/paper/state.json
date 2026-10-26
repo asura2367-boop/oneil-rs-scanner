@@ -1,24 +1,26 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 10000000.0,
-  "positions": {},
-  "pending": [
-    {
-      "signal_date": "2026-10-23",
-      "side": "BUY",
-      "ticker": "052460",
+  "cash": 6013510.2062135,
+  "positions": {
+    "052460": {
       "name": "아이크래프트",
-      "reason": "RS 98 + 수급/거래량/채널"
+      "qty": 340,
+      "entry": 5865.86,
+      "entry_idx": 2,
+      "partial": false,
+      "last_close": 5860.0
     },
-    {
-      "signal_date": "2026-10-23",
-      "side": "BUY",
-      "ticker": "048910",
+    "048910": {
       "name": "대원미디어",
-      "reason": "RS 95 + 수급/거래량/채널"
+      "qty": 249,
+      "entry": 7997.989999999999,
+      "entry_idx": 2,
+      "partial": false,
+      "last_close": 7990.0
     }
-  ],
-  "last_processed": "2026-10-23",
-  "session_index": 1
+  },
+  "pending": [],
+  "last_processed": "2026-10-26",
+  "session_index": 2
 }

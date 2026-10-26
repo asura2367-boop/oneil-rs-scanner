@@ -1,3 +1,1 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
-2026-10-23,BUY,052460,아이크래프트,RS 98 + 수급/거래량/채널,2026-10-23,5980.0,5985.98,334,1999317.32,299.9,ESTIMATE ONLY; execution depends on next session close and available cash
-2026-10-23,BUY,048910,대원미디어,RS 95 + 수급/거래량/채널,2026-10-23,8650.0,8658.65,230,1991489.5,298.72,ESTIMATE ONLY; execution depends on next session close and available cash
