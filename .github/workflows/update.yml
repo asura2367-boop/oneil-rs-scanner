@@ -3,7 +3,7 @@ name: Update RS data and investor flow V9
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 9 * * 1-5' # 18:30 KST, weekdays (UTC)
+    - cron: '30 9 * * 1-5' # 18:30 KST weekdays
 
 permissions:
   contents: write
@@ -19,42 +19,37 @@ jobs:
     env:
       KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
       KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
       KIS_BATCH_SIZE: '50'
       KIS_FLOW_BATCH_SIZE: '20'
       KIS_REQUEST_PAUSE: '0.8'
       KIS_FLOW_PAUSE: '0.8'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Collect daily prices
-        run: python build_data.py
-      - name: Save daily prices and status
-        if: always()
+        run: |
+          pip install -r requirements.txt
+          pip install 'cryptography>=42,<47'
+      - name: Collect prices and investor flow with single encrypted-cache token
+        run: python collect_shared_token.py
+      - name: Commit collected data only after both succeed
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add data/kis_daily_universe.csv data/collection_status.json
+          git add data/kis_daily_universe.csv data/collection_status.json data/kis_investor_flow.csv
           if ! git diff --cached --quiet; then
-            git commit -m 'Update RS daily prices'
+            git commit -m 'Update RS prices and investor flow with shared token'
             git pull --rebase origin main
-            git push
-          fi
-      - name: Wait before next KIS token request
-        run: sleep 90
-      - name: Collect investor flow
-        run: python build_investor.py
-      - name: Save investor flow
-        if: always()
-        run: |
-          if [ -f data/kis_investor_flow.csv ]; then
-            git add data/kis_investor_flow.csv
-            if ! git diff --cached --quiet; then
-              git commit -m 'Update KIS investor flow'
-              git pull --rebase origin main
-              git push
-            fi
+            git push origin HEAD:main
           fi
