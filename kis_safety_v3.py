@@ -165,32 +165,57 @@ def unfilled_codes(key, secret, cano, product, token):
         fk, nk = new_fk, new_nk
     raise RuntimeError('UNFILLED_05: Page limit reached')
 
-def decide(plan,held,unfilled,invested,quote_lookup,power_lookup):
-    remaining=max(0,CAP-invested)
-    answers=[]
+def decide(plan, held, unfilled, invested, quote_lookup, power_lookup):
+    """Return safe, non-orderable previews with stage-specific failure statuses."""
+    remaining = max(0, CAP - invested)
+    answers = []
     for row in plan:
-        t=row['ticker']; qty=0; amount=0; status='BLOCKED'
-        if t in held: status='BLOCKED_ALREADY_HELD'
-        elif t in unfilled: status='BLOCKED_UNFILLED_ORDER'
-        elif row.get('status')!='PREVIEW_ONLY': status='BLOCKED_SIGNAL_NOT_READY'
-        elif remaining<=0: status='BLOCKED_TOTAL_CAP'
+        t = row['ticker']
+        qty = amount = 0
+        if t in held:
+            status = 'BLOCKED_ALREADY_HELD'
+        elif t in unfilled:
+            status = 'BLOCKED_UNFILLED_ORDER'
+        elif row.get('status') != 'PREVIEW_ONLY':
+            status = 'BLOCKED_SIGNAL_NOT_READY'
+        elif remaining <= 0:
+            status = 'BLOCKED_TOTAL_CAP'
         else:
+            # Never include exception text/API responses in logs: they can be sensitive.
             try:
-                price=quote_lookup(t)
-                reference=unsigned_int(row.get('reference_close'))
-                if not reference or price*100>reference*103:
-                    status='BLOCKED_PRICE_GAP_GT_3PCT'
-                else:
-                    cash,broker_qty=power_lookup(t,price)
-                    qty=min(STOCK_CAP//price,remaining//price,cash//price,broker_qty,
-                            int(row.get('preview_qty') or 0))
-                    if qty>0:
-                        amount=qty*price; remaining-=amount
-                        status='PREVIEW_ELIGIBLE_NO_ORDER'
-                    else: status='BLOCKED_NO_BUYING_POWER'
+                price = quote_lookup(t)
+                if not isinstance(price, int) or isinstance(price, bool) or price <= 0:
+                    raise ValueError('invalid quotation')
             except Exception:
-                status='BLOCKED_DATA_OR_API_FAILURE'
-        answers.append((t,status,qty,amount))
+                status = 'BLOCKED_QUOTE_ERROR'
+            else:
+                reference = unsigned_int(row.get('reference_close'))
+                if not reference:
+                    status = 'BLOCKED_REFERENCE_PRICE_MISSING'
+                elif price * 100 > reference * 103:
+                    status = 'BLOCKED_PRICE_GAP_GT_3PCT'
+                else:
+                    try:
+                        cash, broker_qty = power_lookup(t, price)
+                        if (not isinstance(cash, int) or isinstance(cash, bool) or cash < 0
+                                or not isinstance(broker_qty, int) or isinstance(broker_qty, bool)
+                                or broker_qty < 0):
+                            raise ValueError('invalid buying power')
+                        planned_qty = int(row.get('preview_qty') or 0)
+                        if planned_qty < 0:
+                            raise ValueError('invalid preview quantity')
+                        qty = min(STOCK_CAP // price, remaining // price,
+                                  cash // price, broker_qty, planned_qty)
+                        if qty > 0:
+                            amount = qty * price
+                            remaining -= amount
+                            status = 'PREVIEW_ELIGIBLE_NO_ORDER'
+                        else:
+                            status = 'BLOCKED_NO_BUYING_POWER'
+                    except Exception:
+                        qty = amount = 0
+                        status = 'BLOCKED_BUYING_POWER_ERROR'
+        answers.append((t, status, qty, amount))
     return answers
 
 def main():
@@ -229,6 +254,13 @@ def main():
     for code,status,qty,amount in answers:
         print(code,status,'preview_qty=',qty,'preview_krw=',amount)
     print('CAUTION: REST snapshot is not streaming tick or executable price. NEVER authorizes order.')
+    # A green Actions check must not conceal a complete data/API outage.
+    error_statuses = {'BLOCKED_QUOTE_ERROR', 'BLOCKED_BUYING_POWER_ERROR'}
+    if answers and all(status in error_statuses for _, status, _, _ in answers):
+        print('V3 STATUS: ALL_CANDIDATES_DATA_ERROR; orders_sent=0; LIVE_ENABLED=false',
+              file=sys.stderr)
+        sys.exit(2)
+
 
 if __name__=='__main__':
     try: main()
