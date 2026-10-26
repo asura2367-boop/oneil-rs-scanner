@@ -5,12 +5,14 @@ import datetime as dt
 import json
 import os
 import sys
+from urllib.error import HTTPError, URLError
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from kis_live_v4 import protect, prepare, read_json, SafetyBlock, CAP, PER_STOCK_CAP
 
 KST = ZoneInfo('Asia/Seoul')
+STAGE = 'initialization'  # Explicit, non-sensitive stage labels only
 
 
 def evaluate(intents, now, held, invested, unfilled, quote, power):
@@ -71,16 +73,20 @@ def evaluate(intents, now, held, invested, unfilled, quote, power):
 
 
 def main():
+    global STAGE
+    STAGE = 'initialization'
     parser = argparse.ArgumentParser()
     parser.add_argument('--state', default='data/paper/state.json')
     parser.add_argument('--summary', default='data/paper/paper_summary.json')
     parser.add_argument('--output', default='data/live/v4_1_preflight.json')
     args = parser.parse_args()
+    STAGE = 'safety_guard'
     protect()
     now = dt.datetime.now(KST)
     if now.weekday() >= 5 or not(dt.time(9, 0) <= now.time() < dt.time(15, 30)):
         print('V4.1 BLOCKED_MARKET_CLOSED; orders_sent=0; LIVE_ENABLED=false')
         return
+    STAGE = 'candidate_plan'
     plan = prepare(read_json(args.state), read_json(args.summary), now)
     if not plan['intents']:
         print('V4.1 NO_INTENTS; orders_sent=0; LIVE_ENABLED=false')
@@ -88,14 +94,19 @@ def main():
     # Import ONLY after market and offline input gates. All imported helpers are read-only.
     from kis_buying_power_readonly import credentials, request, get_buying_power
     from kis_safety_v3 import verified_balance_snapshot, unfilled_codes, current_quote
+    STAGE = 'credentials_format'
     key, secret, cano, product = credentials()
+    STAGE = 'authentication'
     auth = request('POST', '/oauth2/tokenP',
                    {'grant_type':'client_credentials', 'appkey':key, 'appsecret':secret})
     token = auth.get('access_token') if isinstance(auth, dict) else None
     if not token:
         raise SafetyBlock('AUTH_UNAVAILABLE')
+    STAGE = 'balance_valuation'
     held, invested = verified_balance_snapshot(key,secret,cano,product,token)
+    STAGE = 'unfilled_orders'
     unfilled = unfilled_codes(key,secret,cano,product,token)
+    STAGE = 'quote_and_buying_power'
     decisions = evaluate(plan['intents'], now, held, invested, unfilled,
                          lambda t: current_quote(key,secret,token,t,now),
                          lambda t,p: get_buying_power(key,secret,cano,product,token,t,p))
@@ -115,10 +126,27 @@ def main():
         raise SafetyBlock('ALL_CANDIDATE_DATA_FAILURE')
 
 
+def safe_diagnostic(exc, stage):
+    """Only whitelist stage and HTTP status; do not render URL, response, token or keys."""
+    known = {'initialization', 'safety_guard', 'candidate_plan',
+             'credentials_format', 'authentication', 'balance_valuation',
+             'unfilled_orders', 'quote_and_buying_power'}
+    stage = stage if stage in known else 'unknown'
+    if isinstance(exc, HTTPError):
+        code = exc.code if type(exc.code) is int and 100 <= exc.code <= 599 else 'unknown'
+        return f'stage={stage}; error_type=HTTPError; http_status={code}'
+    if isinstance(exc, URLError):
+        return f'stage={stage}; error_type=URLError; http_status=none'
+    if isinstance(exc, SafetyBlock):
+        # Do not print exception message: it may not be a trusted constant.
+        return f'stage={stage}; error_type=SafetyBlock; http_status=none'
+    return f'stage={stage}; error_type={type(exc).__name__ if type(exc) in (ValueError, TypeError, RuntimeError, KeyError, OSError) else "Other"}; http_status=none'
+
+
 if __name__ == '__main__':
     try:
         main()
     except Exception as exc:
-        code = str(exc) if isinstance(exc, SafetyBlock) else type(exc).__name__
-        print(f'V4.1 BLOCKED: {code}; orders_sent=0; LIVE_ENABLED=false',file=sys.stderr)
+        print('V4.1 BLOCKED: ' + safe_diagnostic(exc, STAGE) +
+              '; orders_sent=0; LIVE_ENABLED=false', file=sys.stderr)
         sys.exit(1)
