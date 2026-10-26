@@ -22,6 +22,7 @@ HOST = 'https://openapi.koreainvestment.com:9443'
 KST = ZoneInfo('Asia/Seoul')
 ORDER_ID = re.compile(r'^\d{1,20}$')
 TICKER = re.compile(r'^\d{6}$')
+STAGE = 'initialization'  # Safe stage labels only
 
 
 def get_secrets():
@@ -51,8 +52,9 @@ def api(method, path, *, headers=None, params=None, payload=None):
             continuation = response.headers.get('tr_cont')
             content = response.read(1024 * 1024)
     except urllib.error.HTTPError as e:
-        # No response body or URL printed; it may contain private data.
-        raise Blocked('BROKER_HTTP_FAILURE') from None
+        # Only publish a numeric status, never exception text, URL, headers or body.
+        status = e.code if type(e.code) is int and 100 <= e.code <= 599 else 'unknown'
+        raise Blocked('BROKER_HTTP_FAILURE_' + str(status)) from None
     except Exception:
         raise Blocked('BROKER_TRANSPORT_FAILURE') from None
     try:
@@ -189,18 +191,25 @@ def write_report(path, report):
 
 
 def main():
+    global STAGE
+    STAGE = 'configuration'
     parser = argparse.ArgumentParser()
     parser.add_argument('--state', default='data/live/v4_3_state.json')
     parser.add_argument('--report', default='data/live/v4_4_reconcile_report.json')
     args = parser.parse_args()
     key, secret, cano, product = get_secrets()
+    STAGE = 'local_journal'
     state = load_json(args.state)
     # Local structural validation BEFORE any network request.
     reconcile(state, [])
+    STAGE = 'authentication'
     token = token_for(key, secret)
+    STAGE = 'order_history'
     rows = fetch_orders(key, secret, cano, product, token,
                         dt.datetime.now(KST).strftime('%Y%m%d'))
+    STAGE = 'reconciliation'
     report = reconcile(state, rows)
+    STAGE = 'report_write'
     write_report(Path(args.report), report)
     print('V4.4 READ_ONLY_RECONCILIATION_COMPLETE; orders_sent=0; LIVE_ENABLED=false')
     print('intents=', report['intent_count'], 'preview_only=', report['preview_intents_not_linked'])
@@ -212,6 +221,13 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as exc:
-        reason = str(exc) if isinstance(exc, Blocked) else type(exc).__name__
-        print('V4.4 BLOCKED: ' + reason + '; orders_sent=0', file=sys.stderr)
+        # Blocked reasons are locally authored constants; restrict what is emitted.
+        reason = str(exc) if isinstance(exc, Blocked) else 'UNEXPECTED_FAILURE'
+        if not re.fullmatch(r'[A-Z0-9_]{1,80}', reason):
+            reason = 'UNEXPECTED_FAILURE'
+        stage = STAGE if STAGE in ('initialization', 'configuration', 'local_journal',
+                                    'authentication', 'order_history', 'reconciliation',
+                                    'report_write') else 'unknown'
+        print('V4.4 BLOCKED: stage=' + stage + '; error_code=' + reason +
+              '; orders_sent=0; LIVE_ENABLED=false', file=sys.stderr)
         sys.exit(1)
