@@ -1,0 +1,49 @@
+name: KIS V4.8 Daily PnL Evidence Audit (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      offline:
+        description: 'Offline only (no broker calls)'
+        required: true
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: kis-v48-evidence-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install read-only dependencies
+        run: python -m pip install cryptography
+      - name: Test risk audit offline
+        run: python -m unittest discover -s tests -p 'test_kis_live_v4_8.py' -v
+      - name: Audit account evidence without orders
+        env:
+          OFFLINE: ${{ inputs.offline }}
+        run: |
+          if [ "$OFFLINE" = 'true' ]; then
+            python kis_live_v4_8.py --offline
+          else
+            python kis_live_v4_8.py
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v4-8-sanitized-audit
+          path: data/live/v4_8_audit.json
+          retention-days: 3
