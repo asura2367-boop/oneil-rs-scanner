@@ -1,0 +1,45 @@
+name: Oneil V5.0 Evening and EOD Plan (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      reserve_pct:
+        description: 'Safety reserve %, default 40'
+        required: true
+        default: '40'
+      stock_pct:
+        description: 'Per-stock % of trading budget, default 30'
+        required: true
+        default: '30'
+      evening_pct:
+        description: 'Evening new-buy cap % of trading budget, default 30'
+        required: true
+        default: '30'
+      gap_pct:
+        description: 'Evening max rise vs regular close %, default 1'
+        required: true
+        default: '1'
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test with synthetic input
+        run: python -m unittest discover -s tests -p 'test_v5_0.py' -v
+      - name: Review-only budget, evening and EOD plan
+        run: |
+          python oneil_v5_0.py --input example_input.json --output v5_0_report.json \
+            --reserve-pct '${{ inputs.reserve_pct }}' --stock-pct '${{ inputs.stock_pct }}' \
+            --evening-pct '${{ inputs.evening_pct }}' --gap-pct '${{ inputs.gap_pct }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v5-no-orders-synthetic-report
+          path: v5_0_report.json
+          retention-days: 2
