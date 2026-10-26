@@ -106,27 +106,64 @@ def verified_balance_snapshot(key, secret, cano, product, token):
     raise RuntimeError('VALUATION_03_LIMIT: Too many balance pages')
 
 
-def unfilled_codes(key,secret,cano,product,token):
-    codes=set(); fk=''; nk=''; seen=set()
-    for _ in range(10):
-        params={'CANO':cano,'ACNT_PRDT_CD':product,'INQR_DVSN_1':'1',
-                'INQR_DVSN_2':'0','CTX_AREA_FK100':fk,'CTX_AREA_NK100':nk}
-        r=require_ok(request('GET','/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl?'+urlencode(params),
-                             headers=headers(key,secret,token,'TTTC8036R')),'Unfilled orders')
-        rows=r.get('output')
-        if not isinstance(rows,list): raise RuntimeError('Unfilled orders missing')
-        for x in rows:
-            if not isinstance(x,dict): raise RuntimeError('Bad unfilled row')
-            code=str(x.get('pdno','')).strip()
-            if len(code)!=6 or not code.isdigit(): raise RuntimeError('Bad unfilled ticker')
-            # Conservative: any cancellable/unfilled record blocks duplicate purchases.
+def unfilled_codes(key, secret, cano, product, token):
+    """Fail-closed read-only inquiry of ALL amend/cancel eligible orders.
+
+    The response HEADER tr_cont, not the presence of body cursors, controls
+    pagination. Do not interpret a missing/invalid response as no orders.
+    """
+    codes = set()
+    fk = nk = ''
+    seen = set()
+    base = {'CANO': cano, 'ACNT_PRDT_CD': product,
+            'INQR_DVSN_1': '0', 'INQR_DVSN_2': '0'}  # all orders / all sides
+    for page in range(10):
+        params = {**base, 'CTX_AREA_FK100': fk, 'CTX_AREA_NK100': nk}
+        req_headers = headers(key, secret, token, 'TTTC0084R')
+        if page:
+            req_headers['tr_cont'] = 'N'
+        req = urllib.request.Request(
+            'https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl?'
+            + urlencode(params),
+            headers={'Content-Type': 'application/json; charset=utf-8', **req_headers},
+            method='GET')
+        try:
+            with urllib.request.urlopen(req, timeout=20) as response:
+                continuation = response.headers.get('tr_cont')
+                body = json.load(response)
+        except Exception:
+            raise RuntimeError('UNFILLED_01: Query transport or response failure') from None
+        if not isinstance(body, dict):
+            raise RuntimeError('UNFILLED_02: Invalid API response')
+        try:
+            require_ok(body, 'Unfilled orders')
+        except Exception:
+            raise RuntimeError('UNFILLED_02: API rejected inquiry') from None
+        if continuation is None:
+            raise RuntimeError('UNFILLED_03: Continuation header unavailable')
+        continuation = continuation.strip().upper()
+        if continuation not in ('', 'D', 'E', 'F', 'M'):
+            raise RuntimeError('UNFILLED_03: Unexpected continuation header')
+        rows = body.get('output')
+        if not isinstance(rows, list):
+            raise RuntimeError('UNFILLED_04: Orders array missing')
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError('UNFILLED_04: Invalid order record')
+            code = str(row.get('pdno') or '').strip()
+            if len(code) != 6 or not code.isascii() or not code.isdigit():
+                raise RuntimeError('UNFILLED_04: Invalid order instrument')
+            # Include all returned cancellable orders; never silently omit an order.
             codes.add(code)
-        new_fk=str(r.get('ctx_area_fk100') or '').strip()
-        new_nk=str(r.get('ctx_area_nk100') or '').strip()
-        if not new_fk and not new_nk: return codes
-        if (new_fk,new_nk) in seen: raise RuntimeError('Pagination loop')
-        seen.add((new_fk,new_nk)); fk,nk=new_fk,new_nk
-    raise RuntimeError('Unfilled pagination limit')
+        if continuation not in ('F', 'M'):
+            return codes
+        new_fk = str(body.get('ctx_area_fk100') or '').strip()
+        new_nk = str(body.get('ctx_area_nk100') or '').strip()
+        if not new_fk or not new_nk or (new_fk, new_nk) in seen:
+            raise RuntimeError('UNFILLED_05: Missing or repeated pagination cursor')
+        seen.add((new_fk, new_nk))
+        fk, nk = new_fk, new_nk
+    raise RuntimeError('UNFILLED_05: Page limit reached')
 
 def decide(plan,held,unfilled,invested,quote_lookup,power_lookup):
     remaining=max(0,CAP-invested)
@@ -198,10 +235,13 @@ if __name__=='__main__':
     except Exception as ex:
         # Never print exception details or API payloads: they may contain private data.
         allowed_codes = ('VALUATION_01', 'VALUATION_02', 'VALUATION_03_HEADER',
-                         'VALUATION_03_CURSOR', 'VALUATION_03_LIMIT')
+                         'VALUATION_03_CURSOR', 'VALUATION_03_LIMIT',
+                         'UNFILLED_01', 'UNFILLED_02', 'UNFILLED_03',
+                         'UNFILLED_04', 'UNFILLED_05')
         message = str(ex)
         error_code = next((code for code in allowed_codes
-                           if STAGE == 'valuation' and message.startswith(code + ':')),
+                           if STAGE in ('valuation', 'unfilled_orders')
+                           and message.startswith(code + ':')),
                           'UNKNOWN')
         print('V3 STATUS: BLOCKED_API_OR_DATA_ERROR; stage=' + STAGE +
               '; error_code=' + error_code +
