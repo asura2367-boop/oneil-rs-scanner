@@ -1,0 +1,38 @@
+name: KIS V4.9 Capital Allocation Preview (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      reserve_pct:
+        description: 'Safety reserve % of verified available cash (default 40)'
+        type: string
+        required: true
+        default: '40'
+      stock_pct:
+        description: 'Per-stock maximum % of trading budget (default 30)'
+        type: string
+        required: true
+        default: '30'
+permissions:
+  contents: read
+concurrency:
+  group: oneil-v49-budget-preview
+  cancel-in-progress: false
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test budget protection
+        run: PYTHONPATH=. python -m unittest discover -s tests -p 'test_kis_live_v4_9.py' -v
+      - name: Preview allocation using synthetic data ONLY
+        env:
+          RESERVE_PCT: ${{ inputs.reserve_pct }}
+          STOCK_PCT: ${{ inputs.stock_pct }}
+        run: python kis_live_v4_9.py --input example_input.json --reserve-pct "$RESERVE_PCT" --stock-pct "$STOCK_PCT"
