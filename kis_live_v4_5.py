@@ -35,7 +35,7 @@ def evaluate(pre, recon, state, *, now, source_mtime=None, required_newer_than=N
     reasons=[]
     def block(reason):
         if reason not in reasons: reasons.append(reason)
-    if required_newer_than is not None and (not source_mtime or any(v < required_newer_than for v in source_mtime)):
+    if required_newer_than is not None and (not source_mtime or any(v is None or v < required_newer_than for v in source_mtime)):
         block('NOT_SAME_RUN_ARTIFACT')
     if now.weekday() >= 5 or not (dt.time(9,0) <= now.time() < dt.time(15,30)):
         block('OUTSIDE_REGULAR_SESSION')
@@ -86,13 +86,53 @@ def evaluate(pre, recon, state, *, now, source_mtime=None, required_newer_than=N
             'candidate_count':len(seen),'eligible_preview_count':eligible,
             'combined_preview_krw':total,'total_cap_krw':CAP,'per_stock_cap_krw':PER_STOCK}
 
+def safe_source(path, label):
+    """Read a snapshot without treating a missing or malformed file as success."""
+    file = Path(path)
+    try:
+        stat = file.stat()
+        if not file.is_file() or stat.st_size > 2_000_000:
+            return None, None, label + '_INVALID'
+        with file.open(encoding='utf-8') as handle:
+            value = json.load(handle)
+        if not isinstance(value, dict):
+            return None, None, label + '_INVALID'
+        return value, stat.st_mtime, None
+    except FileNotFoundError:
+        return None, None, label + '_MISSING'
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None, None, label + '_INVALID'
+
+
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--preflight',required=True);p.add_argument('--reconcile',required=True);p.add_argument('--state',default='data/live/v4_3_state.json');p.add_argument('--output',default='data/live/v4_5_gate_report.json');p.add_argument('--run-marker',required=True)
-    a=p.parse_args();guard()
-    marker=Path(a.run_marker).stat().st_mtime
-    result=evaluate(read(a.preflight),read(a.reconcile),read(a.state),now=dt.datetime.now(KST),source_mtime=[Path(a.preflight).stat().st_mtime,Path(a.reconcile).stat().st_mtime],required_newer_than=marker)
-    dest=Path(a.output);dest.parent.mkdir(parents=True,exist_ok=True)
-    dest.write_text(json.dumps(result,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+    p=argparse.ArgumentParser()
+    p.add_argument('--preflight',required=True)
+    p.add_argument('--reconcile',required=True)
+    p.add_argument('--state',default='data/live/v4_3_state.json')
+    p.add_argument('--output',default='data/live/v4_5_gate_report.json')
+    p.add_argument('--run-marker',required=True)
+    a=p.parse_args()
+    guard()
+    pre,pre_time,pre_error=safe_source(a.preflight,'PREFLIGHT_REPORT')
+    recon,recon_time,recon_error=safe_source(a.reconcile,'RECONCILIATION_REPORT')
+    state,_,state_error=safe_source(a.state,'STATE_REPORT')
+    try:
+        marker=Path(a.run_marker).stat().st_mtime
+        marker_error=None
+    except OSError:
+        marker=None
+        marker_error='RUN_MARKER_MISSING'
+    # Missing input can never count as a current-run snapshot.
+    result=evaluate(pre,recon,state,now=dt.datetime.now(KST),
+        source_mtime=[pre_time,recon_time] if pre_time is not None and recon_time is not None else None,
+        required_newer_than=marker if marker is not None else float('inf'))
+    errors=[x for x in (pre_error,recon_error,state_error,marker_error) if x]
+    result['reasons']=sorted(set(result['reasons']+errors))
+    dest=Path(a.output)
+    dest.parent.mkdir(parents=True,exist_ok=True)
+    temp=dest.with_name(dest.name+'.tmp')
+    temp.write_text(json.dumps(result,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+    temp.replace(dest)
     print('V4.5 FINAL GATE: DENY; orders_sent=0; LIVE_ENABLED=false')
     print('candidate_count=',result['candidate_count'],'eligible_preview_count=',result['eligible_preview_count'])
     print('block_codes=',','.join(result['reasons']))
