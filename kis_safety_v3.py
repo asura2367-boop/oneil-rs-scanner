@@ -22,20 +22,33 @@ def headers(key, secret, token, tr_id):
     return {'authorization': 'Bearer '+token, 'appkey':key,
             'appsecret':secret,'tr_id':tr_id,'custtype':'P'}
 
-def current_quote(key,secret,token,ticker,now):
-    p={'FID_COND_MRKT_DIV_CODE':'J','FID_INPUT_ISCD':ticker}
-    result=require_ok(request('GET','/uapi/domestic-stock/v1/quotations/inquire-price?'+urlencode(p),
-                              headers=headers(key,secret,token,'FHKST01010100')),'Quote')
-    out=result.get('output')
-    if not isinstance(out,dict): raise RuntimeError('Quote missing')
-    price=unsigned_int(out.get('stck_prpr'))
-    quote_day=str(out.get('stck_bsop_date',''))
-    # API snapshot does not prove exchange-time freshness; do NOT treat as live tick.
-    if now.weekday()>=5 or not (dt.time(9,0)<=now.time()<dt.time(15,30)):
-        raise RuntimeError('Market session not open')
-    if quote_day!=now.strftime('%Y%m%d'):
-        raise RuntimeError('Quote trading date mismatch')
-    if not price: raise RuntimeError('Bad quotation price')
+def current_quote(key, secret, token, ticker, now):
+    """Conservative quote validation with safe, categorized error codes."""
+    p = {'FID_COND_MRKT_DIV_CODE': 'J', 'FID_INPUT_ISCD': ticker}
+    try:
+        result = request('GET', '/uapi/domestic-stock/v1/quotations/inquire-price?'
+                         + urlencode(p),
+                         headers=headers(key, secret, token, 'FHKST01010100'))
+    except Exception:
+        raise RuntimeError('QUOTE_01: Transport or HTTP failure') from None
+    try:
+        result = require_ok(result, 'Quote')
+    except Exception:
+        raise RuntimeError('QUOTE_02: API rejected price inquiry') from None
+    out = result.get('output') if isinstance(result, dict) else None
+    if not isinstance(out, dict):
+        raise RuntimeError('QUOTE_03: Price output missing')
+    price = unsigned_int(out.get('stck_prpr'))
+    if not price:
+        raise RuntimeError('QUOTE_04: Invalid or missing price')
+    quote_day = str(out.get('stck_bsop_date') or '').strip()
+    # Missing quote date is NOT evidence of freshness. Fail closed.
+    if not quote_day:
+        raise RuntimeError('QUOTE_05: Trading date field missing')
+    if quote_day != now.strftime('%Y%m%d'):
+        raise RuntimeError('QUOTE_06: Trading date mismatch')
+    if now.weekday() >= 5 or not (dt.time(9) <= now.time() < dt.time(15, 30)):
+        raise RuntimeError('QUOTE_07: Outside regular market session')
     return price
 
 def verified_balance_snapshot(key, secret, cano, product, token):
@@ -186,8 +199,13 @@ def decide(plan, held, unfilled, invested, quote_lookup, power_lookup):
                 price = quote_lookup(t)
                 if not isinstance(price, int) or isinstance(price, bool) or price <= 0:
                     raise ValueError('invalid quotation')
-            except Exception:
+            except Exception as ex:
                 status = 'BLOCKED_QUOTE_ERROR'
+                allowed = {f'QUOTE_{i:02d}' for i in range(1, 8)}
+                code = str(ex).split(':', 1)[0]
+                safe_code = code if code in allowed else 'QUOTE_UNKNOWN'
+                print('QUOTE_DIAGNOSTIC ticker=' + t + ' error_code=' + safe_code,
+                      file=sys.stderr)
             else:
                 reference = unsigned_int(row.get('reference_close'))
                 if not reference:
