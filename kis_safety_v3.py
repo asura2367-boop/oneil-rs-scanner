@@ -45,13 +45,13 @@ def balance_valuation(key,secret,cano,product,token):
                          headers=headers(key,secret,token,'TTTC8434R')),'Balance')
     summary=r.get('output2')
     if not isinstance(summary,list) or not summary or not isinstance(summary[0],dict):
-        raise RuntimeError('Account evaluation missing')
+        raise RuntimeError('VALUATION_01: Account evaluation missing')
     # Stock evaluation is part of the 1,000,000 KRW strategy limit (conservative: all holdings).
     invested=unsigned_int(summary[0].get('scts_evlu_amt'))
-    if invested is None: raise RuntimeError('Portfolio valuation missing')
+    if invested is None: raise RuntimeError('VALUATION_02: Portfolio valuation missing')
     # Fail closed if holdings continuation is present (V3 does not paginate balance).
     if r.get('tr_cont') in ('F','M') or str(r.get('ctx_area_fk100') or '').strip():
-        raise RuntimeError('Balance pagination not verified')
+        raise RuntimeError('VALUATION_03: Balance pagination not verified')
     return invested
 
 def unfilled_codes(key,secret,cano,product,token):
@@ -146,5 +146,14 @@ def main():
 if __name__=='__main__':
     try: main()
     except Exception as ex:
-        print('V3 STATUS: BLOCKED_API_OR_DATA_ERROR; stage='+STAGE+'; error_type='+type(ex).__name__+'; orders sent: 0',file=sys.stderr)
+        # Never print exception details or API payloads: they may contain private data.
+        allowed_codes = ('VALUATION_01', 'VALUATION_02', 'VALUATION_03')
+        message = str(ex)
+        error_code = next((code for code in allowed_codes
+                           if STAGE == 'valuation' and message.startswith(code + ':')),
+                          'UNKNOWN')
+        print('V3 STATUS: BLOCKED_API_OR_DATA_ERROR; stage=' + STAGE +
+              '; error_code=' + error_code +
+              '; error_type=' + type(ex).__name__ +
+              '; orders_sent=0; LIVE_ENABLED=false', file=sys.stderr)
         sys.exit(1)
