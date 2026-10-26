@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """KIS V3: fail-closed, READ-ONLY trade eligibility preview. NO order endpoint."""
 import datetime as dt
+import json
+import urllib.request
 import os
 import sys
 from pathlib import Path
@@ -36,33 +38,73 @@ def current_quote(key,secret,token,ticker,now):
     if not price: raise RuntimeError('Bad quotation price')
     return price
 
-def balance_valuation(key,secret,cano,product,token):
-    p={'CANO':cano,'ACNT_PRDT_CD':product,'AFHR_FLPR_YN':'N','OFL_YN':'',
-       'INQR_DVSN':'00','UNPR_DVSN':'01','FUND_STTL_ICLD_YN':'N',
-       'FNCG_AMT_AUTO_RDPT_YN':'N','PRCS_DVSN':'00',
-       'CTX_AREA_FK100':'','CTX_AREA_NK100':''}
-    r=require_ok(request('GET','/uapi/domestic-stock/v1/trading/inquire-balance?'+urlencode(p),
-                         headers=headers(key,secret,token,'TTTC8434R')),'Balance')
-    summary=r.get('output2')
-    if not isinstance(summary,list) or not summary or not isinstance(summary[0],dict):
-        raise RuntimeError('VALUATION_01: Account evaluation missing')
-    # Stock evaluation is part of the 1,000,000 KRW strategy limit (conservative: all holdings).
-    invested=unsigned_int(summary[0].get('scts_evlu_amt'))
-    if invested is None: raise RuntimeError('VALUATION_02: Portfolio valuation missing')
-    # Distinguish explicit continuation from an opaque cursor. The official KIS
-    # next-page decision uses the *response header* tr_cont; this wrapper returns
-    # a body dict, so a cursor by itself cannot prove paging has ended.
-    # Keep fail-closed until response-header handling / bounded pagination exists.
-    continuation_flag = r.get('tr_cont') in ('F', 'M')
-    cursor_present = bool(str(r.get('ctx_area_fk100') or '').strip() or
-                          str(r.get('ctx_area_nk100') or '').strip())
-    if continuation_flag and cursor_present:
-        raise RuntimeError('VALUATION_03_BOTH: Continuation and cursor present')
-    if continuation_flag:
-        raise RuntimeError('VALUATION_03_FLAG: Continuation flag present')
-    if cursor_present:
-        raise RuntimeError('VALUATION_03_CURSOR: Cursor present; header not verified')
-    return invested
+def verified_balance_snapshot(key, secret, cano, product, token):
+    """Read all balance pages using the KIS response *header* tr_cont.
+
+    Fail closed on missing/unknown headers, pagination loops, or inconsistent
+    summaries. No account details are logged or written to disk.
+    """
+    fk = nk = ''
+    seen = set()
+    held = set()
+    valuations = []
+    base = {'CANO': cano, 'ACNT_PRDT_CD': product, 'AFHR_FLPR_YN': 'N',
+            'OFL_YN': '', 'INQR_DVSN': '00', 'UNPR_DVSN': '01',
+            'FUND_STTL_ICLD_YN': 'N', 'FNCG_AMT_AUTO_RDPT_YN': 'N',
+            'PRCS_DVSN': '00'}
+    for page in range(10):
+        params = {**base, 'CTX_AREA_FK100': fk, 'CTX_AREA_NK100': nk}
+        path = '/uapi/domestic-stock/v1/trading/inquire-balance?' + urlencode(params)
+        req_headers = headers(key, secret, token, 'TTTC8434R')
+        if page:
+            req_headers['tr_cont'] = 'N'
+        req = urllib.request.Request(
+            'https://openapi.koreainvestment.com:9443' + path,
+            headers={'Content-Type': 'application/json; charset=utf-8', **req_headers},
+            method='GET')
+        with urllib.request.urlopen(req, timeout=20) as response:
+            # Header is essential and not part of the JSON body.
+            continuation = response.headers.get('tr_cont')
+            body = json.load(response)
+        require_ok(body, 'Balance')
+        if continuation is None:
+            raise RuntimeError('VALUATION_03_HEADER: Continuation header unavailable')
+        continuation = continuation.strip().upper()
+        if continuation not in ('', 'D', 'E', 'F', 'M'):
+            raise RuntimeError('VALUATION_03_HEADER: Unknown continuation status')
+        rows = body.get('output1')
+        summaries = body.get('output2')
+        if not isinstance(rows, list):
+            raise RuntimeError('VALUATION_01: Holdings missing')
+        if not isinstance(summaries, list) or not summaries or not isinstance(summaries[0], dict):
+            raise RuntimeError('VALUATION_01: Account evaluation missing')
+        invested = unsigned_int(summaries[0].get('scts_evlu_amt'))
+        if invested is None:
+            raise RuntimeError('VALUATION_02: Portfolio valuation missing')
+        valuations.append(invested)
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError('VALUATION_01: Invalid holding record')
+            qty = unsigned_int(row.get('hldg_qty'))
+            ticker = str(row.get('pdno', '')).strip()
+            if qty is None:
+                raise RuntimeError('VALUATION_01: Invalid held quantity')
+            if qty > 0:
+                if len(ticker) != 6 or not ticker.isascii() or not ticker.isdigit():
+                    raise RuntimeError('VALUATION_01: Invalid holding code')
+                held.add(ticker)
+        if continuation not in ('F', 'M'):
+            if len(set(valuations)) != 1:
+                raise RuntimeError('VALUATION_02: Inconsistent page valuations')
+            return held, valuations[0]
+        fk2 = str(body.get('ctx_area_fk100') or '').strip()
+        nk2 = str(body.get('ctx_area_nk100') or '').strip()
+        if not fk2 or not nk2 or (fk2, nk2) in seen:
+            raise RuntimeError('VALUATION_03_CURSOR: Missing/repeated pagination cursor')
+        seen.add((fk2, nk2))
+        fk, nk = fk2, nk2
+    raise RuntimeError('VALUATION_03_LIMIT: Too many balance pages')
+
 
 def unfilled_codes(key,secret,cano,product,token):
     codes=set(); fk=''; nk=''; seen=set()
@@ -136,10 +178,8 @@ def main():
     auth=request('POST','/oauth2/tokenP',{'grant_type':'client_credentials','appkey':key,'appsecret':secret})
     token=auth.get('access_token')
     if not token: raise RuntimeError('Authentication failed')
-    STAGE = 'balance'
-    held=get_balance(key,secret,cano,product,token)
     STAGE = 'valuation'
-    invested=balance_valuation(key,secret,cano,product,token)
+    held, invested = verified_balance_snapshot(key,secret,cano,product,token)
     STAGE = 'unfilled_orders'
     unfilled=unfilled_codes(key,secret,cano,product,token)
     STAGE = 'quote_and_buying_power'
@@ -157,8 +197,8 @@ if __name__=='__main__':
     try: main()
     except Exception as ex:
         # Never print exception details or API payloads: they may contain private data.
-        allowed_codes = ('VALUATION_01', 'VALUATION_02', 'VALUATION_03_BOTH',
-                         'VALUATION_03_FLAG', 'VALUATION_03_CURSOR')
+        allowed_codes = ('VALUATION_01', 'VALUATION_02', 'VALUATION_03_HEADER',
+                         'VALUATION_03_CURSOR', 'VALUATION_03_LIMIT')
         message = str(ex)
         error_code = next((code for code in allowed_codes
                            if STAGE == 'valuation' and message.startswith(code + ':')),
