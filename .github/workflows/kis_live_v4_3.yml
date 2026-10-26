@@ -1,0 +1,61 @@
+name: KIS V4.3 No-Order State Journal
+on:
+  workflow_dispatch:
+    inputs:
+      emergency_halt:
+        description: 'Permanently block NEW preview intents in V4.3 (true/false)'
+        required: true
+        default: 'false'
+permissions:
+  contents: write
+concurrency:
+  group: kis-v4-2-ledger-main
+  cancel-in-progress: false
+jobs:
+  journal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test no-order journal and transitions
+        run: python -m unittest discover -s tests -p 'test_kis_live_v4_3.py' -v
+      - name: Refresh existing V4.2 journal
+        run: git pull --ff-only origin main
+      - name: Build state snapshot without broker API
+        env:
+          HALT: ${{ inputs.emergency_halt }}
+        run: |
+          if [ "$HALT" = 'true' ]; then
+            python kis_live_v4_3.py --halt
+          elif [ "$HALT" = 'false' ]; then
+            python kis_live_v4_3.py
+          else
+            echo 'Invalid halt input'; exit 1
+          fi
+      - name: Commit state (fails closed on push errors)
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/live/v4_3_state.json
+          if git diff --cached --quiet; then
+            echo 'No state changes'
+          else
+            git commit -m 'Update V4.3 no-order state snapshot'
+            git push origin HEAD:main
+          fi
+      - name: Upload non-sensitive aggregate report
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-3-no-order-report
+          path: data/live/v4_3_report.json
+          retention-days: 3
+          if-no-files-found: error
