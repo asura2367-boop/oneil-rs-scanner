@@ -11,7 +11,7 @@ DATA = Path(__file__).resolve().parent / "data"
 DEST = DATA / "kis_investor_flow.csv"
 FIELDS = ["ticker","date","foreign_net_qty","institution_net_qty","foreign_net_amount_raw","institution_net_amount_raw"]
 
-def main():
+def main(shared_token=None):
     key, secret = os.getenv("KIS_APP_KEY", "").strip(), os.getenv("KIS_APP_SECRET", "").strip()
     if not key or not secret:
         raise RuntimeError("KIS_APP_KEY / KIS_APP_SECRET GitHub Actions Secrets 확인")
@@ -55,10 +55,14 @@ def main():
     if not batch:
         print("수급 최신 상태. 요청 없음."); return
     with requests.Session() as session:
-        auth=session.post(BASE+"/oauth2/tokenP",json={"grant_type":"client_credentials","appkey":key,"appsecret":secret},timeout=25)
-        if not auth.ok: raise RuntimeError(f"토큰 발급 HTTP {auth.status_code}; 발급 제한 확인")
-        token=auth.json().get("access_token")
-        if not token: raise RuntimeError("토큰 응답에 access_token 없음")
+        if shared_token is None:
+            auth=session.post(BASE+"/oauth2/tokenP",json={"grant_type":"client_credentials","appkey":key,"appsecret":secret},timeout=25)
+            if not auth.ok: raise RuntimeError(f"토큰 발급 HTTP {auth.status_code}; 발급 제한 확인")
+            token=auth.json().get("access_token")
+        else:
+            token=shared_token
+        if not isinstance(token,str) or not token or any(c.isspace() for c in token):
+            raise RuntimeError("KIS 토큰 없음 또는 형식 오류")
         frames=[old]; success=0; failed=0
         for code in batch:
             try:

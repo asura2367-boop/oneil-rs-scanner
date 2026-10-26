@@ -153,63 +153,7 @@ def write_status(path, universe, data, today, succeeded, failed):
     tmp.replace(path)
 
 
-def prioritized_symbols(data_dir, universe, today):
-    """Paper pending/holdings first, then same-day V4B candidates; no hard-coded picks."""
-    names = dict(universe)
-    result = []
-    seen = set()
-    def add(code, name=None):
-        code = str(code).strip()
-        if code.isascii() and len(code) == 6 and code.isdigit() and code not in seen:
-            # Avoid dropping a held/pending symbol just because the universe file is stale.
-            resolved = names.get(code) or str(name or '').strip()
-            if resolved:
-                result.append((code, resolved))
-                seen.add(code)
-
-    state_file = data_dir / 'paper' / 'state.json'
-    if state_file.exists():
-        state = json.loads(state_file.read_text(encoding='utf-8'))
-        if not isinstance(state, dict) or state.get('mode') != 'paper_only_v1':
-            raise RuntimeError('Paper 계좌 상태 형식 불일치: 우선 수집 중단')
-        for o in state.get('pending', []):
-            if not isinstance(o, dict):
-                raise RuntimeError('Paper pending 기록 오류')
-            add(o.get('ticker', ''), o.get('name'))
-        positions = state.get('positions', {})
-        if not isinstance(positions, dict):
-            raise RuntimeError('Paper 보유 기록 오류')
-        for code, item in positions.items():
-            add(code, item.get('name') if isinstance(item, dict) else None)
-
-    candidate_file = data_dir / 'v4b' / 'candidates.csv'
-    if candidate_file.exists():
-        df = pd.read_csv(candidate_file, dtype=str, encoding='utf-8-sig').fillna('')
-        if {'ticker', 'date'}.issubset(df.columns):
-            rows = df[df['date'].str.strip() == today.isoformat()]
-            for _, row in rows.iterrows():
-                add(row['ticker'], row.get('name', ''))
-    return result
-
-
-def verify_priority_dates(data, priority, today, require_today):
-    """Check real daily price rows, never infer completeness from a successful API call."""
-    result = {}
-    for code, _ in priority:
-        rows = data[(data['ticker'] == code) & (pd.to_numeric(data['volume'], errors='coerce') > 0)]
-        latest = pd.to_datetime(rows['date'], errors='coerce').max() if not rows.empty else pd.NaT
-        label = latest.strftime('%Y-%m-%d') if pd.notna(latest) else 'MISSING'
-        result[code] = label
-        print(f'PRIORITY DATA: ticker={code}; latest_price_date={label}', flush=True)
-    if require_today:
-        missing = [code for code, day in result.items() if day != today.isoformat()]
-        if missing:
-            raise RuntimeError('PRIORITY_DAILY_MISSING: date=' + today.isoformat()
-                               + '; tickers=' + ','.join(sorted(missing))
-                               + '; paper must remain blocked')
-    return result
-
-def main():
+def main(shared_token=None):
     key=os.getenv('KIS_APP_KEY','').strip()
     secret=os.getenv('KIS_APP_SECRET','').strip()
     if not key or not secret:
@@ -243,35 +187,32 @@ def main():
     batch_size=max(1,min(int(os.getenv('KIS_BATCH_SIZE','20')),50))
     fresh_days=max(1,int(os.getenv('KIS_FRESH_DAYS','3')))
     latest=existing.groupby('ticker')['date'].max().to_dict() if not existing.empty else {}
-    priority = prioritized_symbols(OUT, universe, today)
-    if len(priority) > batch_size:
-        raise RuntimeError(f'우선 수집 종목 {len(priority)}개가 배치 용량 {batch_size}개 초과: 수집 중단')
-    priority_codes = {code for code, _ in priority}
-    print('우선 수집 종목: ' + (','.join(code for code, _ in priority) or '없음'), flush=True)
-    missing=[(code,name) for code,name in universe if code not in latest and code not in priority_codes]
-    stale=[(code,name) for code,name in universe if code in latest and code not in priority_codes
-           and (today-latest[code].date()).days>fresh_days]
-    refresh_quota=max(0,min(int(os.getenv('KIS_REFRESH_BATCH_SIZE','10')),batch_size-len(priority)))
+    # 최초 구축 시 미수집 종목부터 처리. 기존 종목 갱신은 미수집 종목이 없을 때 진행.
+    missing=[(code,name) for code,name in universe if code not in latest]
+    stale=[(code,name) for code,name in universe if code in latest and (today-latest[code].date()).days>fresh_days]
+    # Reserve capacity for stale symbols while continuing new-universe coverage.
+    refresh_quota = max(0, min(int(os.getenv('KIS_REFRESH_BATCH_SIZE', '10')), batch_size))
     stale.sort(key=lambda item: latest[item[0]])
-    refresh=stale[:refresh_quota]
-    new=missing[:batch_size-len(priority)-len(refresh)]
-    if len(priority)+len(new)+len(refresh)<batch_size:
-        new+=missing[len(new):len(new)+(batch_size-len(priority)-len(new)-len(refresh))]
-    if len(priority)+len(new)+len(refresh)<batch_size:
-        refresh+=stale[len(refresh):len(refresh)+(batch_size-len(priority)-len(new)-len(refresh))]
-    batch=priority+new+refresh
+    refresh = stale[:refresh_quota]
+    new = missing[:batch_size-len(refresh)]
+    # If either group is short, fill spare capacity from the other group.
+    if len(new)+len(refresh) < batch_size:
+        new += missing[len(new):len(new)+(batch_size-len(new)-len(refresh))]
+    if len(new)+len(refresh) < batch_size:
+        refresh += stale[len(refresh):len(refresh)+(batch_size-len(new)-len(refresh))]
+    batch = new + refresh
     print(f'이번 배치 신규 {len(new)} / 갱신 {len(refresh)}', flush=True)
     print(f'전체 {len(universe)}개 / 저장 {len(latest)}개 / 미수집 {len(missing)}개 / 이번 {len(batch)}개',flush=True)
     if not batch:
         if destination.exists():
             save_atomic(destination,existing)
         write_status(OUT/'collection_status.json', universe, existing, today, 0, 0)
-        verify_priority_dates(existing, priority, today,
-                              require_today=allow_today and bool(priority))
         print('수집 대상 없음.',flush=True)
         return
     session=requests.Session()
-    token=get_token(session,key,secret)  # 작업당 한 번만 발급. 토큰은 파일/로그에 저장하지 않음
+    token = shared_token if shared_token is not None else get_token(session,key,secret)
+    if not isinstance(token,str) or not token or any(c.isspace() for c in token):
+        raise RuntimeError('KIS 공유 토큰 형식 오류')
     success=0
     failures=[]
     for code,name in batch:
@@ -298,9 +239,6 @@ def main():
         save_atomic(destination,existing)
     write_status(OUT/'collection_status.json', universe, existing, today, success, len(failures))
     print(f'이번 성공 {success}/{len(batch)}, 실패 {len(failures)}, 전체 저장 종목 {existing.ticker.nunique()}',flush=True)
-    # Important: write all historical data first; never approve Paper processing with missing priority quotes.
-    verify_priority_dates(existing, priority, today,
-                          require_today=allow_today and bool(priority))
     if success==0:
         raise RuntimeError('이번 실행 성공 종목 0개. 기존 CSV 보존. API 응답/토큰 발급 제한 확인')
 
