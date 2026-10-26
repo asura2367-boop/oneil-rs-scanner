@@ -1,0 +1,53 @@
+{
+  "as_of": "2026-10-26",
+  "mode": "PAPER_ONLY",
+  "latest_processed": "2026-10-26",
+  "initial_cash": 10000000.0,
+  "cash": 6013510.21,
+  "holdings_value": 3981910.0,
+  "equity": 9995420.21,
+  "daily_pnl_mark_to_market": -4579.79,
+  "daily_return_pct": -0.0458,
+  "cumulative_pnl": -4579.79,
+  "cumulative_return_pct": -0.0458,
+  "trade_count_today": 2,
+  "sell_trade_count_today": 0,
+  "trade_cost_today": 597.88,
+  "realized_pnl_today": null,
+  "realized_pnl_note": "Not computed without a verified per-lot cost-basis ledger; daily PnL is mark-to-market.",
+  "positions": [
+    {
+      "ticker": "048910",
+      "name": "대원미디어",
+      "qty": 249,
+      "last_close": 7990.0,
+      "entry": 7997.99,
+      "unrealized_pnl_before_sell_cost": -1989.51,
+      "unrealized_return_pct": -0.0999
+    },
+    {
+      "ticker": "052460",
+      "name": "아이크래프트",
+      "qty": 340,
+      "last_close": 5860.0,
+      "entry": 5865.86,
+      "unrealized_pnl_before_sell_cost": -1992.4,
+      "unrealized_return_pct": -0.0999
+    }
+  ],
+  "next_session_strategy": {
+    "mode": "REVIEW_ONLY",
+    "pending_orders": [],
+    "checks": [
+      "Confirm priority OHLCV for positions and pending tickers",
+      "Check next-session liquidity, flow, RS and gap before action",
+      "Use reserve/trading/stock caps only for future paper BUYs"
+    ]
+  },
+  "allocation_for_future_buys": {
+    "reserve_pct": 40.0,
+    "trading_pct": 60.0,
+    "stock_pct_of_trading_budget": 30.0
+  },
+  "orders_sent": 0
+}
