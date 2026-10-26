@@ -70,7 +70,7 @@ def orchestrate(root, report, *, use_broker=False, env=None, runner=subprocess.r
                           capture_output=True,text=True,timeout=150)
             observations.append('BROKER_READ_SUCCESS' if result.returncode==0 else 'BROKER_READ_FAILED')
             if result.returncode != 0:
-                observations.append(classify_broker_failure(result.stdout, result.stderr))
+                observations.append(classify_broker_failure(getattr(result, 'stdout', ''), getattr(result, 'stderr', '')))
         except subprocess.TimeoutExpired:
             observations.extend(('BROKER_READ_FAILED', 'BROKER_TIMEOUT'))
         except OSError:
