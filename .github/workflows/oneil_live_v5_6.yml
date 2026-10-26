@@ -1,0 +1,56 @@
+name: Oneil V5.6 Unified Read Only Gate (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      broker_read:
+        description: 'Run KIS account/order READ ONLY checks'
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: write # existing V4.5.2 encrypted cache persists to Git
+concurrency:
+  group: oneil-v5-6-account-read
+  cancel-in-progress: false
+jobs:
+  unified:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+      GITHUB_EVENT_NAME: workflow_dispatch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install read-only dependencies
+        run: python -m pip install cryptography requests pandas numpy
+      - name: Test V5.6 hard deny
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_6.py' -v
+      - name: Unified read only checks
+        env:
+          BROKER_READ: ${{ inputs.broker_read }}
+        run: |
+          if [ "$BROKER_READ" = 'true' ]; then
+            python oneil_live_v5_6.py --broker-read
+          else
+            python oneil_live_v5_6.py
+          fi
+      - name: Upload sanitized report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-6-read-only-report
+          path: v5_6_report.json
+          if-no-files-found: warn
+          retention-days: 3
