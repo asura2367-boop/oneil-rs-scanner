@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-10-26",
+  "broker_cash_verified": false,
+  "positions_verified": false,
+  "unfilled_verified": false,
+  "daily_loss_verified": false,
+  "quotes_fresh_verified": false,
+  "exchange_tradability_verified": false,
+  "broker_history_reconciled": false,
+  "emergency_halt": false,
+  "candidates": [{"ticker":"052460"},{"ticker":"048910"}]
+}
