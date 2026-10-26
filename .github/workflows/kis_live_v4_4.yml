@@ -1,0 +1,35 @@
+name: KIS V4.4 Read-Only Order Reconciliation (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: kis-v4-4-reconcile-readonly
+  cancel-in-progress: false
+jobs:
+  reconciliation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test offline order reconciliation
+        run: python -m unittest discover -s tests -p 'test_kis_live_v4_4.py' -v
+      - name: Read order history and compare without orders
+        run: python kis_live_v4_4.py
+      - name: Upload sanitized aggregate report (not repository commit)
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-4-reconciliation-summary
+          path: data/live/v4_4_reconcile_report.json
+          retention-days: 2
+          if-no-files-found: error
