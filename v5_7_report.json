@@ -1,0 +1,41 @@
+{
+  "version": "5.7",
+  "mode": "SYNTHETIC_NO_ORDER",
+  "session": "REGULAR",
+  "reserve_pct": 40.0,
+  "stock_pct_of_trading_budget": 30.0,
+  "evening_pct_of_trading_budget": 30.0,
+  "synthetic_budget_krw": 600000,
+  "per_stock_cap_krw": 180000,
+  "plans": [
+    {
+      "ticker": "052460",
+      "preview_qty": 29,
+      "preview_cost_krw": 174000,
+      "intent_id": "73e0a9f7037353e350b9",
+      "status": "PREVIEW_ONLY"
+    },
+    {
+      "ticker": "048910",
+      "preview_qty": 22,
+      "preview_cost_krw": 176000,
+      "intent_id": "c82d773828ff5d180469",
+      "status": "PREVIEW_ONLY"
+    }
+  ],
+  "block_codes": [
+    "ACCOUNT_VERIFIED_MISSING",
+    "BROKER_RECONCILIATION_VERIFIED_MISSING",
+    "DAILY_PNL_VERIFIED_MISSING",
+    "EXCHANGE_VERIFIED_MISSING",
+    "ORDER_TRANSMISSION_NOT_IMPLEMENTED",
+    "QUOTE_VERIFIED_MISSING",
+    "SYNTHETIC_INPUT_NOT_BROKER_VERIFIED",
+    "UNFILLED_VERIFIED_MISSING"
+  ],
+  "gate": "DENY",
+  "broker_api_calls": 0,
+  "orders_sent": 0,
+  "LIVE_ENABLED": false,
+  "KIS_ALLOW_ORDER": false
+}
