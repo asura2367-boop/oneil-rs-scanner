@@ -1,0 +1,33 @@
+name: KIS V4.1 Live Account Read-Only Preflight (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Unit tests (offline)
+        run: python -m unittest discover -s tests -p 'test_kis_live_v4_1.py' -v
+      - name: Read-only account preflight (NEVER SEND ORDERS)
+        run: python kis_live_v4_1.py
+      - name: Upload non-sensitive preflight report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kis-v4-1-read-only-preflight
+          path: data/live/v4_1_preflight.json
+          if-no-files-found: ignore
+          retention-days: 3
