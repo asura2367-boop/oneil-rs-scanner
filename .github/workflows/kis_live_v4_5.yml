@@ -1,0 +1,43 @@
+name: KIS V4.5 FINAL GATE (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: kis-v45-safe-gate
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      EMERGENCY_HALT: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Unit tests without broker calls
+        run: python -m unittest discover -s tests -p 'test_kis_live_v4_5.py' -v
+      - name: Mark this run before broker reads
+        run: mkdir -p data/live && touch data/live/v4_5_run_marker
+      - name: Refresh broker read-only preflight
+        run: python kis_live_v4_1.py --output data/live/v4_5_preflight.json
+      - name: Refresh broker read-only order reconciliation
+        run: python kis_live_v4_4.py --report data/live/v4_5_reconcile.json
+      - name: Validate gate and hard deny transmission
+        run: python kis_live_v4_5.py --preflight data/live/v4_5_preflight.json --reconcile data/live/v4_5_reconcile.json --state data/live/v4_3_state.json --output data/live/v4_5_gate_report.json --run-marker data/live/v4_5_run_marker
+      - name: Upload sanitized non-authorizing gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-5-safe-gate
+          path: data/live/v4_5_gate_report.json
+          if-no-files-found: ignore
+          retention-days: 3
