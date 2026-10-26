@@ -1,0 +1,21 @@
+{
+  "halted": false,
+  "intents": {
+    "31a050e7d7c9e5fc766a": {
+      "broker_order_id": null,
+      "filled_qty": 0,
+      "source": "V4_2_PREVIEW",
+      "state": "PREVIEW_ONLY",
+      "ticker": "052460"
+    },
+    "771656c71456dacdf6e7": {
+      "broker_order_id": null,
+      "filled_qty": 0,
+      "source": "V4_2_PREVIEW",
+      "state": "PREVIEW_ONLY",
+      "ticker": "048910"
+    }
+  },
+  "mode": "NO_ORDER_STATE_TRACKER",
+  "schema_version": 1
+}
