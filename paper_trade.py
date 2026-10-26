@@ -22,6 +22,12 @@ FEE_BUY=float(os.getenv('PAPER_BUY_FEE','0.00015'))
 FEE_SELL=float(os.getenv('PAPER_SELL_FEE','0.00015'))
 TAX_SELL=float(os.getenv('PAPER_SELL_TAX','0.002'))
 SLIP=float(os.getenv('PAPER_SLIPPAGE','0.001'))
+# New BUY orders only. Existing holdings and historical fills are never resized.
+RESERVE_PCT=float(os.getenv('PAPER_RESERVE_PCT','40'))
+STOCK_PCT=float(os.getenv('PAPER_STOCK_PCT','30'))
+if not (0 <= RESERVE_PCT <= 100 and 0 < STOCK_PCT <= 100):
+    raise ValueError('PAPER_RESERVE_PCT must be 0..100; PAPER_STOCK_PCT must be >0..100')
+
 
 
 def save_json(path, data):
@@ -97,6 +103,62 @@ def save_comparison(row):
     save_csv(path,sorted(old+[row],key=lambda r:r['date']),CC)
 
 
+
+def create_daily_report(state, trades, equity_rows):
+    """Report only from persisted paper journal. No invented price or trade data."""
+    if not equity_rows or not state.get('last_processed'):
+        return
+    e=sorted(equity_rows,key=lambda x:str(x['date']))
+    today=str(state['last_processed'])
+    latest=next((r for r in reversed(e) if str(r['date'])==today),None)
+    if latest is None:
+        raise RuntimeError('PAPER_REPORT_EQUITY_MISSING')
+    earlier=[r for r in e if str(r['date'])<today]
+    prior_equity=float(earlier[-1]['equity']) if earlier else float(state['initial_cash'])
+    current=float(latest['equity']); init=float(state['initial_cash'])
+    if prior_equity <= 0 or init <= 0:
+        raise RuntimeError('PAPER_REPORT_INVALID_EQUITY')
+    today_trades=[r for r in trades if str(r['date'])==today]
+    # A paper BUY is not a realized trading profit or loss.
+    closed_today=sum(1 for r in today_trades if r['side']=='SELL')
+    fee_today=sum(float(r['cost']) for r in today_trades)
+    pending=[{'ticker':o['ticker'],'name':o.get('name',''),
+              'side':o['side'],'reason':o.get('reason','')}
+             for o in state.get('pending',[])]
+    positions=[]
+    for ticker,pos in sorted(state.get('positions',{}).items()):
+        qty=int(pos['qty']); close=float(pos['last_close']); entry=float(pos['entry'])
+        positions.append({'ticker':ticker,'name':pos.get('name',''), 'qty':qty,
+                          'last_close':round(close,4), 'entry':round(entry,4),
+                          'unrealized_pnl_before_sell_cost':round(qty*(close-entry),2),
+                          'unrealized_return_pct':round((close/entry-1)*100,4) if entry else None})
+    report={
+        'as_of':today,'mode':'PAPER_ONLY','latest_processed':today,
+        'initial_cash':init,'cash':float(latest['cash']),
+        'holdings_value':float(latest['holdings_value']),'equity':current,
+        'daily_pnl_mark_to_market':round(current-prior_equity,2),
+        'daily_return_pct':round((current/prior_equity-1)*100,4),
+        'cumulative_pnl':round(current-init,2),
+        'cumulative_return_pct':round((current/init-1)*100,4),
+        'trade_count_today':len(today_trades),'sell_trade_count_today':closed_today,
+        'trade_cost_today':round(fee_today,2),
+        'realized_pnl_today':None,
+        'realized_pnl_note':'Not computed without a verified per-lot cost-basis ledger; daily PnL is mark-to-market.',
+        'positions':positions,
+        'next_session_strategy':{'mode':'REVIEW_ONLY','pending_orders':pending,
+             'checks':['Confirm priority OHLCV for positions and pending tickers',
+                       'Check next-session liquidity, flow, RS and gap before action',
+                       'Use reserve/trading/stock caps only for future paper BUYs']},
+        'allocation_for_future_buys':{'reserve_pct':RESERVE_PCT,
+             'trading_pct':100-RESERVE_PCT,'stock_pct_of_trading_budget':STOCK_PCT},
+        'orders_sent':0
+    }
+    save_json(OUT/'daily_review.json',report)
+    print(f"PAPER DAILY REVIEW {today}: daily_pnl={report['daily_pnl_mark_to_market']:,.0f} KRW; "
+          f"cumulative_pct={report['cumulative_return_pct']:.3f}; "
+          f"positions={len(positions)}; pending={len(pending)}; orders_sent=0")
+
+
 def main():
     if any(not 0<=v<.1 for v in (FEE_BUY,FEE_SELL,TAX_SELL,SLIP)):raise ValueError('수수료·슬리피지 설정 오류')
     OUT.mkdir(parents=True,exist_ok=True)
@@ -134,6 +196,7 @@ def main():
         row=compare_signals(sessions[-1],prices,flows,sessions)
         save_comparison(row)
         print(f"새 거래일 없음: 중복 처리하지 않음 / 기존 {row['original_signals']}개, 완화 {row['balanced_signals']}개")
+        create_daily_report(state, trades, equity)
         return
     for day in todo:
         date=day.strftime('%Y-%m-%d')
@@ -147,6 +210,11 @@ def main():
         due=[o for o in state['pending'] if o['signal_date']<date]
         state['pending']=[o for o in state['pending'] if o['signal_date']>=date]
         unfilled=[]
+        # Snapshot once per trading day: avoid re-allocating 60% of a shrinking
+        # balance for each separate BUY in the same session.
+        buy_budget_total = None
+        buy_budget_left = None
+        buy_cap_stock = None
         for o in sorted(due,key=lambda o:0 if o['side']=='SELL' else 1):
             code=o['ticker'];pos=state['positions'].get(code)
             if code not in closes:
@@ -167,9 +235,19 @@ def main():
                 if pos or len(state['positions'])>=5:continue
                 fill=closes[code]*(1+SLIP)
                 total=state['cash']+sum(v['qty']*closes.get(k,v['last_close']) for k,v in state['positions'].items())
-                budget=min(total*.2,state['cash']);qty=int(budget//(fill*(1+FEE_BUY)))
+                if buy_budget_total is None:
+                    # Available paper cash at the first BUY is the allocation base.
+                    # Existing portfolio exposure is untouched, not retroactively resized.
+                    base_cash=max(0.0,float(state['cash']))
+                    buy_budget_total=base_cash*(100-RESERVE_PCT)/100
+                    buy_budget_left=buy_budget_total
+                    buy_cap_stock=buy_budget_total*STOCK_PCT/100
+                    print(f'PAPER BUDGET {date}: available_cash={base_cash:.0f}; reserve_pct={RESERVE_PCT:g}; trading_pct={100-RESERVE_PCT:g}; stock_pct={STOCK_PCT:g}; per_stock_cap={buy_cap_stock:.0f}')
+                budget=min(buy_cap_stock,buy_budget_left,max(0.0,float(state['cash'])-base_cash*RESERVE_PCT/100))
+                qty=int(budget//(fill*(1+FEE_BUY)))
                 if qty<1:continue
                 cost=qty*fill*FEE_BUY;change=-qty*fill-cost;state['cash']+=change
+                buy_budget_left=max(0.0,buy_budget_left+change)
                 state['positions'][code]={'name':o['name'],'qty':qty,'entry':fill,'entry_idx':idx,
                                           'partial':False,'last_close':closes[code]}
             trades.append({'date':date,'ticker':code,'name':o['name'],'side':o['side'],
@@ -210,6 +288,7 @@ def main():
         state['last_processed']=date
         save_json(STATE,state);save_csv(TRADES,trades,TC);save_csv(EQUITY,equity,EC)
         print(f'{date}: 가상 총자산 {state["cash"]+holdings:,.0f}원 / 보유 {len(state["positions"])} / 다음 거래일 대기 주문 {len(pending)}')
+    create_daily_report(state, trades, equity)
     print('모의매매 완료. 실제 주문 API는 호출하지 않았습니다.')
 
 if __name__=='__main__':main()
