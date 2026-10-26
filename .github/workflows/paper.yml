@@ -1,20 +1,40 @@
 name: Oneil RS Paper Trading Only
+
 on:
   workflow_dispatch:
+  # Fallback after the evening collection if a completion event is delayed.
   schedule:
-    - cron: '0 12 * * 1-5' # 21:00 KST weekdays
+    - cron: '0 12 * * 1-5' # 21:00 KST (UTC 12:00)
+  # Run as soon as the collection workflow COMPLETES successfully.
+  workflow_run:
+    workflows:
+      - Update RS data and investor flow V9
+    types:
+      - completed
+    branches:
+      - main
+
 permissions:
   contents: write
+
 concurrency:
   group: oneil-paper-only
   cancel-in-progress: false
+
 jobs:
   paper:
+    if: >-
+      ${'${{'} github.event_name != 'workflow_run' ||
+          github.event.workflow_run.conclusion == 'success' ${'}}'}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # workflow_run checks out default branch; explicitly use main's latest
+      # committed data rather than the triggering workflow's starting commit.
       - uses: actions/checkout@v4
         with:
+          ref: main
+          fetch-depth: 0
           persist-credentials: true
       - uses: actions/setup-python@v5
         with:
@@ -22,6 +42,9 @@ jobs:
       - name: Install paper engine dependencies
         run: python -m pip install pandas numpy
       - name: Run read-only paper simulation
+        env:
+          LIVE_ENABLED: 'false'
+          KIS_ALLOW_ORDER: 'false'
         run: python paper_trade.py
       - name: Build pending orders and performance report
         run: python paper_enrich.py
@@ -33,5 +56,5 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m 'Update paper-only simulation'
             git pull --rebase origin main
-            git push
+            git push origin HEAD:main
           fi
