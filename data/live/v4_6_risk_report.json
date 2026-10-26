@@ -1,0 +1,19 @@
+{
+  "allow_order": false,
+  "approved": false,
+  "block_codes": [
+    "DAILY_LOSS_NOT_VERIFIED",
+    "ORDER_TRANSMISSION_NOT_IMPLEMENTED"
+  ],
+  "broker_api_calls": 0,
+  "daily_loss_limit_krw": 20000,
+  "daily_loss_verified": false,
+  "emergency_halt": false,
+  "gate": "DENY",
+  "live_enabled": false,
+  "mode": "NO_ORDER_RISK_GOVERNOR",
+  "orders_sent": 0,
+  "stock_cap_krw": 200000,
+  "strategy_cap_krw": 1000000,
+  "version": 1
+}
