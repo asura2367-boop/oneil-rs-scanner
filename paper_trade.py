@@ -119,14 +119,31 @@ def main():
     if last is None:
         todo=[sessions[-1]]
         print('신규 계좌: 과거 거래를 소급 생성하지 않고 마지막 확정 거래일부터 시작')
+    latest=sessions[-1].strftime('%Y-%m-%d')
+    print(f"DATA CHECK: latest_available={latest}; last_processed={state.get('last_processed')}; rows={len(p)}")
+    for order in state.get('pending', []):
+        code=str(order['ticker']).zfill(6)
+        hist=prices.get(code)
+        latest_ticker=(hist.index[-1].strftime('%Y-%m-%d') if hist is not None and len(hist) else 'MISSING')
+        print(f"PENDING DATA: ticker={code}; side={order['side']}; latest_price_date={latest_ticker}")
     if not todo:
+        now=datetime.now(ZoneInfo('Asia/Seoul'))
+        # At night, a missing trading date is a failed data dependency, not a healthy run.
+        if now.weekday()<5 and now.time()>=time(20,30) and latest<now.strftime('%Y-%m-%d'):
+            raise RuntimeError(f'PAPER_DATA_NOT_READY: latest={latest}, expected={now.date()}; no state changed')
         row=compare_signals(sessions[-1],prices,flows,sessions)
         save_comparison(row)
         print(f"새 거래일 없음: 중복 처리하지 않음 / 기존 {row['original_signals']}개, 완화 {row['balanced_signals']}개")
         return
     for day in todo:
-        date=day.strftime('%Y-%m-%d');state['session_index']+=1;idx=state['session_index']
+        date=day.strftime('%Y-%m-%d')
         closes={c:float(h.loc[day,'close']) for c,h in prices.items() if day in h.index and h.loc[day,'volume']>0}
+        # No partial fills or state mutation when a due order lacks verified day-price data.
+        due_codes=sorted({str(o['ticker']).zfill(6) for o in state['pending'] if o['signal_date']<date})
+        missing=[code for code in due_codes if code not in closes]
+        if missing:
+            raise RuntimeError(f'PAPER_MISSING_ORDER_PRICES: day={date}; tickers={",".join(missing)}; state unchanged for day')
+        state['session_index']+=1;idx=state['session_index']
         due=[o for o in state['pending'] if o['signal_date']<date]
         state['pending']=[o for o in state['pending'] if o['signal_date']>=date]
         unfilled=[]
