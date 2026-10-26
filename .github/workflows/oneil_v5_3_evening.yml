@@ -1,0 +1,43 @@
+name: Oneil V5.3 Evening Quote Diagnostic (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: 'Read KIS after-market REST orderbook (read-only; not real-time verified)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: oneil-v5-3-evening
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install read-only deps
+        run: pip install requests
+      - name: Test safe sessions and hard deny
+        run: python -m unittest discover -s tests -p 'test_oneil_v5_3_evening.py' -v
+      - name: Evening quote review only
+        run: |
+          if [ '${{ inputs.network }}' = 'true' ]; then
+            python oneil_v5_3_evening.py --network
+          else
+            python oneil_v5_3_evening.py
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v5-3-evening-review-only
+          path: v5_3_evening_report.json
+          retention-days: 3
