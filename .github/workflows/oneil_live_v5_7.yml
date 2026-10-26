@@ -1,0 +1,40 @@
+name: Oneil V5.7 Synthetic Order Preflight (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      reserve_pct:
+        description: 'Safety cash %'
+        required: true
+        default: '40'
+      stock_pct:
+        description: 'Per-stock % of trading budget'
+        required: true
+        default: '30'
+      evening_pct:
+        description: 'Evening new buys % of trading budget'
+        required: true
+        default: '30'
+permissions:
+  contents: read
+jobs:
+  synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test strict order deny
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_7.py' -v
+      - name: Review synthetic order plans (never send)
+        run: |
+          python oneil_live_v5_7.py --input v5_7_synthetic.json --output v5_7_report.json --reserve-pct '${{ inputs.reserve_pct }}' --stock-pct '${{ inputs.stock_pct }}' --evening-pct '${{ inputs.evening_pct }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v5-7-synthetic-no-orders
+          path: v5_7_report.json
+          retention-days: 3
