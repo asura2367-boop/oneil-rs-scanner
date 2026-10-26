@@ -104,6 +104,65 @@ def save_comparison(row):
 
 
 
+def realized_fifo(trades, as_of):
+    """Calculate paper realized P&L from historical BUY/SELL fills with FIFO lots.
+
+    Includes prorated recorded BUY commission and full recorded SELL costs.
+    Never infers missing historical fills; incomplete journals are reported unverified.
+    """
+    lots = {}
+    daily = 0.0
+    cumulative = 0.0
+    wins = 0
+    losses = 0
+    sell_count = 0
+    for i, trade in sorted(enumerate(trades), key=lambda v: (str(v[1]['date']), v[0])):
+        day = str(trade['date'])
+        if day > as_of:
+            continue
+        ticker = str(trade['ticker']).zfill(6)
+        qty = int(trade['qty'])
+        price = float(trade['price'])
+        fee = float(trade['cost'])
+        if qty <= 0 or price <= 0 or fee < 0:
+            raise ValueError('Invalid journal price, quantity, or cost')
+        if trade['side'] == 'BUY':
+            lots.setdefault(ticker, []).append([qty, price + fee / qty])
+        elif trade['side'] == 'SELL':
+            remaining = qty
+            cost_basis = 0.0
+            queue = lots.get(ticker, [])
+            while remaining:
+                if not queue:
+                    raise ValueError('Missing BUY lots for a SELL; cannot verify realized P&L')
+                available, unit_cost = queue[0]
+                taken = min(remaining, available)
+                cost_basis += taken * unit_cost
+                remaining -= taken
+                if taken == available:
+                    queue.pop(0)
+                else:
+                    queue[0][0] -= taken
+            pnl = qty * price - fee - cost_basis
+            cumulative += pnl
+            sell_count += 1
+            if day == as_of:
+                daily += pnl
+            if pnl > 0:
+                wins += 1
+            elif pnl < 0:
+                losses += 1
+        else:
+            raise ValueError('Unknown journal side')
+    return {'realized_pnl_today': round(daily, 2),
+            'realized_pnl_cumulative': round(cumulative, 2),
+            'sell_events': sell_count,
+            'profitable_sell_events': wins,
+            'losing_sell_events': losses,
+            'sell_event_win_rate_pct': round(wins / sell_count * 100, 2) if sell_count else None,
+            'win_rate_note': 'Win rate counts SELL events (including partial sells), not completed positions.'}
+
+
 def create_daily_report(state, trades, equity_rows):
     """Report only from persisted paper journal. No invented price or trade data."""
     if not equity_rows or not state.get('last_processed'):
@@ -132,6 +191,15 @@ def create_daily_report(state, trades, equity_rows):
                           'last_close':round(close,4), 'entry':round(entry,4),
                           'unrealized_pnl_before_sell_cost':round(qty*(close-entry),2),
                           'unrealized_return_pct':round((close/entry-1)*100,4) if entry else None})
+    try:
+        realized = realized_fifo(trades, today)
+        realized_verified = True
+    except (ValueError, KeyError, TypeError, OverflowError):
+        realized = {'realized_pnl_today': None, 'realized_pnl_cumulative': None,
+                    'sell_events': None, 'profitable_sell_events': None,
+                    'losing_sell_events': None, 'sell_event_win_rate_pct': None,
+                    'win_rate_note': 'Incomplete/invalid trade ledger; cannot certify realized profit.'}
+        realized_verified = False
     report={
         'as_of':today,'mode':'PAPER_ONLY','latest_processed':today,
         'initial_cash':init,'cash':float(latest['cash']),
@@ -142,8 +210,14 @@ def create_daily_report(state, trades, equity_rows):
         'cumulative_return_pct':round((current/init-1)*100,4),
         'trade_count_today':len(today_trades),'sell_trade_count_today':closed_today,
         'trade_cost_today':round(fee_today,2),
-        'realized_pnl_today':None,
-        'realized_pnl_note':'Not computed without a verified per-lot cost-basis ledger; daily PnL is mark-to-market.',
+        'realized_pnl_today':realized['realized_pnl_today'],
+        'realized_pnl_cumulative':realized['realized_pnl_cumulative'],
+        'realized_pnl_verified':realized_verified,
+        'sell_events':realized['sell_events'],
+        'profitable_sell_events':realized['profitable_sell_events'],
+        'losing_sell_events':realized['losing_sell_events'],
+        'sell_event_win_rate_pct':realized['sell_event_win_rate_pct'],
+        'realized_pnl_note':realized['win_rate_note'],
         'positions':positions,
         'next_session_strategy':{'mode':'REVIEW_ONLY','pending_orders':pending,
              'checks':['Confirm priority OHLCV for positions and pending tickers',
