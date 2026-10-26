@@ -97,9 +97,13 @@ def main():
     STAGE = 'credentials_format'
     key, secret, cano, product = credentials()
     STAGE = 'authentication'
-    auth = request('POST', '/oauth2/tokenP',
-                   {'grant_type':'client_credentials', 'appkey':key, 'appsecret':secret})
-    token = auth.get('access_token') if isinstance(auth, dict) else None
+    # V4.5.1 can supply a short-lived token through this process environment.
+    # If it is absent, keep standalone V4.1 behavior unchanged.
+    token = os.environ.get('KIS_SESSION_ACCESS_TOKEN', '').strip()
+    if not token:
+        auth = request('POST', '/oauth2/tokenP',
+                       {'grant_type':'client_credentials', 'appkey':key, 'appsecret':secret})
+        token = auth.get('access_token') if isinstance(auth, dict) else None
     if not token:
         raise SafetyBlock('AUTH_UNAVAILABLE')
     STAGE = 'balance_valuation'

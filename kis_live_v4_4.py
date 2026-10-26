@@ -203,7 +203,11 @@ def main():
     # Local structural validation BEFORE any network request.
     reconcile(state, [])
     STAGE = 'authentication'
-    token = token_for(key, secret)
+    # Reuse only within the orchestrated V4.5.1 run; standalone usage still
+    # obtains a token normally. Never print or persist this environment value.
+    token = os.environ.get('KIS_SESSION_ACCESS_TOKEN', '').strip()
+    if not token:
+        token = token_for(key, secret)
     STAGE = 'order_history'
     rows = fetch_orders(key, secret, cano, product, token,
                         dt.datetime.now(KST).strftime('%Y%m%d'))
