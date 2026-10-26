@@ -49,9 +49,19 @@ def balance_valuation(key,secret,cano,product,token):
     # Stock evaluation is part of the 1,000,000 KRW strategy limit (conservative: all holdings).
     invested=unsigned_int(summary[0].get('scts_evlu_amt'))
     if invested is None: raise RuntimeError('VALUATION_02: Portfolio valuation missing')
-    # Fail closed if holdings continuation is present (V3 does not paginate balance).
-    if r.get('tr_cont') in ('F','M') or str(r.get('ctx_area_fk100') or '').strip():
-        raise RuntimeError('VALUATION_03: Balance pagination not verified')
+    # Distinguish explicit continuation from an opaque cursor. The official KIS
+    # next-page decision uses the *response header* tr_cont; this wrapper returns
+    # a body dict, so a cursor by itself cannot prove paging has ended.
+    # Keep fail-closed until response-header handling / bounded pagination exists.
+    continuation_flag = r.get('tr_cont') in ('F', 'M')
+    cursor_present = bool(str(r.get('ctx_area_fk100') or '').strip() or
+                          str(r.get('ctx_area_nk100') or '').strip())
+    if continuation_flag and cursor_present:
+        raise RuntimeError('VALUATION_03_BOTH: Continuation and cursor present')
+    if continuation_flag:
+        raise RuntimeError('VALUATION_03_FLAG: Continuation flag present')
+    if cursor_present:
+        raise RuntimeError('VALUATION_03_CURSOR: Cursor present; header not verified')
     return invested
 
 def unfilled_codes(key,secret,cano,product,token):
@@ -147,7 +157,8 @@ if __name__=='__main__':
     try: main()
     except Exception as ex:
         # Never print exception details or API payloads: they may contain private data.
-        allowed_codes = ('VALUATION_01', 'VALUATION_02', 'VALUATION_03')
+        allowed_codes = ('VALUATION_01', 'VALUATION_02', 'VALUATION_03_BOTH',
+                         'VALUATION_03_FLAG', 'VALUATION_03_CURSOR')
         message = str(ex)
         error_code = next((code for code in allowed_codes
                            if STAGE == 'valuation' and message.startswith(code + ':')),
