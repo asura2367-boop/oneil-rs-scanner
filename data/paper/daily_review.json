@@ -13,8 +13,14 @@
   "trade_count_today": 2,
   "sell_trade_count_today": 0,
   "trade_cost_today": 597.88,
-  "realized_pnl_today": null,
-  "realized_pnl_note": "Not computed without a verified per-lot cost-basis ledger; daily PnL is mark-to-market.",
+  "realized_pnl_today": 0.0,
+  "realized_pnl_cumulative": 0.0,
+  "realized_pnl_verified": true,
+  "sell_events": 0,
+  "profitable_sell_events": 0,
+  "losing_sell_events": 0,
+  "sell_event_win_rate_pct": null,
+  "realized_pnl_note": "Win rate counts SELL events (including partial sells), not completed positions.",
   "positions": [
     {
       "ticker": "048910",
