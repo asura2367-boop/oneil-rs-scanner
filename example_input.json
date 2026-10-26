@@ -1,1 +1,12 @@
-{"source":"SYNTHETIC_EXAMPLE","orderable_cash_krw":1000000,"candidates":[{"ticker":"052460","price":5940,"broker_max_qty":1000},{"ticker":"048910","price":8070,"broker_max_qty":1000}]}
+{
+  "source": "SYNTHETIC_EXAMPLE",
+  "sample_cash_krw": 1000000,
+  "baseline_captured_before_open": false,
+  "all_trades_reconciled": false,
+  "cashflows_reconciled": false,
+  "all_positions_valued": false,
+  "candidates": [
+    {"ticker": "052460", "venue": "KRX", "venue_eligible": false, "venue_data_verified": false},
+    {"ticker": "048910", "venue": "NXT", "venue_eligible": false, "venue_data_verified": false}
+  ]
+}
