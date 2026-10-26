@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -15,6 +16,43 @@ SOURCES=('data/live/v4_5_preflight.json','data/live/v4_5_reconcile.json',
 
 def safe_flags(env):
     return env.get('LIVE_ENABLED','false').lower()=='false' and env.get('KIS_ALLOW_ORDER','false').lower()=='false'
+
+# Only known non-secret diagnostic codes are copied from child output.
+# Never print the raw child stdout/stderr; they may contain credentials or URLs.
+CACHE_CODES = {
+    'CACHE_KEY_INVALID', 'CACHE_DECRYPT_OR_FORMAT_FAILURE',
+    'CACHE_PERSIST_FAILURE', 'AUTH_EXPIRY_INVALID', 'AUTH_EXPIRY_MISSING',
+    'AUTH_TOO_CLOSE_TO_EXPIRY', 'AUTH_TOKEN_MISSING',
+    'AUTH_TRANSPORT', 'AUTH_FAILURE', 'UNSAFE_EVENT',
+    'EXTERNAL_SESSION_TOKEN_FORBIDDEN', 'LIVE_NOT_DISABLED'
+}
+SAFE_HTTP = re.compile(r'^AUTH_HTTP_(?:[1-5][0-9]{2}|unknown)$')
+SAFE_STAGE = {'authentication', 'credentials_format', 'balance_valuation',
+              'unfilled_orders', 'quote_and_buying_power', 'candidate_plan',
+              'safety_guard', 'initialization'}
+SAFE_ORDER_STAGE = {'authentication', 'order_history'}
+
+def classify_broker_failure(stdout, stderr):
+    # Constrain parsing to the small, bounded known-format diagnostic lines.
+    # Ignore anything else rather than leaking broker error responses.
+    for line in (stderr or '').splitlines()[:100]:
+        if len(line) > 700: continue
+        match = re.fullmatch(r'V4\.5\.2 BLOCKED: ([A-Z0-9_]+); orders_sent=0; LIVE_ENABLED=false',line.strip())
+        if match:
+            code=match.group(1)
+            if code in CACHE_CODES or SAFE_HTTP.fullmatch(code):
+                return 'CACHE_OR_AUTH_' + code
+            return 'BROKER_INTERNAL_BLOCKED'
+    combined=(stderr or '') + '\n' + (stdout or '')
+    for line in combined.splitlines()[:100]:
+        if len(line)>700: continue
+        match=re.search(r'V4\.1 BLOCKED: stage=([a-z_]+); error_type=(HTTPError|URLError|SafetyBlock|ValueError|RuntimeError|TypeError|KeyError|OSError|Other); http_status=(none|unknown|[1-5][0-9]{2})',line)
+        if match and match.group(1) in SAFE_STAGE:
+            return 'PREFLIGHT_' + match.group(1).upper() + '_' + match.group(2).upper() + '_' + match.group(3).upper()
+        match=re.search(r'V4\.4 BLOCKED: stage=(authentication|order_history); error_code=BROKER_HTTP_FAILURE_([1-5][0-9]{2});',line)
+        if match and match.group(1) in SAFE_ORDER_STAGE:
+            return 'RECONCILE_' + match.group(1).upper() + '_HTTP_' + match.group(2)
+    return 'BROKER_UNKNOWN_FAILURE'
 
 def orchestrate(root, report, *, use_broker=False, env=None, runner=subprocess.run):
     env=dict(os.environ if env is None else env)
@@ -31,8 +69,12 @@ def orchestrate(root, report, *, use_broker=False, env=None, runner=subprocess.r
             result=runner([sys.executable,'kis_live_v4_5_2.py'],cwd=root,env=env,
                           capture_output=True,text=True,timeout=150)
             observations.append('BROKER_READ_SUCCESS' if result.returncode==0 else 'BROKER_READ_FAILED')
-        except (OSError,subprocess.TimeoutExpired):
-            observations.append('BROKER_READ_FAILED')
+            if result.returncode != 0:
+                observations.append(classify_broker_failure(result.stdout, result.stderr))
+        except subprocess.TimeoutExpired:
+            observations.extend(('BROKER_READ_FAILED', 'BROKER_TIMEOUT'))
+        except OSError:
+            observations.extend(('BROKER_READ_FAILED', 'BROKER_PROCESS_START_FAILED'))
     else:
         observations.append('OFFLINE_ONLY')
     # V5.5 performs fail-closed evidence validation and can never authorize orders.
