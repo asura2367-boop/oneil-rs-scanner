@@ -1,0 +1,42 @@
+name: KIS V4.10 Regular-Session Budget (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      reserve_pct:
+        description: 'Safety reserve percentage'
+        required: true
+        type: string
+        default: '40'
+      stock_pct:
+        description: 'Per-stock percentage of trading budget'
+        required: true
+        type: string
+        default: '30'
+permissions:
+  contents: read
+concurrency:
+  group: kis-v410-readonly
+  cancel-in-progress: false
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test read-only budget and session filters
+        run: PYTHONPATH=. python -m unittest discover -s tests -p 'test_kis_live_v4_10.py' -v
+      - name: Read-only verified allocation - regular hours ONLY
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+          KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+          RESERVE_PCT: ${{ inputs.reserve_pct }}
+          STOCK_PCT: ${{ inputs.stock_pct }}
+        run: python kis_live_v4_10.py --reserve-pct "$RESERVE_PCT" --stock-pct "$STOCK_PCT"
