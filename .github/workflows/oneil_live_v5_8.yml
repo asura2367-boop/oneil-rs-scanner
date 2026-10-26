@@ -1,0 +1,63 @@
+name: Oneil V5.8 Combined Safety Review (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      broker_read:
+        description: 'Run existing KIS read-only check (never trades)'
+        type: boolean
+        default: false
+      reserve_pct:
+        description: 'Cash reserve percent'
+        default: '40'
+      stock_pct:
+        description: 'Maximum per stock as percent of trading budget'
+        default: '30'
+      evening_pct:
+        description: 'Evening new buy maximum as percent of trading budget'
+        default: '30'
+permissions:
+  contents: write # Existing V4.5.2 may commit only encrypted token cache.
+concurrency:
+  group: kis-shared-token-cache
+  cancel-in-progress: false
+jobs:
+  no_orders:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+      GITHUB_EVENT_NAME: workflow_dispatch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install broker read-only dependencies
+        run: python -m pip install cryptography
+      - name: Run offline no-order tests
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_8.py' -v
+      - name: Separate synthetic plans from real broker safety evidence
+        env:
+          BROKER_READ: ${{ inputs.broker_read }}
+          RESERVE: ${{ inputs.reserve_pct }}
+          STOCK: ${{ inputs.stock_pct }}
+          EVENING: ${{ inputs.evening_pct }}
+        run: |
+          opts=()
+          if [ "$BROKER_READ" = true ]; then opts+=(--broker-read); fi
+          python oneil_live_v5_8.py "${opts[@]}" --reserve-pct "$RESERVE" --stock-pct "$STOCK" --evening-pct "$EVENING"
+      - name: Upload non-authorizing report
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneil-v5-8-review-only
+          path: v5_8_safe_report.json
+          retention-days: 3
