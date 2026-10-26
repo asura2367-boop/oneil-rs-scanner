@@ -1,0 +1,48 @@
+name: Oneil V5.4 LIVE Order Engine Preflight (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      reserve_pct:
+        description: 'Reserved cash percentage (default 40)'
+        required: true
+        default: '40'
+      stock_pct:
+        description: 'Per-stock percentage of trade budget (default 30)'
+        required: true
+        default: '30'
+      evening_pct:
+        description: 'Evening buy percentage of trade budget (default 30)'
+        required: true
+        default: '30'
+permissions:
+  contents: read
+concurrency:
+  group: oneil-v5-4-offline-preflight
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Offline gate unit tests
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_4.py' -v
+      - name: Unverified data must deny, no brokerage calls
+        env:
+          RESERVE_PCT: ${{ inputs.reserve_pct }}
+          STOCK_PCT: ${{ inputs.stock_pct }}
+          EVENING_PCT: ${{ inputs.evening_pct }}
+        run: |
+          python oneil_live_v5_4.py --input example_unverified.json --output v5_4_review.json --reserve-pct "$RESERVE_PCT" --stock-pct "$STOCK_PCT" --evening-pct "$EVENING_PCT"
+      - name: Upload safe result
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-4-no-order-gate
+          path: v5_4_review.json
+          retention-days: 3
