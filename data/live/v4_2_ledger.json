@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recorded": {
+    "31a050e7d7c9e5fc766a": {
+      "ticker": "052460",
+      "state": "PREVIEW_RECORDED_NO_ORDER"
+    },
+    "771656c71456dacdf6e7": {
+      "ticker": "048910",
+      "state": "PREVIEW_RECORDED_NO_ORDER"
+    }
+  }
+}
