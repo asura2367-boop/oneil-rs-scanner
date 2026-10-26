@@ -23,32 +23,64 @@ def headers(key, secret, token, tr_id):
             'appsecret':secret,'tr_id':tr_id,'custtype':'P'}
 
 def current_quote(key, secret, token, ticker, now):
-    """Conservative quote validation with safe, categorized error codes."""
+    """Read a REST price and independently verify today's trading date.
+
+    A daily bar confirms only the trading date, not that the REST price is
+    a real-time executable quote. This module never submits an order.
+    """
+    if now.weekday() >= 5 or not (dt.time(9) <= now.time() < dt.time(15, 30)):
+        raise RuntimeError('QUOTE_07: Outside regular market session')
+
     p = {'FID_COND_MRKT_DIV_CODE': 'J', 'FID_INPUT_ISCD': ticker}
     try:
         result = request('GET', '/uapi/domestic-stock/v1/quotations/inquire-price?'
                          + urlencode(p),
                          headers=headers(key, secret, token, 'FHKST01010100'))
     except Exception:
-        raise RuntimeError('QUOTE_01: Transport or HTTP failure') from None
+        raise RuntimeError('QUOTE_01: Price HTTP or transport failure') from None
     try:
         result = require_ok(result, 'Quote')
     except Exception:
-        raise RuntimeError('QUOTE_02: API rejected price inquiry') from None
+        raise RuntimeError('QUOTE_02: Price API rejected inquiry') from None
     out = result.get('output') if isinstance(result, dict) else None
     if not isinstance(out, dict):
         raise RuntimeError('QUOTE_03: Price output missing')
     price = unsigned_int(out.get('stck_prpr'))
     if not price:
         raise RuntimeError('QUOTE_04: Invalid or missing price')
-    quote_day = str(out.get('stck_bsop_date') or '').strip()
-    # Missing quote date is NOT evidence of freshness. Fail closed.
-    if not quote_day:
-        raise RuntimeError('QUOTE_05: Trading date field missing')
-    if quote_day != now.strftime('%Y%m%d'):
+
+    # KIS's inquire-price output does not reliably provide stck_bsop_date.
+    # Use the dedicated daily-price endpoint instead; never infer the date.
+    daily_params = {
+        'FID_COND_MRKT_DIV_CODE': 'J', 'FID_INPUT_ISCD': ticker,
+        'FID_PERIOD_DIV_CODE': 'D', 'FID_ORG_ADJ_PRC': '0'
+    }
+    try:
+        daily = request(
+            'GET', '/uapi/domestic-stock/v1/quotations/inquire-daily-price?'
+            + urlencode(daily_params),
+            headers=headers(key, secret, token, 'FHKST01010400')
+        )
+    except Exception:
+        raise RuntimeError('QUOTE_08: Daily-price HTTP or transport failure') from None
+    try:
+        daily = require_ok(daily, 'Daily price')
+    except Exception:
+        raise RuntimeError('QUOTE_09: Daily-price API rejected inquiry') from None
+    rows = daily.get('output') if isinstance(daily, dict) else None
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        raise RuntimeError('QUOTE_05: Daily trading date unavailable')
+    day = str(rows[0].get('stck_bsop_date') or '').strip()
+    if len(day) != 8 or not day.isascii() or not day.isdigit():
+        raise RuntimeError('QUOTE_05: Daily trading date missing or malformed')
+    if day != now.strftime('%Y%m%d'):
         raise RuntimeError('QUOTE_06: Trading date mismatch')
-    if now.weekday() >= 5 or not (dt.time(9) <= now.time() < dt.time(15, 30)):
-        raise RuntimeError('QUOTE_07: Outside regular market session')
+
+    # Cross-check the daily record has a plausible price; it does not prove
+    # intra-day price freshness, which remains an explicit limitation.
+    daily_close = unsigned_int(rows[0].get('stck_clpr'))
+    if not daily_close:
+        raise RuntimeError('QUOTE_10: Daily-price value missing')
     return price
 
 def verified_balance_snapshot(key, secret, cano, product, token):
@@ -201,7 +233,7 @@ def decide(plan, held, unfilled, invested, quote_lookup, power_lookup):
                     raise ValueError('invalid quotation')
             except Exception as ex:
                 status = 'BLOCKED_QUOTE_ERROR'
-                allowed = {f'QUOTE_{i:02d}' for i in range(1, 8)}
+                allowed = {f'QUOTE_{i:02d}' for i in range(1, 11)}
                 code = str(ex).split(':', 1)[0]
                 safe_code = code if code in allowed else 'QUOTE_UNKNOWN'
                 print('QUOTE_DIAGNOSTIC ticker=' + t + ' error_code=' + safe_code,
