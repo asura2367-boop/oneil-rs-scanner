@@ -1,0 +1,27 @@
+name: KIS LIVE V4 Offline Order Intents (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify no-order intent planner
+        run: |
+          python -m unittest discover -s tests -p 'test_kis_live_v4.py' -v
+          python kis_live_v4.py --state data/paper/state.json --summary data/paper/paper_summary.json --output data/live/v4_intents.json
+      - name: Upload offline intent artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kis-v4-offline-intents
+          path: data/live/v4_intents.json
+          retention-days: 7
