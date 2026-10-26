@@ -1,0 +1,45 @@
+name: Oneil V5.1 Auto Analysis ON OFF (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Toggle automated ANALYSIS only (never live orders)'
+        required: true
+        default: 'off'
+        type: choice
+        options:
+          - 'off'
+          - 'on'
+permissions:
+  contents: write
+concurrency:
+  group: oneil-live-control
+  cancel-in-progress: false
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Change analysis ON OFF (never brokerage orders)
+        run: python oneil_auto_control.py --mode '${{ inputs.mode }}'
+      - name: Persist non-secret control state
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/live/auto_control.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update Oneil read-only analysis switch'
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
