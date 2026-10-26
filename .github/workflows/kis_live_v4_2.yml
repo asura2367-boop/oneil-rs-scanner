@@ -1,0 +1,54 @@
+name: KIS V4.2 Durable Intent Ledger (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: kis-v4-2-ledger-main
+  cancel-in-progress: false
+jobs:
+  journal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test journal without broker calls
+        run: python -m unittest discover -s tests -p 'test_kis_live_v4_2.py' -v
+      - name: Refresh latest journal snapshot
+        run: git pull --ff-only origin main
+      - name: Refresh live read-only preflight (NO ORDERS)
+        run: python kis_live_v4_1.py
+      - name: Record distinct eligible preview IDs (NO ORDERS)
+        run: python kis_live_v4_2.py
+      - name: Commit journal safely
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/live/v4_2_ledger.json
+          if git diff --cached --quiet; then
+            echo 'No new intent IDs to record'
+          else
+            git commit -m 'Record V4.2 no-order intent IDs'
+            git push origin HEAD:main
+          fi
+      - name: Upload sanitized report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kis-v4-2-no-order-report
+          path: data/live/v4_2_report.json
+          retention-days: 3
+          if-no-files-found: error
