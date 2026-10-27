@@ -1,0 +1,56 @@
+name: Oneil V5.14 Quote Buying Power Observations (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      broker_read:
+        description: 'Read quotes and buying power using existing KIS token (NO ORDERS)'
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: oneil-v5-14-read
+  cancel-in-progress: false
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install read only dependencies
+        run: python -m pip install cryptography pandas numpy requests
+      - name: Offline NO ORDER unit tests
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_14.py' -v
+      - name: Generate V5.9 reviews
+        run: python oneil_live_v5_9.py --output v5_9_candidates_review.json
+      - name: Generate V5.11 unpriced intents
+        run: python oneil_live_v5_11.py --candidates v5_9_candidates_review.json --output v5_11_review.json
+      - name: Observe KIS read only prices and buying power
+        env:
+          BROKER_READ: ${{ inputs.broker_read }}
+        run: |
+          if [ "$BROKER_READ" = 'true' ]; then
+            python oneil_live_v5_14.py --broker-read
+          else
+            python oneil_live_v5_14.py
+          fi
+      - name: Upload sanitized statuses only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-14-no-order-diagnostics
+          path: v5_14_review.json
+          if-no-files-found: warn
+          retention-days: 3
