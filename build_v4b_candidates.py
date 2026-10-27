@@ -36,7 +36,8 @@ def generate(prices_path, flows_path, target, output, diagnostics=None):
             'stale_price':0,'invalid_price_or_volume':0,
             'rs_85':0,'volume_1x':0,'up_channel':0,'channel_0_75':0,
             'flow_five_valid':0,'foreign_positive':0,'institution_positive':0,'selected':0,
-            'flow_missing_or_short':0,'flow_stale':0,'flow_invalid':0}
+            'flow_missing_or_short':0,'flow_stale':0,'flow_invalid':0,
+             'foreign_only':0,'institution_only':0,'both_positive':0}
     scores=[]
     for ticker,g in p.groupby('ticker'):
         h=g.set_index('date')
@@ -81,10 +82,14 @@ def generate(prices_path, flows_path, target, output, diagnostics=None):
             counts['flow_invalid']+=1;continue
         counts['flow_five_valid']+=1
         foreign=float(five.foreign_net_qty.sum());institution=float(five.institution_net_qty.sum())
-        if foreign<=0:continue
-        counts['foreign_positive']+=1
-        if institution<=0:continue
-        counts['institution_positive']+=1
+        foreign_ok = foreign > 0
+        institution_ok = institution > 0
+        if foreign_ok: counts['foreign_positive']+=1
+        if institution_ok: counts['institution_positive']+=1
+        if foreign_ok and institution_ok: counts['both_positive']+=1
+        elif foreign_ok: counts['foreign_only']+=1
+        elif institution_ok: counts['institution_only']+=1
+        if not (foreign_ok or institution_ok): continue
         result.append(dict(date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=foreign,institution_5d=institution,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),channel_up=bool(r.channel_up),signal_date=signal_day.strftime('%Y-%m-%d'),name=r.name))
     output.parent.mkdir(parents=True,exist_ok=True)
     pd.DataFrame(result,columns=COLUMNS).sort_values(['rs','ticker'],ascending=[False,True]).to_csv(output,index=False,encoding='utf-8-sig')
