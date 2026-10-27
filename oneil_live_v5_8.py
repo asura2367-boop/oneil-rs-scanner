@@ -49,10 +49,29 @@ def verify_broker_reports(root, start_time):
             if not isinstance(data, dict) or data.get('orders_sent') != 0:
                 result[kind] = 'INVALID'
             elif kind == 'preflight':
-                result[kind] = 'SNAPSHOT_PRESENT' if (
-                    data.get('mode') == 'READ_ONLY_PREFLIGHT_V4_1' and
+                # Explicit no-candidate / closed-market report is a valid DENIAL,
+                # never proof that broker balance or buying power was verified.
+                if (data.get('mode') == 'READ_ONLY_PREFLIGHT_BLOCKED' and
+                    data.get('status') == 'DENY' and
+                    data.get('reason') in ('NO_INTENTS', 'MARKET_CLOSED') and
+                    data.get('broker_verified') is False and
                     data.get('live_enabled') is False and
-                    isinstance(data.get('decisions'), list)) else 'INVALID'
+                    data.get('decisions') == [] and
+                    isinstance(data.get('generated_at_kst'), str)):
+                    try:
+                        stamp = dt.datetime.fromisoformat(data['generated_at_kst'])
+                        if stamp.tzinfo is None:
+                            raise ValueError('naive timestamp')
+                        result[kind] = ('NO_INTENTS_DENY' if data['reason'] == 'NO_INTENTS'
+                                        else 'MARKET_CLOSED_DENY')
+                    except ValueError:
+                        result[kind] = 'INVALID'
+                elif (data.get('mode') == 'READ_ONLY_PREFLIGHT_V4_1' and
+                      data.get('live_enabled') is False and
+                      isinstance(data.get('decisions'), list)):
+                    result[kind] = 'SNAPSHOT_PRESENT'
+                else:
+                    result[kind] = 'INVALID'
             elif kind == 'reconciliation':
                 result[kind] = 'READ_ONLY_VALID' if (
                     data.get('mode') == 'V4_4_RECONCILE_READ_ONLY' and
