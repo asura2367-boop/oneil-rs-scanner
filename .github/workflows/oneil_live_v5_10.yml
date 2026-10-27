@@ -1,0 +1,50 @@
+name: Oneil V5.10 Candidate Broker Review (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      broker_read:
+        description: 'Run existing KIS account READ ONLY checks'
+        type: boolean
+        default: false
+permissions:
+  contents: write # Existing V4.5.2 can commit encrypted token cache only.
+concurrency:
+  group: kis-shared-token-cache
+  cancel-in-progress: false
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+      GITHUB_EVENT_NAME: workflow_dispatch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install read only dependencies
+        run: python -m pip install cryptography
+      - name: Offline aggregation tests
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_10.py' -v
+      - name: Join candidate and broker review, never place orders
+        env:
+          BROKER_READ: ${{ inputs.broker_read }}
+        shell: bash
+        run: |
+          args=()
+          if [ "$BROKER_READ" = true ]; then args+=(--broker-read); fi
+          python oneil_live_v5_10.py "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v5-10-sanitized-no-orders
+          path: v5_10_report.json
+          retention-days: 3
