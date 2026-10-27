@@ -1,0 +1,55 @@
+name: Oneil V5.13 KIS Candidate Holdings Review (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      broker_read:
+        description: 'Use existing encrypted token to READ holdings and unfilled only (NO ORDERS)'
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: oneil-v5-13-broker-read
+  cancel-in-progress: false
+jobs:
+  account_review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install read-only dependencies
+        run: python -m pip install cryptography pandas numpy requests
+      - name: Test hard-deny and fail-closed behavior
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_13.py' -v
+      - name: Generate candidate review from stored V4B signals
+        run: python oneil_live_v5_9.py --output v5_9_candidates_review.json
+      - name: Generate unpriced LIVE candidate intents
+        run: python oneil_live_v5_11.py --candidates v5_9_candidates_review.json --output v5_11_review.json
+      - name: Inspect READ ONLY KIS holdings and unfilled
+        env:
+          BROKER_READ: ${{ inputs.broker_read }}
+        run: |
+          if [ "$BROKER_READ" = 'true' ]; then
+            python oneil_live_v5_13.py --broker-read
+          else
+            python oneil_live_v5_13.py
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v5-13-sanitized-no-orders-report
+          path: v5_13_review.json
+          if-no-files-found: warn
+          retention-days: 3
