@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""V5.9: Prepare read-only LIVE candidate review from collected V4B CSV.
+
+No brokerage API, orderable cash inference, execution, or order authorization.
+"""
+import argparse
+import csv
+import datetime as dt
+import json
+import os
+import re
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+KST=ZoneInfo('Asia/Seoul')
+REQUIRED=('date','ticker','rs','foreign_5d','institution_5d',
+          'volume_ratio','channel_up','channel_position','reference_close')
+TICKER=re.compile(r'^\d{6}$')
+
+def analyze(path, now, min_rs=90, min_volume=1.2, max_channel=.75):
+    if any(os.getenv(n,'false').lower()!='false' for n in ('LIVE_ENABLED','KIS_ALLOW_ORDER')):
+        raise RuntimeError('LIVE_FLAGS_NOT_DISABLED')
+    report={'version':'5.9','status':'DENY','mode':'LIVE_CANDIDATE_REVIEW_ONLY',
+            'orders_sent':0,'broker_order_api_calls':0,
+            'live_enabled':False,'allow_order':False,
+            'source':'V4B_CSV_UNVERIFIED','generated_at_kst':now.isoformat(),
+            'reason_codes':[],'review_candidates':[], 'approved_order_intents':[]}
+    def reason(x):
+        if x not in report['reason_codes']: report['reason_codes'].append(x)
+    if not path.is_file():
+        reason('SOURCE_FILE_MISSING');return report
+    with path.open('r',encoding='utf-8-sig',newline='') as f:
+        reader=csv.DictReader(f)
+        columns=set(reader.fieldnames or [])
+        missing=set(REQUIRED)-columns
+        if missing:
+            reason('REQUIRED_COLUMNS_MISSING')
+            report['missing_columns']=sorted(missing)
+            return report
+        rows=list(reader)
+    if not rows:
+        reason('SOURCE_EMPTY'); return report
+    seen=set(); invalid=0; stale=0
+    for row in rows:
+        try:
+            date=dt.date.fromisoformat(row['date'])
+            code=row['ticker'].strip()
+            if not TICKER.fullmatch(code) or (date,code) in seen: raise ValueError()
+            seen.add((date,code))
+            # V4B signals may be created after the close for the following day.
+            # A business-day holiday calendar is NOT certified: allow review only.
+            if date>now.date() or (now.date()-date).days>4:
+                stale+=1;continue
+            rs=float(row['rs']); f=float(row['foreign_5d']); inst=float(row['institution_5d'])
+            volume=float(row['volume_ratio']); channel=float(row['channel_position'])
+            close=float(row['reference_close'])
+            if not all(map(lambda x: x==x and abs(x)!=float('inf'),[rs,f,inst,volume,channel,close])): raise ValueError()
+            up=row['channel_up'].strip().lower() in ('true','1','yes')
+            if not (0 <= rs <= 100 and close>0 and volume>=0): raise ValueError()
+            if rs>=min_rs and f>0 and inst>0 and volume>=min_volume and up and 0<=channel<=max_channel:
+                report['review_candidates'].append({'date':date.isoformat(),'ticker':code,'rs':rs,
+                  'reference_close_krw':close, 'flag':'REVIEW_ONLY_NOT_LIVE_QUOTE'})
+        except (ValueError,TypeError,OverflowError,KeyError):
+            invalid+=1
+    if invalid: reason('INVALID_ROWS_PRESENT')
+    if stale: reason('STALE_SIGNAL_ROWS')
+    if not report['review_candidates']: reason('NO_VERIFIED_RULE_MATCHES')
+    report['review_candidates'].sort(key=lambda x:(-x['rs'],x['ticker']))
+    report['review_candidates']=report['review_candidates'][:10]
+    reason('BROKER_CASH_NOT_VERIFIED')
+    reason('LIVE_QUOTE_NOT_VERIFIED')
+    reason('DAILY_LOSS_NOT_VERIFIED')
+    reason('NO_ORDER_TRANSMISSION')
+    return report
+
+def main():
+    p=argparse.ArgumentParser()
+    p.add_argument('--source',default='data/v4b/candidates.csv')
+    p.add_argument('--output',default='v5_9_candidates_review.json')
+    p.add_argument('--rs',type=float,default=90)
+    p.add_argument('--volume',type=float,default=1.2)
+    p.add_argument('--channel',type=float,default=.75)
+    a=p.parse_args()
+    if not (0<=a.rs<=100 and 0<a.volume<=100 and 0<=a.channel<=1): raise ValueError('INVALID_PARAMETERS')
+    output=analyze(Path(a.source),dt.datetime.now(KST),a.rs,a.volume,a.channel)
+    Path(a.output).write_text(json.dumps(output,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    print('V5.9 GATE=DENY; candidates_for_review='+str(len(output['review_candidates']))+
+          '; reasons='+','.join(output['reason_codes'])+
+          '; orders_sent=0; LIVE_ENABLED=false; KIS_ALLOW_ORDER=false')
+if __name__=='__main__':main()
