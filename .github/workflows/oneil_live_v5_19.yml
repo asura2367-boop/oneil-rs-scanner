@@ -1,27 +1,92 @@
 name: Oneil V5.19 Evidence Merge (NO ORDERS)
 on:
   workflow_dispatch:
+    inputs:
+      broker_read:
+        description: 'Read KIS holdings/unfilled (no trades)'
+        type: boolean
+        required: true
+        default: false
+      network:
+        description: 'Read KRX/NXT WebSocket frames (no trades)'
+        type: boolean
+        required: true
+        default: false
 permissions:
   contents: read
+concurrency:
+  group: oneil-v5-19-unified-no-orders
+  cancel-in-progress: false
 jobs:
   review:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     env:
       LIVE_ENABLED: 'false'
       KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+      BROKER_READ: ${{ inputs.broker_read }}
+      NETWORK: ${{ inputs.network }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Offline safety tests
+      - name: Install read-only dependencies
+        run: python -m pip install cryptography requests websockets
+      - name: V5.19 offline safety tests
         run: python -m unittest discover -s tests -p 'test_oneil_live_v5_19.py' -v
-      - name: Merge available evidence without orders
-        run: python oneil_live_v5_19.py
-      - name: Upload sanitized report
+      - name: Make review-only candidate evidence in this run
+        shell: bash
+        run: |
+          rm -f v5_9_candidates_review.json v5_11_review.json
+          if python oneil_live_v5_9.py --output v5_9_candidates_review.json >/dev/null 2>&1 && \
+             python oneil_live_v5_11.py --candidates v5_9_candidates_review.json --output v5_11_review.json >/dev/null 2>&1; then
+            echo 'CANDIDATE_STAGE=GENERATED'
+          else
+            rm -f v5_11_review.json
+            echo 'CANDIDATE_STAGE=BLOCKED'
+          fi
+      - name: Read-only account evidence in this run
+        shell: bash
+        run: |
+          rm -f v5_13_review.json
+          if [ "$BROKER_READ" = 'true' ]; then
+            if python oneil_live_v5_13.py --intents v5_11_review.json --output v5_13_review.json --broker-read >/dev/null 2>&1; then
+              echo 'ACCOUNT_STAGE=OBSERVED_OR_DENIED_CHECK_REPORT'
+            else
+              echo 'ACCOUNT_STAGE=BLOCKED'
+            fi
+          else
+            echo 'ACCOUNT_STAGE=NOT_REQUESTED'
+          fi
+      - name: Quote diagnostics in this run
+        shell: bash
+        run: |
+          rm -f v5_18_report.json
+          if [ "$NETWORK" = 'true' ]; then
+            if python oneil_live_v5_18.py --network --seconds 12 --output v5_18_report.json >/dev/null 2>&1; then
+              echo 'QUOTE_STAGE=OBSERVED_UNATTESTED_OR_BLOCKED_REPORT'
+            else
+              echo 'QUOTE_STAGE=BLOCKED'
+            fi
+          else
+            echo 'QUOTE_STAGE=NOT_REQUESTED'
+          fi
+      - name: Merge same-run evidence and hard DENY
+        run: python oneil_live_v5_19.py --candidates v5_11_review.json --quotes v5_18_report.json --account v5_13_review.json --risk data/live/v4_8_audit.json --output v5_19_report.json
+      - name: Upload sanitized non-authorizing result only
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v5-19-sanitized-deny
+          name: v5-19-integrated-no-orders
           path: v5_19_report.json
+          if-no-files-found: warn
           retention-days: 3
