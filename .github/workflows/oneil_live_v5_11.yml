@@ -1,0 +1,28 @@
+name: Oneil V5.11 LIVE Intent Bridge (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test no-order bridge offline
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_11.py' -v
+      - name: Generate existing LIVE candidates in review mode
+        run: python oneil_live_v5_9.py --output v5_9_candidates_review.json
+      - name: Convert LIVE candidate reviews into non-order intents
+        run: python oneil_live_v5_11.py --candidates v5_9_candidates_review.json --output v5_11_review.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v5-11-non-authorizing-intents
+          path: v5_11_review.json
+          retention-days: 7
