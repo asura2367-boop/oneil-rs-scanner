@@ -1,0 +1,30 @@
+name: Oneil V5.12 Account Evidence Review (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test strict no-order account evidence checker
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_12.py' -v
+      - name: Generate LIVE candidate reviews without orders
+        run: python oneil_live_v5_9.py --output v5_9_candidates_review.json
+      - name: Generate LIVE intents without pricing
+        run: python oneil_live_v5_11.py --candidates v5_9_candidates_review.json --output v5_11_review.json
+      - name: Inspect account evidence if supplied without calling brokerage
+        run: python oneil_live_v5_12.py --intents v5_11_review.json --output v5_12_review.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v5-12-no-order-account-review
+          path: v5_12_review.json
+          retention-days: 7
