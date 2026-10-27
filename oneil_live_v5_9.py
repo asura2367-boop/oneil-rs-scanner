@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 KST=ZoneInfo('Asia/Seoul')
 REQUIRED=('date','ticker','rs','foreign_5d','institution_5d',
-          'volume_ratio','channel_up','channel_position','reference_close')
+          'volume_ratio','channel_up','channel_position')
 TICKER=re.compile(r'^\d{6}$')
 
 def analyze(path, now, min_rs=90, min_volume=1.2, max_channel=.75):
@@ -39,7 +39,7 @@ def analyze(path, now, min_rs=90, min_volume=1.2, max_channel=.75):
             return report
         rows=list(reader)
     if not rows:
-        reason('SOURCE_EMPTY'); return report
+        reason('NO_CANDIDATES'); return report
     seen=set(); invalid=0; stale=0
     for row in rows:
         try:
@@ -53,13 +53,18 @@ def analyze(path, now, min_rs=90, min_volume=1.2, max_channel=.75):
                 stale+=1;continue
             rs=float(row['rs']); f=float(row['foreign_5d']); inst=float(row['institution_5d'])
             volume=float(row['volume_ratio']); channel=float(row['channel_position'])
-            close=float(row['reference_close'])
-            if not all(map(lambda x: x==x and abs(x)!=float('inf'),[rs,f,inst,volume,channel,close])): raise ValueError()
+            # Optional historical close must never be treated as executable price.
+            raw_close=(row.get('reference_close') or '').strip()
+            close=float(raw_close) if raw_close else None
+            numbers=[rs,f,inst,volume,channel]+([close] if close is not None else [])
+            if not all(x==x and abs(x)!=float('inf') for x in numbers): raise ValueError()
             up=row['channel_up'].strip().lower() in ('true','1','yes')
-            if not (0 <= rs <= 100 and close>0 and volume>=0): raise ValueError()
+            if not (0 <= rs <= 100 and volume>=0) or (close is not None and close<=0): raise ValueError()
             if rs>=min_rs and f>0 and inst>0 and volume>=min_volume and up and 0<=channel<=max_channel:
-                report['review_candidates'].append({'date':date.isoformat(),'ticker':code,'rs':rs,
-                  'reference_close_krw':close, 'flag':'REVIEW_ONLY_NOT_LIVE_QUOTE'})
+                item={'date':date.isoformat(),'ticker':code,'rs':rs,
+                      'flag':'REVIEW_ONLY_NOT_LIVE_QUOTE', 'price_verified':False}
+                if close is not None: item['reference_close_krw']=close
+                report['review_candidates'].append(item)
         except (ValueError,TypeError,OverflowError,KeyError):
             invalid+=1
     if invalid: reason('INVALID_ROWS_PRESENT')
