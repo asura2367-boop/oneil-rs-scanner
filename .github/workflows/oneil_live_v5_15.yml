@@ -1,0 +1,27 @@
+name: Oneil V5.15 Quote Evidence Diagnostic (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  quote_diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test conservative quote validation offline
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_15.py' -v
+      - name: Run no-broker quote diagnostic
+        run: python oneil_live_v5_15.py --output v5_15_report.json
+      - name: Upload sanitized non-authorizing report
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-15-quote-diagnostic
+          path: v5_15_report.json
+          retention-days: 3
