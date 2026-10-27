@@ -72,6 +72,24 @@ def evaluate(intents, now, held, invested, unfilled, quote, power):
     return results
 
 
+
+def write_blocked_preflight(path, now, reason, *, source_date=None):
+    """Persist explicit DENY evidence; never impersonate verified KIS preflight."""
+    if reason not in ('NO_INTENTS', 'MARKET_CLOSED'):
+        raise ValueError('UNSUPPORTED_BLOCK_REASON')
+    doc = {'mode': 'READ_ONLY_PREFLIGHT_BLOCKED',
+           'generated_at_kst': now.isoformat(),
+           'status': 'DENY', 'reason': reason,
+           'paper_source_date': source_date,
+           'broker_verified': False, 'live_enabled': False,
+           'orders_sent': 0, 'decisions': [],
+           'note': 'No KIS preflight performed; not a live trading authorization.'}
+    dest = Path(path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp = dest.with_suffix(dest.suffix + '.tmp')
+    temp.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    temp.replace(dest)
+
 def main():
     global STAGE
     STAGE = 'initialization'
@@ -84,12 +102,14 @@ def main():
     protect()
     now = dt.datetime.now(KST)
     if now.weekday() >= 5 or not(dt.time(9, 0) <= now.time() < dt.time(15, 30)):
+        write_blocked_preflight(args.output, now, 'MARKET_CLOSED')
         print('V4.1 BLOCKED_MARKET_CLOSED; orders_sent=0; LIVE_ENABLED=false')
         return
     STAGE = 'candidate_plan'
     plan = prepare(read_json(args.state), read_json(args.summary), now)
     if not plan['intents']:
-        print('V4.1 NO_INTENTS; orders_sent=0; LIVE_ENABLED=false')
+        write_blocked_preflight(args.output, now, 'NO_INTENTS', source_date=plan.get('source_date'))
+        print('V4.1 NO_INTENTS; report=BLOCKED_NO_CANDIDATES; orders_sent=0; LIVE_ENABLED=false')
         return
     # Import ONLY after market and offline input gates. All imported helpers are read-only.
     from kis_buying_power_readonly import credentials, request, get_buying_power
