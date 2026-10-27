@@ -1,0 +1,27 @@
+name: Oneil V5.19 Evidence Merge (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Offline safety tests
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_19.py' -v
+      - name: Merge available evidence without orders
+        run: python oneil_live_v5_19.py
+      - name: Upload sanitized report
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-19-sanitized-deny
+          path: v5_19_report.json
+          retention-days: 3
