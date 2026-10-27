@@ -69,7 +69,7 @@ def run(source,output,*,network=False,seconds=12):
     if os.getenv('LIVE_ENABLED','false').lower()!='false' or os.getenv('KIS_ALLOW_ORDER','false').lower()!='false':
         raise RuntimeError('LIVE_FLAGS_NOT_DISABLED')
     tickers=candidates(source)
-    doc={'version':'5.18','gate':'DENY','mode':'QUOTE_DIAGNOSTIC_ONLY',
+    doc={'version':'5.18','generated_at_kst':dt.datetime.now(KST).isoformat(timespec='seconds'),'gate':'DENY','mode':'QUOTE_DIAGNOSTIC_ONLY',
          'status':'OFFLINE_ONLY','candidates':len(tickers),'counts':{},'venue_counts':{},
          'distinct_symbol_venue_pairs':0,'exchange_business_day_attested':False,
          'exchange_session_phase_attested':False,'quote_schema_fully_attested':False,

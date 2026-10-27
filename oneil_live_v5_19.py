@@ -15,7 +15,7 @@ def load(path):
 
 def fresh(obj, now, minutes=5):
     if not isinstance(obj,dict): return False
-    raw=obj.get('generated_at_kst') or obj.get('timestamp_kst')
+    raw=obj.get('generated_at_kst') or obj.get('timestamp_kst') or obj.get('as_of_kst')
     if not isinstance(raw,str):return False
     try:
         moment=dt.datetime.fromisoformat(raw)
