@@ -1,0 +1,14 @@
+{
+  "version": "5.15",
+  "gate": "DENY",
+  "mode": "NO_ORDER_QUOTE_DIAGNOSTIC",
+  "source_status": "NO_TRUSTED_STREAM_INPUT",
+  "observations": [],
+  "priced_verified": 0,
+  "buying_power_verified": 0,
+  "daily_loss_verified": false,
+  "orders_sent": 0,
+  "broker_api_calls": 0,
+  "LIVE_ENABLED": false,
+  "KIS_ALLOW_ORDER": false
+}
