@@ -1,0 +1,27 @@
+name: Oneil V5.9 LIVE Candidate Review (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  candidate_review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Offline candidate review tests
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_9.py' -v
+      - name: Review candidate file (NEVER submit orders)
+        run: python oneil_live_v5_9.py
+      - name: Upload non-authorizing candidate review
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-9-live-candidate-review-only
+          path: v5_9_candidates_review.json
+          retention-days: 3
