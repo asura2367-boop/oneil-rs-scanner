@@ -17,14 +17,14 @@ REQUIRED=('date','ticker','rs','foreign_5d','institution_5d',
           'volume_ratio','channel_up','channel_position')
 TICKER=re.compile(r'^\d{6}$')
 
-def analyze(path, now, min_rs=90, min_volume=1.2, max_channel=.75):
+def analyze(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
     if any(os.getenv(n,'false').lower()!='false' for n in ('LIVE_ENABLED','KIS_ALLOW_ORDER')):
         raise RuntimeError('LIVE_FLAGS_NOT_DISABLED')
     report={'version':'5.9','status':'DENY','mode':'LIVE_CANDIDATE_REVIEW_ONLY',
             'orders_sent':0,'broker_order_api_calls':0,
             'live_enabled':False,'allow_order':False,
             'source':'V4B_CSV_UNVERIFIED','generated_at_kst':now.isoformat(),
-            'reason_codes':[],'review_candidates':[], 'approved_order_intents':[]}
+            'reason_codes':[],'review_candidates':[], 'approved_order_intents':[], 'candidate_diagnostics':[]}
     def reason(x):
         if x not in report['reason_codes']: report['reason_codes'].append(x)
     if not path.is_file():
@@ -50,7 +50,9 @@ def analyze(path, now, min_rs=90, min_volume=1.2, max_channel=.75):
             # V4B signals may be created after the close for the following day.
             # A business-day holiday calendar is NOT certified: allow review only.
             if date>now.date() or (now.date()-date).days>4:
-                stale+=1;continue
+                stale+=1
+                report['candidate_diagnostics'].append({'ticker':code,'reason_codes':['SIGNAL_DATE_STALE_OR_FUTURE']})
+                continue
             rs=float(row['rs']); f=float(row['foreign_5d']); inst=float(row['institution_5d'])
             volume=float(row['volume_ratio']); channel=float(row['channel_position'])
             # Optional historical close must never be treated as executable price.
@@ -60,9 +62,20 @@ def analyze(path, now, min_rs=90, min_volume=1.2, max_channel=.75):
             if not all(x==x and abs(x)!=float('inf') for x in numbers): raise ValueError()
             up=row['channel_up'].strip().lower() in ('true','1','yes')
             if not (0 <= rs <= 100 and volume>=0) or (close is not None and close<=0): raise ValueError()
-            if rs>=min_rs and f>0 and inst>0 and volume>=min_volume and up and 0<=channel<=max_channel:
+            blocks=[]
+            if rs<min_rs: blocks.append('RS_BELOW_MIN')
+            if volume<min_volume: blocks.append('VOLUME_BELOW_MIN')
+            if not up: blocks.append('CHANNEL_NOT_UP')
+            if not 0<=channel<=max_channel: blocks.append('CHANNEL_POSITION_OUTSIDE')
+            if not (f>0 or inst>0): blocks.append('NO_POSITIVE_FLOW')
+            report['candidate_diagnostics'].append({'ticker':code, 'reason_codes':blocks,
+                'rs':rs, 'volume_ratio':volume, 'foreign_5d':f, 'institution_5d':inst,
+                'flow_category':('BOTH' if f>0 and inst>0 else 'FOREIGN_ONLY' if f>0 else 'INSTITUTION_ONLY' if inst>0 else 'NEITHER')})
+            if not blocks:
                 item={'date':date.isoformat(),'ticker':code,'rs':rs,
-                      'flag':'REVIEW_ONLY_NOT_LIVE_QUOTE', 'price_verified':False}
+                      'flag':'REVIEW_ONLY_NOT_LIVE_QUOTE', 'price_verified':False,
+                      'foreign_5d':f, 'institution_5d':inst,
+                      'flow_category': ('BOTH' if f>0 and inst>0 else 'FOREIGN_ONLY' if f>0 else 'INSTITUTION_ONLY')}
                 if close is not None: item['reference_close_krw']=close
                 report['review_candidates'].append(item)
         except (ValueError,TypeError,OverflowError,KeyError):
@@ -72,6 +85,7 @@ def analyze(path, now, min_rs=90, min_volume=1.2, max_channel=.75):
     if not report['review_candidates']: reason('NO_VERIFIED_RULE_MATCHES')
     report['review_candidates'].sort(key=lambda x:(-x['rs'],x['ticker']))
     report['review_candidates']=report['review_candidates'][:10]
+    report['candidate_diagnostics']=report['candidate_diagnostics'][:200]
     reason('BROKER_CASH_NOT_VERIFIED')
     reason('LIVE_QUOTE_NOT_VERIFIED')
     reason('DAILY_LOSS_NOT_VERIFIED')
@@ -82,14 +96,15 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--source',default='data/v4b/candidates.csv')
     p.add_argument('--output',default='v5_9_candidates_review.json')
-    p.add_argument('--rs',type=float,default=90)
-    p.add_argument('--volume',type=float,default=1.2)
+    p.add_argument('--rs',type=float,default=85)
+    p.add_argument('--volume',type=float,default=1.0)
     p.add_argument('--channel',type=float,default=.75)
     a=p.parse_args()
     if not (0<=a.rs<=100 and 0<a.volume<=100 and 0<=a.channel<=1): raise ValueError('INVALID_PARAMETERS')
     output=analyze(Path(a.source),dt.datetime.now(KST),a.rs,a.volume,a.channel)
     Path(a.output).write_text(json.dumps(output,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     print('V5.9 GATE=DENY; candidates_for_review='+str(len(output['review_candidates']))+
+          '; diagnostics='+json.dumps(output['candidate_diagnostics'],ensure_ascii=False,separators=(',',':'))+
           '; reasons='+','.join(output['reason_codes'])+
           '; orders_sent=0; LIVE_ENABLED=false; KIS_ALLOW_ORDER=false')
 if __name__=='__main__':main()
