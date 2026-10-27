@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
-COLUMNS=['date','ticker','rs','foreign_5d','institution_5d','volume_ratio','channel_position','signal_date','name']
+COLUMNS=['date','ticker','rs','foreign_5d','institution_5d','volume_ratio','channel_position','channel_up','signal_date','name']
 
 def generate(prices_path, flows_path, target, output):
     target=pd.Timestamp(target).normalize()
@@ -62,7 +62,7 @@ def generate(prices_path, flows_path, target, output):
         if five[['foreign_net_qty','institution_net_qty']].isna().any().any():continue
         foreign=float(five.foreign_net_qty.sum());institution=float(five.institution_net_qty.sum())
         if foreign<=0 or institution<=0:continue
-        result.append(dict(date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=foreign,institution_5d=institution,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),signal_date=signal_day.strftime('%Y-%m-%d'),name=r.name))
+        result.append(dict(date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=foreign,institution_5d=institution,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),channel_up=bool(r.channel_up),signal_date=signal_day.strftime('%Y-%m-%d'),name=r.name))
     output.parent.mkdir(parents=True,exist_ok=True)
     pd.DataFrame(result,columns=COLUMNS).sort_values(['rs','ticker'],ascending=[False,True]).to_csv(output,index=False,encoding='utf-8-sig')
     print(f'전일 신호일 {signal_day.date()} / 재현 대상일 {target.date()} / 후보 {len(result)}개 / {output}')
