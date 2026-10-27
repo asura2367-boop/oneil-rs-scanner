@@ -1,0 +1,47 @@
+name: Oneil V5.16 KIS WebSocket Diagnostic (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: 'Connect KIS market-data WebSocket read-only'
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: oneil-v5-16-websocket
+  cancel-in-progress: false
+jobs:
+  quote_ws:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install diagnostic read-only libraries
+        run: pip install 'requests>=2.31,<3' 'websockets>=13,<16'
+      - name: Test safe websocket parser offline
+        run: python -m unittest discover -s tests -p 'test_oneil_live_v5_16.py' -v
+      - name: Inspect quote websocket no orders
+        shell: bash
+        env:
+          NETWORK: ${{ inputs.network }}
+        run: |
+          if [ "$NETWORK" = 'true' ]; then
+            python oneil_live_v5_16.py --network --seconds 12
+          else
+            python oneil_live_v5_16.py
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v5-16-sanitized-diagnostics
+          path: v5_16_report.json
+          retention-days: 2
