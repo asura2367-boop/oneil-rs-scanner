@@ -1,0 +1,20 @@
+name: Oneil V5.19 Live Engine Integration Review (ORDERS LOCKED)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify real-cash budget, persistent order ledger and disabled transmission
+        run: python -m unittest -v tests.test_v519_live_engine
+      - name: Verify no live trade action is invoked
+        run: python oneil_v519_live_engine.py
