@@ -1,0 +1,126 @@
+name: Oneil V5.19 Unified Read-only Evidence (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      broker_read:
+        description: 'KIS read-only account and indicative buying power'
+        type: boolean
+        required: true
+        default: false
+      network:
+        description: 'KRX/NXT quote diagnostic (not executable quote certification)'
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: oneil-v519-unified-readonly
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      BROKER_READ: ${{ inputs.broker_read }}
+      NETWORK: ${{ inputs.network }}
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install read-only dependencies
+        run: python -m pip install cryptography requests websockets
+      - name: Run established fail-closed tests (no zero-test discovery)
+        run: |
+          python -m unittest -v test_v519_kis_reconcile.py
+          python -m unittest -v tests/test_v519_auth_diag.py
+          python -m unittest -v tests/test_v519_token_bootstrap.py
+          python -m unittest -v tests/test_v519_pretrade_audit.py
+      - name: Clear report files from any prior checkout
+        shell: bash
+        run: |
+          rm -f v5_9_candidates_review.json v5_11_review.json v5_13_review.json \
+            v5_19_indicative_power.json v5_19_kis_reconcile.json v5_18_report.json \
+            v5_19_pretrade_audit.json v5_19_report.json v5_19_order_history.json
+      - name: Authenticate for this run only (NO ORDERS)
+        shell: bash
+        run: |
+          if [ "$BROKER_READ" = 'true' ]; then
+            python oneil_v519_token_bootstrap.py --broker-read
+          else
+            python oneil_v519_token_bootstrap.py
+          fi
+      - name: Generate review-only same-run candidates
+        run: |
+          python oneil_live_v5_9.py --output v5_9_candidates_review.json
+          python oneil_live_v5_11.py --candidates v5_9_candidates_review.json --output v5_11_review.json
+      - name: Read KIS holdings and unfilled (NO ORDERS)
+        shell: bash
+        run: |
+          if [ "$BROKER_READ" = 'true' ]; then
+            python oneil_live_v5_13.py --intents v5_11_review.json --output v5_13_review.json --broker-read
+          else
+            python oneil_live_v5_13.py --intents v5_11_review.json --output v5_13_review.json
+          fi
+      - name: Observe indicative buying power (NO ORDERS)
+        shell: bash
+        run: |
+          if [ "$BROKER_READ" = 'true' ]; then
+            python oneil_v519_broker_power_observe.py --intents v5_11_review.json --output v5_19_indicative_power.json --broker-read
+          else
+            python oneil_v519_broker_power_observe.py --intents v5_11_review.json --output v5_19_indicative_power.json
+          fi
+      - name: Reconcile KIS evidence from this run
+        run: python oneil_v519_kis_reconcile.py --intents v5_11_review.json --account v5_13_review.json --buying v5_19_indicative_power.json --output v5_19_kis_reconcile.json
+      - name: Quote observations (not price certification)
+        shell: bash
+        run: |
+          if [ "$NETWORK" = 'true' ]; then
+            python oneil_live_v5_18.py --network --seconds 12 --output v5_18_report.json
+          else
+            python oneil_live_v5_18.py --output v5_18_report.json
+          fi
+      - name: Assess pretrade evidence (ALWAYS DENY)
+        run: |
+          python oneil_v519_pretrade_audit.py \
+            --candidate v5_11_review.json \
+            --account v5_13_review.json \
+            --buying v5_19_indicative_power.json \
+            --quote v5_18_report.json \
+            --risk /dev/null \
+            --history /dev/null \
+            --output v5_19_pretrade_audit.json
+          python - <<'PY'
+          import json
+          with open('v5_19_pretrade_audit.json', encoding='utf8') as f:
+              report=json.load(f)
+          assert report['gate']=='DENY'
+          assert report['orders_sent']==0
+          assert report['approved_order_quantity_count']==0
+          assert report['LIVE_ENABLED'] is False and report['KIS_ALLOW_ORDER'] is False
+          assert 'DAILY_LOSS_INDEPENDENT_RECONCILIATION_REQUIRED' in report['block_codes']
+          assert 'AUTOMATIC_RETRY_AND_ORDER_TRANSMISSION_DISABLED' in report['block_codes']
+          print('UNIFIED_AUDIT=SAFE_DENY; orders_sent=0')
+          PY
+      - name: Upload sanitized same-run reports only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v519-unified-readonly-no-orders
+          path: |
+            v5_19_kis_reconcile.json
+            v5_18_report.json
+            v5_19_pretrade_audit.json
+          if-no-files-found: warn
+          retention-days: 3
