@@ -1,0 +1,39 @@
+name: V5.19 order engine validation (NO LIVE ORDERS)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'oneil_v519_*.py'
+      - 'test_v519_runner_update.py'
+      - '.github/workflows/v519-validation.yml'
+permissions:
+  contents: read
+concurrency:
+  group: v519-validation
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      I_APPROVE_LIVE_KIS_ORDERS: 'NO'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate Python and order checks
+        run: |
+          python -m py_compile oneil_v519_live_runner.py oneil_v519_broker_recovery.py oneil_v519_order_recovery.py
+          python -m unittest discover -p 'test_v519_runner_update.py' -v
+      - name: Verify GitHub Actions live order gate stays closed
+        run: |
+          mkdir -p "$RUNNER_TEMP/v519-state"
+          chmod 700 "$RUNNER_TEMP/v519-state"
+          if python oneil_v519_live_runner.py --state-dir "$RUNNER_TEMP/v519-state" --ticker 005930 --execute > "$RUNNER_TEMP/v519-result.txt" 2>&1; then
+            echo 'FAIL: execute unexpectedly succeeded'; exit 1
+          fi
+          grep -q 'EPHEMERAL_RUNNER_UNSAFE_FOR_LIVE' "$RUNNER_TEMP/v519-result.txt"
+          echo 'PASS: ephemeral runner blocks live execution'
