@@ -1,10 +1,10 @@
 {
   "as_of": "2026-10-28",
   "universe_total": 2675,
-  "collected_symbols": 1107,
-  "remaining_symbols": 1568,
-  "progress_pct": 41.38,
-  "daily_rows": 300524,
+  "collected_symbols": 1145,
+  "remaining_symbols": 1530,
+  "progress_pct": 42.8,
+  "daily_rows": 310860,
   "last_run_success": 48,
   "last_run_failures": 2,
   "note": "수집 완료 수는 일봉이 1개 이상인 종목 기준이며 RS 계산 적격 종목 수와 다릅니다."
