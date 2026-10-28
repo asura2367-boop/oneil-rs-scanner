@@ -1,0 +1,38 @@
+name: V5.19 unified integration review (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: v519-unified-review
+  cancel-in-progress: false
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      I_APPROVE_LIVE_KIS_ORDERS: 'NO'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile unified modules
+        run: |
+          python -m py_compile v519_order_gateway.py v519_pg_ledger.py v519_pg_reconcile.py v519_kis_pg_sync.py
+      - name: Ensure execution remains blocked
+        run: |
+          python - <<'PY'
+          import argparse
+          from v519_order_gateway import execute
+          from v519_pg_ledger import LedgerBlocked
+          try:
+              execute(argparse.Namespace())
+          except LedgerBlocked as e:
+              assert str(e) == "FULL_ACCOUNT_RISK_AND_RECOVERY_GATE_NOT_INTEGRATED"
+          else:
+              raise AssertionError("Live gate unexpectedly opened")
+          print("PASS: live submission blocked")
+          PY
