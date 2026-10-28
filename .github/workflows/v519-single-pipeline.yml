@@ -1,0 +1,44 @@
+name: V5.19 scanner KIS Supabase and order plan (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: v519-single-pipeline
+  cancel-in-progress: false
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      I_APPROVE_LIVE_KIS_ORDERS: 'NO'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pandas numpy 'psycopg[binary]==3.2.9'
+      - name: Generate candidates from current saved daily inputs
+        run: |
+          DAY="$(TZ=Asia/Seoul date +%F)"
+          echo "TRADE_DAY=$DAY" >> "$GITHUB_ENV"
+          python build_v4b_candidates.py --date "$DAY" --output "$RUNNER_TEMP/candidates.csv" --diagnostics "$RUNNER_TEMP/diagnostics.json"
+      - name: KIS account and Supabase review
+        run: python v519_scan_broker_review.py --csv "$RUNNER_TEMP/candidates.csv" --date "$TRADE_DAY" --output v519_broker_review.json
+      - name: Compute non-executable order plan
+        run: python v519_order_decisions.py --review v519_broker_review.json --output v519_order_plan.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v519-single-pipeline-report
+          path: |
+            v519_broker_review.json
+            v519_order_plan.json
+          if-no-files-found: ignore
