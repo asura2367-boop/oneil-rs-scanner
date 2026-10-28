@@ -1,0 +1,42 @@
+name: V5.19 scanner KIS Supabase integrated review (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: v519-integrated-scan-review
+  cancel-in-progress: false
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      I_APPROVE_LIVE_KIS_ORDERS: 'NO'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install scanner and database dependencies
+        run: python -m pip install pandas numpy 'psycopg[binary]==3.2.9'
+      - name: Generate same-run candidates from existing scanner
+        run: |
+          set -euo pipefail
+          DAY="$(TZ=Asia/Seoul date +%F)"
+          echo "TRADE_DAY=$DAY" >> "$GITHUB_ENV"
+          python build_v4b_candidates.py --date "$DAY" --output "$RUNNER_TEMP/v519-candidates.csv" --diagnostics "$RUNNER_TEMP/v519-diagnostics.json"
+      - name: Review fresh candidates against KIS and Supabase without orders
+        run: python v519_scan_broker_review.py --csv "$RUNNER_TEMP/v519-candidates.csv" --date "$TRADE_DAY" --output v519_broker_review.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v519-integrated-review
+          path: v519_broker_review.json
+          if-no-files-found: ignore
