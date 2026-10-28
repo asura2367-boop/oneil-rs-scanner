@@ -42,11 +42,18 @@ python oneil_v519_live_engine.py --halt
 
 KIS 공식 매핑 근거: [현금 주문](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/order_cash/order_cash.py), [일별 체결 조회](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_daily_ccld/inquire_daily_ccld.py), [호가 조회](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_asking_price_exp_ccn/inquire_asking_price_exp_ccn.py).
 
-## 이번 작업의 검증 결과 (2026-10-29)
+## 검증과 배포 결과 (2026-10-29)
 
-- 기준 main: `110616a93bbf70ff6e2ef9425da2d6d82d7d618d`.
-- 기존 엔진 테스트 파일의 39개 중 오프라인 24개 통과, PostgreSQL 통합 15개는 로컬 DB 미제공으로 건너뜀. PostgreSQL 16 서비스에서 실행할 Actions 설정은 포함했으나 아직 실행되지 않았다.
-- 모듈을 격리해 전체 unittest 541개 수집: 522개 통과, 15개 건너뜀, 기존 실패 2개와 기존 import 오류 2개. V5.18 야간 세션 기대값 불일치 2건, paper V5.1 손익 assert 오류, priority 함수 부재는 변경 전 원본에서도 재현했다. 함수명이 겹치는 루트/tests 구조 때문에 전체 discover 한 번 대신 파일별 격리 실행을 사용했다. import 시 검증하는 `test_live_trade.py`는 별도 스크립트 실행 성공.
-- Python 컴파일과 diff 공백 검사는 통과. 모든 실전 환경변수를 켠 경우에도 주문 전송은 릴리스 잠금으로 거부됨을 확인했다.
-- GitHub tree 생성 및 branch ref 쓰기가 모두 `403 Resource not accessible by integration`으로 거부됨. 원격 저장소 변경, PR/CI 실행, Supabase 마이그레이션, KIS 실서버 통합 검증은 완료되지 않았다. 실제 주문은 보내지 않았다.
-- 다음 순서: GitHub Contents/Workflows 쓰기 접근 복구 → 패치 반영 및 PostgreSQL CI → 실제 KIS/Supabase 조회 검증 및 모의 주문/장애 복구 검증 → 결과 검토 → 사용자 명시 승인 → 별도 활성화 릴리스.
+- 분석 기준 main: `110616a93bbf70ff6e2ef9425da2d6d82d7d618d`.
+- [통합 PR #1](https://github.com/asura2367-boop/oneil-rs-scanner/pull/1)과 [조회·잠금 보강 PR #2](https://github.com/asura2367-boop/oneil-rs-scanner/pull/2)를 main에 반영했다. 실제 주문은 보내지 않았다.
+- [최종 PR CI](https://github.com/asura2367-boop/oneil-rs-scanner/actions/runs/40760517778)에서 77개 테스트 전부 통과: 기존 엔진 파일 42개(오프라인 26 + PostgreSQL 16 통합 16), 기존 KIS/원장/현금 회귀 테스트 35개. 영구 커밋 후 전송, 중복 실행, 타임아웃·ACK 저장 장애 후 잠금, 부분·전량 체결/취소, 날짜·계좌·방향 일치, 이력 누락 차단을 검증했다.
+- 최초 로컬 전체 격리 실행은 unittest 541개 중 522개 통과, PostgreSQL 15개 건너뜀, 기존 실패 2개와 기존 import 오류 2개였다. 이후 PostgreSQL CI와 신규 안전 테스트를 추가 검증했다. V5.18 야간 세션 기대값 불일치 2건, paper V5.1 손익 assert 오류, priority 함수 부재는 변경 전 원본에서도 재현한 별도 레거시 문제다. 루트/tests에 같은 모듈명이 있어 전체 discover 한 번 대신 파일별 격리 실행을 사용했다.
+- [첫 main 배포 실행](https://github.com/asura2367-boop/oneil-rs-scanner/actions/runs/40759898979)에서 Supabase 마이그레이션, KIS 잔고·미체결·예수금·현재가·주문가능금액 조회, 영구 실행 결과 기록이 성공했다. 후보 1개·매수 계획 1개, 미해결 원장 0건, 주문 시도/전송 0건.
+- 모든 실전 환경변수를 켜더라도 릴리스 잠금이 인증 및 전송 전에 차단됨을 확인했다. 비상정지 워크플로는 일반 실행 큐와 분리했다.
+- 실계좌의 실제 주문·실체결을 발생시키는 검증은 수행하지 않았다. 서버 응답과 장애 복구를 모의 환경에서 검증하고 사용자 명시 승인을 받은 뒤에만 별도 활성화 릴리스를 진행한다.
+
+## 조회 화면과 감시 주기
+
+현재 `app.py`의 계좌 화면은 GitHub의 `data/paper/state.json`을 표시하는 **모의투자 화면**이다. 실제 KIS 주문 원장·실계좌 수익률용 화면은 아직 연결하지 않았다. 실제 체결·잔고·손익은 한국투자증권 앱에서 계좌 기준으로 확인한다. 자동매매 원장과 수익률을 한 화면에서 보려면 별도의 인증된 조회 대시보드가 필요하다.
+
+이 통합 배포는 장중 20분 간격으로 최신 저장 후보 CSV를 다시 읽고 KIS 조회를 수행한다. 매번 전체 시장의 RS를 실시간 재계산하는 구조가 아니다. CSV 수집/갱신과 Actions 실행 사이에 지연이 있을 수 있다. 실시간 감시·즉시 손절에는 지속 실행 서버가 필요하다.

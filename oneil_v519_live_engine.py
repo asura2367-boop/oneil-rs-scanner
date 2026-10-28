@@ -289,7 +289,7 @@ class KisBroker:
             if not isinstance(summaries, list) or len(summaries)!=1 or not isinstance(rows, list):
                 raise TradingBlocked('BALANCE_INCOMPLETE')
             s = summaries[0]
-            totals.append((exact_int(s.get('dnca_tot_amt')), exact_int(s.get('scts_evlu_amt'))))
+            totals.append((exact_int(s.get('dnca_tot_amt')), exact_int(s.get('scts_evlu_amt')),exact_int(s.get('tot_evlu_amt'))))
             for r in rows:
                 qty = exact_int(r.get('hldg_qty'))
                 if not qty:
@@ -301,7 +301,7 @@ class KisBroker:
                 if not avg.is_finite() or avg <= 0:
                     raise TradingBlocked('COST_INVALID')
                 positions[ticker] = {'quantity':qty, 'sellable':exact_int(r.get('ord_psbl_qty')),
-                    'average':str(avg), 'cost':int((avg*qty).to_integral_value(rounding=ROUND_CEILING)),
+                    'name':str(r.get('prdt_name') or ticker), 'average':str(avg), 'cost':int((avg*qty).to_integral_value(rounding=ROUND_CEILING)),
                     'valuation':exact_int(r.get('evlu_amt'))}
             if cont.strip().upper() not in ('F','M'):
                 break
@@ -313,11 +313,12 @@ class KisBroker:
             raise TradingBlocked('BALANCE_PAGE_LIMIT')
         if len(set(totals)) != 1:
             raise TradingBlocked('BALANCE_CHANGED_DURING_PAGING')
-        cash, valuation = totals[0]
+        cash, valuation, equity = totals[0]
         # Cost and market exposure are both counted conservatively.
         invested = max(valuation, sum(max(p['cost'],p['valuation']) for p in positions.values()))
         pending = unfilled_codes(self.key,self.secret,self.account,self.product,self.access)
-        return {'cash':cash,'invested':invested,'positions':positions,'pending':pending}
+        return {'cash':cash,'invested':invested,'positions':positions,'pending':pending,
+                'equity':equity,'valuation':valuation}
 
     def history(self, day):
         from oneil_v519_history_observe import fetch_page
@@ -469,6 +470,7 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
         snapshot['bought_today']=ledger.bought_today(now.date())
         plans, allocation = plan_orders(candidates,snapshot,broker.quote,broker.power,
             stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct)
+        ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now}
         result['planned_buys']=sum(p.side=='BUY' for p in plans)
         result['planned_sells']=sum(p.side=='SELL' for p in plans)
         if not execute:
@@ -513,6 +515,73 @@ def scan_candidates(source, now):
     return report['review_candidates']
 
 
+def monitoring_open(now):
+    local=now.astimezone(ZoneInfo('Asia/Seoul'))
+    return dt.time(9)<=local.time().replace(tzinfo=None)<dt.time(20)
+
+
+def dashboard_snapshot(ledger,result):
+    """Private account payload; must only leave the runner through encryption."""
+    from dataclasses import asdict
+    state=getattr(ledger,'dashboard_state',None)
+    if not state:
+        raise TradingBlocked('DASHBOARD_ACCOUNT_SNAPSHOT_MISSING')
+    snap=state['snapshot']; positions=[]
+    for ticker,p in snap['positions'].items():
+        cost=p['cost']; value=p['valuation']
+        positions.append({'ticker':ticker,'name':p.get('name',ticker),
+            'quantity':p['quantity'],'sellable':p['sellable'],'average':p['average'],
+            'valuation':value,'cost':cost,'unrealized_pnl':value-cost,
+            'return_pct':(value-cost)/cost*100 if cost else None,
+            'strategy_quantity':snap['managed'].get(ticker,0)})
+    orders=ledger.rows("""SELECT ticker,side,venue,quantity,filled_quantity,status,
+        broker_order_id,trading_day,limit_price,created_at,updated_at
+        FROM v519_order_intents WHERE account_fingerprint=%s ORDER BY created_at DESC LIMIT 100""",
+        (ledger.fingerprint,))
+    runs=ledger.rows("""SELECT started_at,finished_at,result FROM v519_runs
+        WHERE account_fingerprint=%s ORDER BY started_at DESC LIMIT 50""",(ledger.fingerprint,))
+    equity_history=[{'at':r['finished_at'],'equity':r['result']['account_snapshot']['equity']}
+        for r in reversed(runs) if isinstance(r.get('result'),dict) and
+        isinstance(r['result'].get('account_snapshot'),dict) and
+        r['result']['account_snapshot'].get('equity') is not None]
+    return {'schema_version':1,'generated_at':state['at'].isoformat(),
+        'mode':'OBSERVE_ONLY','orders_enabled':False,'halted':ledger.halted(),
+        'monitoring_open':monitoring_open(state['at']) and result.get('status')!='DAILY_CLOSED',
+        'monitor_hours':'09:00–20:00 KST','poll_minutes':20,'venue':'KRX',
+        'result':result,'allocation':state['allocation'],
+        'account':{'cash':snap['cash'],'equity':snap.get('equity'),
+            'valuation':snap.get('valuation'),
+            'unrealized_pnl':sum(p['unrealized_pnl'] for p in positions),
+            'strategy_realized_pnl':0 if not orders else None},
+        'positions':positions,'candidates':state['candidates'],
+        'plans':[asdict(p) for p in state['plans']],
+        'orders':orders,'runs':runs,'equity_history':equity_history,
+        'pnl_note':'평가손익은 평가금액−매입원가 단순 계산이며 수수료·세금 전입니다. 자산 추이에는 입출금이 포함될 수 있습니다.'}
+
+
+def encrypt_dashboard(snapshot, public_key_path, output_path):
+    """RSA-OAEP/SHA256 + AES-256-GCM. No plaintext file, key or balance logs."""
+    import base64
+    from cryptography.hazmat.primitives import serialization,hashes
+    from cryptography.hazmat.primitives.asymmetric import padding,rsa
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    public_bytes=Path(public_key_path).read_bytes()
+    public=serialization.load_pem_public_key(public_bytes)
+    if not isinstance(public,rsa.RSAPublicKey) or public.key_size<3072:
+        raise TradingBlocked('DASHBOARD_PUBLIC_KEY_INVALID')
+    key_id=hashlib.sha256(public_bytes).hexdigest()[:16]
+    aad=('oneil-dashboard-v1:'+key_id).encode()
+    key=os.urandom(32); nonce=os.urandom(12)
+    plaintext=json.dumps(snapshot,ensure_ascii=False,default=str,separators=(',',':')).encode()
+    encrypted=AESGCM(key).encrypt(nonce,plaintext,aad)
+    wrapped=public.encrypt(key,padding.OAEP(mgf=padding.MGF1(hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+    b64=lambda data:base64.b64encode(data).decode('ascii')
+    out={'schema_version':1,'key_id':key_id,'algorithm':'RSA-OAEP-256+A256GCM',
+         'wrapped_key':b64(wrapped),'nonce':b64(nonce),'ciphertext':b64(encrypted)}
+    target=Path(output_path);target.parent.mkdir(parents=True,exist_ok=True)
+    target.write_text(json.dumps(out,separators=(',',':'))+'\n',encoding='utf8')
+
+
 def runtime_main():
     import argparse
     import uuid
@@ -524,9 +593,12 @@ def runtime_main():
     modes.add_argument('--migrate',action='store_true')
     modes.add_argument('--halt',action='store_true')
     modes.add_argument('--recover',action='store_true')
+    modes.add_argument('--close',action='store_true')
     p.add_argument('--execute',action='store_true')
     p.add_argument('--source',default='data/v4b/candidates.csv')
     p.add_argument('--output',default='v5_19_report.json')
+    p.add_argument('--dashboard-public-key')
+    p.add_argument('--dashboard-output',default='data/live/dashboard.enc.json')
     p.add_argument('--stop-loss-pct',type=int,default=5)
     p.add_argument('--take-profit-pct',type=int,default=10)
     args=p.parse_args()
@@ -534,7 +606,7 @@ def runtime_main():
     try:
         if args.execute:
             require_live_release()  # deny before DB, token or any network order
-        if not any((args.run,args.migrate,args.halt,args.recover)):
+        if not any((args.run,args.migrate,args.halt,args.recover,args.close)):
             print(json.dumps(result))
             return
         if urlparse(os.getenv('SUPABASE_DB_URL','')).port==6543:
@@ -562,6 +634,8 @@ def runtime_main():
                     fingerprint=hashlib.sha256((account+'|'+product).encode()).hexdigest()
                     ledger=PgRuntimeLedger(db,fingerprint)
                     ledger.start_run(run_id)
+                    if args.close:
+                        ledger.halt()  # Closing never liquidates or retries broker orders.
                     try:
                         broker=KisBroker(execution=args.execute)
                         if args.recover:
@@ -583,7 +657,17 @@ def runtime_main():
                                 result['scanner_status']='BLOCKED_INVALID_OR_STALE_SOURCE'; code=2
                             else:
                                 result['scanner_status']='VALID'
-                        ledger.finish_run(run_id,result)
+                        if args.close:
+                            result['status']='DAILY_CLOSED'
+                        private_record=dict(result)
+                        if getattr(ledger,'dashboard_state',None):
+                            snap=ledger.dashboard_state['snapshot']
+                            private_record['account_snapshot']={'cash':snap['cash'],
+                                'equity':snap.get('equity'),'valuation':snap.get('valuation')}
+                        ledger.finish_run(run_id,private_record)
+                        if args.dashboard_public_key:
+                            snapshot=dashboard_snapshot(ledger,result)
+                            encrypt_dashboard(snapshot,args.dashboard_public_key,args.dashboard_output)
                     except Exception:
                         failed={'status':'BLOCKED','gate':'DENY','order_outcome':'CHECK_LEDGER',
                                 'orders_sent':None if args.execute else 0}
