@@ -11,18 +11,9 @@ from zoneinfo import ZoneInfo
 
 from oneil_live_v5_16 import approval_key, candidates, subscribe_message, VENUES, WS_URL, safe_flags
 from oneil_live_v5_17 import parse_frame
+from oneil_v519_session_guard import phase
 
 KST=ZoneInfo('Asia/Seoul')
-
-def phase(venue, now):
-    """Conservative indicative venue window, NOT exchange calendar certification."""
-    t=now.astimezone(KST)
-    if t.weekday()>=5: return 'CLOSED_OR_UNVERIFIED'
-    mins=t.hour*60+t.minute
-    if venue=='KRX' and 540 <= mins < 930: return 'REGULAR_WINDOW_ONLY'
-    if venue=='NXT' and 540 <= mins < 930: return 'REGULAR_WINDOW_ONLY'
-    if venue=='NXT' and 940 <= mins < 1200: return 'EVENING_WINDOW_ONLY'
-    return 'CLOSED_OR_UNVERIFIED'
 
 def check(frame, expected, received_at, seen):
     """Sanitized classification. seen holds metadata IDs only, never prices."""
@@ -30,7 +21,6 @@ def check(frame, expected, received_at, seen):
     if v['status']!='PLAUSIBLE_BOOK_UNATTESTED': return v['status'],v['venue'],v['ticker']
     venue,ticker=v['venue'],v['ticker']
     if phase(venue,received_at)=='CLOSED_OR_UNVERIFIED': return 'VENUE_WINDOW_UNVERIFIED',venue,ticker
-    # Exchange business time is a clock without date. It cannot prove session phase.
     try:
         fields=frame.split('|',3)[3].split('^')
         hhmmss=fields[1]
@@ -65,7 +55,6 @@ async def observe(tickers,seconds):
 
 def run(source,output,*,network=False,seconds=12):
     safe_flags()
-    # Enforce hard deny on any accidentally enabled environment flag.
     if os.getenv('LIVE_ENABLED','false').lower()!='false' or os.getenv('KIS_ALLOW_ORDER','false').lower()!='false':
         raise RuntimeError('LIVE_FLAGS_NOT_DISABLED')
     tickers=candidates(source)
