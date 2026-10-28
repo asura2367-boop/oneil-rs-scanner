@@ -1,0 +1,50 @@
+name: V5.19 Apply deposit-based cash policy
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: v519-cash-policy-commit
+  cancel-in-progress: false
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      I_APPROVE_LIVE_KIS_ORDERS: 'NO'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply cash policy to existing files
+        run: python apply_cash_fix.py
+      - name: Verify code and fail-closed behavior
+        run: |
+          python -m py_compile v519_order_decisions.py v519_order_integration.py v519_cash_policy.py
+          python - <<'PY'
+          from pathlib import Path
+          a=Path('v519_order_decisions.py').read_text()
+          b=Path('v519_order_integration.py').read_text()
+          assert 'CAPITAL=1_000_000' not in a
+          assert 'MAX_TOTAL = 1_000_000' not in b
+          assert 'KIS_DEPOSIT_NOT_VERIFIED' in b
+          print('PASS: deposit-based policy; live orders remain blocked')
+          PY
+      - name: Commit changed strategy files
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- v519_order_decisions.py v519_order_integration.py
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+            exit 0
+          fi
+          git commit -m 'Restore deposit-based cash policy'
+          git push origin HEAD:main
