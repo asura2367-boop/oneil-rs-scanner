@@ -3,16 +3,14 @@ Existing KIS reference prices are not executable quotes. No broker writes.
 """
 import argparse,json
 from pathlib import Path
-CAPITAL=1_000_000
-RESERVE=400_000
-TRADING=600_000
-STOCK_LIMIT=180_000
+# No fixed capital. This plan is NOT an order authorization.
+# KIS deposit and total exposure must be verified separately.
 def decide(report):
     if report.get('status')!='READ_ONLY_BROKER_REVIEW' or report.get('gate')!='DENY' or report.get('orders_sent')!=0:
         raise ValueError('UNVERIFIED_REVIEW')
     candidates=report.get('candidates')
     if not isinstance(candidates,list):raise ValueError('CANDIDATES_MISSING')
-    remaining=TRADING
+    remaining=None  # No deposit attestation in broker review
     orders=[]
     seen=set()
     for c in sorted(candidates,key=lambda x:-x['rs']):
@@ -22,14 +20,13 @@ def decide(report):
         seen.add(ticker)
         if type(price)!=int or price<=0 or type(qty)!=int or qty<0 or c.get('order_authorized') is not False:
             raise ValueError('INVALID_BROKER_REVIEW')
-        quantity=min(qty,STOCK_LIMIT//price,remaining//price)
-        remaining-=quantity*price
+        quantity=qty  # indicative broker quantity only, NOT deposit-based sizing
         orders.append({'ticker':ticker,'rs':c['rs'],'side':'BUY','reference_price':price,
                        'preview_quantity':quantity,'preview_notional':quantity*price,
                        'approved':False,'executable_price_verified':False})
     return {'status':'ORDER_PLAN_READ_ONLY','gate':'DENY','orders_sent':0,
-            'limits':{'capital':CAPITAL,'reserve':RESERVE,'trading':TRADING,'per_stock':STOCK_LIMIT},
-            'preview_notional_total':TRADING-remaining,'orders':orders}
+            'limits':{'basis':'KIS_DEPOSIT_UNVERIFIED','reserve_pct':40,'trading_pct':60,'per_stock_pct_of_trading':30},
+            'preview_notional_total':None,'orders':orders}
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--review',required=True);p.add_argument('--output',default='v519_order_plan.json')

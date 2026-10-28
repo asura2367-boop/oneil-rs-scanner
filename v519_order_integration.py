@@ -14,10 +14,7 @@ from v519_pg_ledger import connect, LedgerBlocked
 from v519_durable_submit import make_intent_id, submit_once
 
 KST = ZoneInfo('Asia/Seoul')
-MAX_TOTAL = 1_000_000
-RESERVE = 400_000
-MAX_TRADING = MAX_TOTAL - RESERVE
-MAX_STOCK = 180_000
+from v519_cash_policy import limits
 
 
 def broker_risk_snapshot():
@@ -36,7 +33,7 @@ def broker_risk_snapshot():
     if type(invested) is not int or invested < 0:
         raise LedgerBlocked('INVALID_PORTFOLIO_VALUE')
     return {'account': account, 'product': product, 'held': held,
-            'invested': invested, 'pending': pending,
+            'invested': invested, 'pending': pending, 'cash_verified': False,
             'complete_daily_pnl': False, 'complete_history': False,
             'executable_quote_verified': False}
 
@@ -48,9 +45,10 @@ def make_execution_review(plan, snapshot, ledger):
         raise LedgerBlocked('LEDGER_HALTED_OR_UNRESOLVED')
     if snapshot['pending']:
         raise LedgerBlocked('BROKER_PENDING_ORDERS')
-    if snapshot['invested'] > MAX_TRADING:
-        raise LedgerBlocked('TRADING_EXPOSURE_CAP')
-    remaining = MAX_TRADING - snapshot['invested']
+    if snapshot.get('cash_verified') is not True:
+        raise LedgerBlocked('KIS_DEPOSIT_NOT_VERIFIED')
+    budget=limits(snapshot['cash_krw'],snapshot['invested'],snapshot['orderable_krw'])
+    remaining = budget['remaining']
     proposals = []
     for order in plan.get('orders', []):
         ticker = order['ticker']
@@ -60,7 +58,7 @@ def make_execution_review(plan, snapshot, ledger):
             quantity = 0
         if type(price) is not int or price <= 0 or type(quantity) is not int or quantity < 0:
             raise LedgerBlocked('ORDER_SIZE_INVALID')
-        quantity = min(quantity, MAX_STOCK // price, remaining // price)
+        quantity = min(quantity, budget['per_stock'] // price, remaining // price)
         remaining -= quantity * price
         proposals.append({'ticker': ticker, 'side': 'BUY', 'quantity': quantity,
                           'reference_price': price, 'approved': False,
