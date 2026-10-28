@@ -1,9 +1,0 @@
-      - name: Observe indicative KIS buying power safely (NO ORDERS)
-        shell: bash
-        run: |
-          rm -f v5_19_indicative_power.json
-          if python oneil_v519_broker_power_observe.py --intents v5_11_review.json --output v5_19_indicative_power.json $([ "$BROKER_READ" = 'true' ] && printf '%s' '--broker-read'); then
-            echo 'INDICATIVE_POWER_STAGE=REPORT_WRITTEN_NO_ORDERS'
-          else
-            echo 'INDICATIVE_POWER_STAGE=BLOCKED'
-          fi
