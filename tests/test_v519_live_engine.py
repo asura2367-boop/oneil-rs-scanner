@@ -155,6 +155,35 @@ class RuntimeRiskTests(unittest.TestCase):
             self.assertEqual(broker.account,'12345678')
             wire.assert_not_called()
 
+    def test_monitor_hours_use_korea_time_and_exclude_close(self):
+        zone=ZoneInfo('Asia/Seoul')
+        self.assertFalse(monitoring_open(dt.datetime(2026,10,29,8,59,tzinfo=zone)))
+        self.assertTrue(monitoring_open(dt.datetime(2026,10,29,9,0,tzinfo=zone)))
+        self.assertTrue(monitoring_open(dt.datetime(2026,10,29,19,59,tzinfo=zone)))
+        self.assertFalse(monitoring_open(dt.datetime(2026,10,29,20,0,tzinfo=zone)))
+        self.assertTrue(monitoring_open(dt.datetime(2026,10,29,0,0,tzinfo=dt.timezone.utc)))
+
+    def test_dashboard_encryption_roundtrip_and_tamper_protection(self):
+        import base64,json
+        from cryptography.hazmat.primitives.asymmetric import rsa,padding
+        from cryptography.hazmat.primitives import serialization,hashes
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.exceptions import InvalidTag
+        key=rsa.generate_private_key(public_exponent=65537,key_size=3072)
+        with tempfile.TemporaryDirectory() as directory:
+            pub=pathlib.Path(directory)/'public.pem'; out=pathlib.Path(directory)/'encrypted.json'
+            pub.write_bytes(key.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo))
+            original={'cash':5321987,'name':'PRIVATE_ACCOUNT_TEST'}
+            encrypt_dashboard(original,pub,out)
+            raw=out.read_text(); self.assertNotIn('PRIVATE_ACCOUNT_TEST',raw);self.assertNotIn('5321987',raw)
+            envelope=json.loads(raw); dec=base64.b64decode
+            aes=key.decrypt(dec(envelope['wrapped_key']),padding.OAEP(mgf=padding.MGF1(hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+            aad=('oneil-dashboard-v1:'+envelope['key_id']).encode()
+            plain=AESGCM(aes).decrypt(dec(envelope['nonce']),dec(envelope['ciphertext']),aad)
+            self.assertEqual(json.loads(plain),original)
+            altered=bytearray(dec(envelope['ciphertext']));altered[0]^=1
+            with self.assertRaises(InvalidTag):AESGCM(aes).decrypt(dec(envelope['nonce']),bytes(altered),aad)
+
     def test_missing_and_stale_source_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TradingBlocked):scan_candidates(pathlib.Path(directory)/'none',dt.datetime.now(ZoneInfo('Asia/Seoul')))
@@ -298,6 +327,15 @@ class PostgresRuntimeTests(unittest.TestCase):
         r=self.cycle()
         self.assertEqual(r['orders_sent'],1)
         self.assertEqual((self.broker.calls[0].side,self.broker.calls[0].quantity),('SELL',6))
+    def test_private_dashboard_uses_real_observation_and_no_credentials(self):
+        self.cycle(False)
+        data=dashboard_snapshot(self.ledger,{'status':'OBSERVED','orders_sent':0})
+        self.assertEqual(data['account']['cash'],self.broker.cash)
+        self.assertEqual(data['allocation']['reserve'],self.broker.cash*40//100)
+        self.assertEqual(data['orders'],[])
+        self.assertFalse(data['orders_enabled'])
+        self.assertNotIn('account_fingerprint',json.dumps(data,default=str))
+
     def test_run_log_persists_summary(self):
         self.ledger.start_run('test'); self.ledger.finish_run('test',{'status':'OBSERVED','orders_sent':0})
         result=self.conn.execute("SELECT result FROM v519_runs WHERE run_id='test'").fetchone()[0]
