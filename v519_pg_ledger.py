@@ -113,6 +113,13 @@ CREATE TABLE IF NOT EXISTS v519_runs (
 ALTER TABLE v519_order_intents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE v519_control ENABLE ROW LEVEL SECURITY;
 ALTER TABLE v519_runs ENABLE ROW LEVEL SECURITY;
+CREATE TABLE IF NOT EXISTS v519_live_activation (
+ account_fingerprint text PRIMARY KEY CHECK (length(account_fingerprint)=64),
+ release_fingerprint text NOT NULL CHECK (length(release_fingerprint)=64),
+ operator_login text NOT NULL,
+ activated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE v519_live_activation ENABLE ROW LEVEL SECURITY;
 '''
 
 
@@ -174,6 +181,23 @@ class PgRuntimeLedger:
                 raise LedgerBlocked('EMERGENCY_HALT_ACTIVE')
             yield
 
+    def release_authorized(self, release):
+        rows=self.rows('SELECT release_fingerprint FROM v519_live_activation WHERE account_fingerprint=%s',
+            (self.fingerprint,))
+        return len(rows)==1 and rows[0]['release_fingerprint']==release
+
+    def activate_release(self, release, operator):
+        if not re.fullmatch('[0-9a-f]{64}',release) or not re.fullmatch('[A-Za-z0-9-]{1,39}',operator):
+            raise LedgerBlocked('ACTIVATION_IDENTITY_INVALID')
+        with self.conn.transaction():
+            rows=self.rows('SELECT halted FROM v519_control WHERE singleton=true FOR UPDATE')
+            if len(rows)!=1 or self.pending():raise LedgerBlocked('ACTIVATION_NOT_RECONCILED')
+            self.conn.execute('''INSERT INTO v519_live_activation(account_fingerprint,release_fingerprint,operator_login)
+                VALUES(%s,%s,%s) ON CONFLICT(account_fingerprint) DO UPDATE SET
+                release_fingerprint=excluded.release_fingerprint,operator_login=excluded.operator_login,activated_at=now()''',
+                (self.fingerprint,release,operator))
+            self.conn.execute('UPDATE v519_control SET halted=false,updated_at=now() WHERE singleton=true')
+
     def pending(self):
         return self.rows('''SELECT * FROM v519_order_intents WHERE account_fingerprint=%s
             AND status NOT IN ('FILLED','CANCELLED','REJECTED') ORDER BY created_at''',(self.fingerprint,))
@@ -196,7 +220,14 @@ class PgRuntimeLedger:
                 type(plan.quantity) is not int or plan.quantity<=0 or
                 type(plan.price) is not int or plan.price<=0):
             raise LedgerBlocked('INVALID_ORDER_PLAN')
-        ident=hashlib.sha256(f'v519|{self.fingerprint}|{day}|{plan.ticker}|{plan.side}'.encode()).hexdigest()
+        progress=''
+        if plan.side=='SELL':
+            # A confirmed fill advances the exit intent. An unknown or zero-fill
+            # cancelled order cannot be replayed under a fresh random ID.
+            rows=self.rows('''SELECT coalesce(sum(filled_quantity),0) AS filled FROM v519_order_intents
+                WHERE account_fingerprint=%s AND ticker=%s AND side='SELL' ''',(self.fingerprint,plan.ticker))
+            progress='|'+str(rows[0]['filled'])
+        ident=hashlib.sha256(f'v519|{self.fingerprint}|{day}|{plan.ticker}|{plan.side}{progress}'.encode()).hexdigest()
         # Own transaction commits the UNKNOWN record before any broker send.
         with self.conn.transaction():
             with self.conn.cursor() as cur:
