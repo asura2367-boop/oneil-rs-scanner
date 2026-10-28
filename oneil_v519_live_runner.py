@@ -65,6 +65,24 @@ def price_reference(tok,key,secret,ticker):
     out=body.get("output")
     if not isinstance(out,dict):raise Blocked("QUOTE_MISSING")
     return strict_amount(out.get("stck_prpr"))
+def calculate_cash_budget(cash_krw, orderable_krw, broker_qty, reference_price_krw, *,
+                          existing_exposure_krw, pending_orders_verified):
+    """Fail-closed whole-account cash sizing. Never authorizes an order.
+
+    The reserve is 40% of broker-observed cash; the 60% trading budget must
+    also cover verified pre-existing exposure. Unknown pending commitments block.
+    """
+    for value in (cash_krw,orderable_krw,broker_qty,reference_price_krw,existing_exposure_krw):
+        integer(value)
+    if reference_price_krw == 0: raise Blocked("REFERENCE_PRICE_INVALID")
+    if pending_orders_verified is not True:
+        raise Blocked("PENDING_ORDERS_NOT_VERIFIED")
+    trading_cap=cash_krw*60//100
+    stock_cap=trading_cap*30//100
+    remaining=max(0,trading_cap-existing_exposure_krw)
+    notional=min(remaining,stock_cap,orderable_krw)
+    return min(notional//reference_price_krw,broker_qty)
+
 def determine_exit(*, held_qty, average_cost_krw, reference_price_krw,
                    stop_loss_pct=5, take_profit_pct=10):
     """Conservative sell *signal* only, never a broker order price/approval.
@@ -182,9 +200,6 @@ def run(args):
         raise Blocked("LIVE_EXECUTION_UNAVAILABLE_UNTIL_EVIDENCE_AND_RECOVERY_AUDITED")
     if args.side!="BUY":raise Blocked("SELL_NOT_SUPPORTED_IN_THIS_RELEASE")
     # CLI flags are user assertions, never independent certification.
-    # No live order may be transmitted based on these flags alone.
-    if args.execute:
-        raise Blocked("LIVE_EVIDENCE_ATTESTATION_AND_BROKER_RECOVERY_NOT_READY")
     if not args.certified_quote or not args.daily_loss_evidence or not args.order_history_reconciled:
         raise Blocked("QUOTE_PNL_OR_ORDER_RECONCILIATION_MISSING")
     if not args.external_ledger_verified:raise Blocked("LEDGER_RECOVERY_NOT_PROVEN")
@@ -201,7 +216,9 @@ def run(args):
     held, _portfolio_value = verified_balance_snapshot(key, secret, cano, prod, t)
     unfilled = unfilled_codes(key, secret, cano, prod, t)
     if args.ticker in held:raise Blocked("ALREADY_HELD")
-    if args.ticker in unfilled:raise Blocked("EXISTING_UNFILLED_ORDER")
+    if unfilled:
+        # No verified commitment amounts for other pending orders; fail closed.
+        raise Blocked("UNFILLED_ORDERS_REQUIRE_COMMITMENT_RECONCILIATION")
     # Read current cash separately. This is account observation, not certified
     # whole-account daily PnL and not evidence of a stable 60% trading ceiling.
     cash,_=balance(t,key,secret,cano,prod)
@@ -209,7 +226,8 @@ def run(args):
     quote=price_reference(t,key,secret,args.ticker)
     if quote==0:raise Blocked("QUOTE_INVALID")
     amount,broker_qty=buying_power(t,key,secret,cano,prod,args.ticker,quote)
-    qty=min((cash*60//100)*30//100//quote,amount//quote,broker_qty)
+    qty=calculate_cash_budget(cash,amount,broker_qty,quote,
+        existing_exposure_krw=_portfolio_value,pending_orders_verified=True)
     if qty<=0:raise Blocked("ZERO_ORDER_QUANTITY")
     if args.max_qty is not None:
         if type(args.max_qty) is not int or args.max_qty <= 0:
@@ -227,10 +245,8 @@ def run(args):
               "orders_sent":0},ensure_ascii=False))
             journal.close()
             return
-        # No live order can proceed until price is certified by venue-specific book,
-        # full holdings/unfilled exposure and daily loss are independently verified.
         journal.close()
-        raise Blocked("LIVE_ORDER_RELEASE_NOT_YET_ATTESTED")
+        raise Blocked("LIVE_EXECUTION_UNAVAILABLE_UNTIL_EVIDENCE_AND_RECOVERY_AUDITED")
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--state-dir",required=True)
