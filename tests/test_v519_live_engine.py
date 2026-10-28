@@ -583,6 +583,39 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertNotEqual(first['intent_id'],second['intent_id'])
         self.assertEqual([p.quantity for p in self.broker.calls],[6,4])
 
+    def intercepted_live_broker(self, price, depth):
+        fixture=self.broker
+        live=object.__new__(KisBroker);live.execution=True;live.quote_evidence={}
+        for name in ('history','snapshot','quote','power','buy_control','submit'):
+            setattr(live,name,getattr(fixture,name))
+        def fresh(ticker,side):
+            live.quote_evidence[(ticker,side)]={'price':price,'size':depth,'at':self.now}
+            return price
+        live.execution_quote=fresh
+        self.broker=live
+        return fixture,live
+
+    def test_fresh_buy_reprice_rechecks_cash_cap_and_book_depth(self):
+        fixture,live=self.intercepted_live_broker(11000,2)
+        powers=iter([(5_000_000,10000),(25000,2)])
+        live.power=lambda *args:next(powers)
+        r=self.cycle()
+        sent=fixture.calls[0]
+        self.assertEqual((sent.price,sent.quantity),(11000,2))
+        self.assertLessEqual((sent.price*sent.quantity*1005+999)//1000,25000)
+        self.assertEqual(r['gate'],'ALLOW')
+
+    def test_sell_reprice_inside_exit_band_creates_no_new_intent(self):
+        ident=self.seed();self.ledger.ack(ident,'000122')
+        self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
+        self.broker.positions={'144960':{'quantity':10,'sellable':10,'average':'12000'}}
+        self.candidates=[]
+        fixture,live=self.intercepted_live_broker(11900,10)
+        r=self.cycle()
+        self.assertEqual(r['status'],'QUOTE_CHANGED_NO_ORDER')
+        self.assertEqual(fixture.calls,[]);self.assertEqual(self.ledger.pending(),[])
+        self.assertEqual(self.ledger.dashboard_state['plans'],[])
+
     def test_live_snapshot_reports_armed_state_without_fabricated_execution(self):
         with patch('oneil_v519_live_engine.RELEASE_LIVE_APPROVED',True):
             self.cycle(False);data=dashboard_snapshot(self.ledger,{'status':'OBSERVED','execution_requested':False})
