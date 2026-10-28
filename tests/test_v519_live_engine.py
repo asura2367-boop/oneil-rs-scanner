@@ -200,6 +200,57 @@ class RuntimeRiskTests(unittest.TestCase):
         self.assertFalse(read({**valid,'enabled':'true'})['enabled'])
         self.assertFalse(read({**valid,'observed_at':(now-dt.timedelta(minutes=1)).isoformat()})['enabled'])
 
+    def test_control_redirect_never_forwards_service_credential(self):
+        import urllib.request
+        from unittest.mock import Mock
+        director=Mock()
+        director.open.side_effect=TradingBlocked('CONTROL_REDIRECT_REJECTED')
+        with patch('urllib.request.build_opener',return_value=director) as factory:
+            result=read_buy_control(access_token='fake-service-credential')
+        self.assertFalse(result['enabled']);self.assertFalse(result['connected'])
+        handler=factory.call_args.args[0]
+        original=urllib.request.Request('https://oneil-control-desk.asura2367.chatgpt.site/api/runtime-control',
+            headers={'OAI-Sites-Authorization':'Bearer fake-service-credential'})
+        for target in ('https://other.example/login','https://oneil-control-desk.asura2367.chatgpt.site/signin-with-chatgpt'):
+            with self.assertRaisesRegex(TradingBlocked,'REDIRECT_REJECTED'):
+                handler.redirect_request(original,None,302,'Found',{},target)
+        self.assertEqual(director.open.call_count,1)
+
+    def test_real_order_http_mapping_is_intercepted_for_both_sides(self):
+        # Exercise the actual adapter->Request encoding. Every network call is
+        # intercepted; these fixtures do not establish KIS execution success.
+        import io
+        flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES'}
+        now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
+        broker=object.__new__(KisBroker)
+        broker.execution=True;broker.account='12345678';broker.product='01'
+        broker.access='fixture';broker.key='fixture';broker.secret='fixture'
+        broker.quote_evidence={}
+        for side,tr in (('BUY','TTTC0012U'),('SELL','TTTC0011U')):
+            broker.quote_evidence[('144960',side)]={'price':10000,'size':10,'at':now}
+            response=io.BytesIO(b'{"rt_cd":"0","output":{"ODNO":"000123"}}')
+            response.headers={}
+            with patch('oneil_v519_live_engine.RELEASE_LIVE_APPROVED',True),patch.dict(os.environ,flags), \
+                    patch('urllib.request.urlopen',return_value=response) as wire:
+                result=broker.submit(OrderPlan('144960',side,2,10000,'fixture','TEST'))
+            request=wire.call_args.args[0]; body=json.loads(request.data)
+            self.assertEqual(wire.call_count,1)
+            self.assertEqual(request.get_method(),'POST')
+            self.assertTrue(request.full_url.endswith('/uapi/domestic-stock/v1/trading/order-cash'))
+            self.assertEqual(request.get_header('Tr_id'),tr)
+            self.assertEqual((body['PDNO'],body['ORD_QTY'],body['ORD_UNPR'],body['EXCG_ID_DVSN_CD']),
+                             ('144960','2','10000','KRX'))
+            self.assertEqual(result['output']['ODNO'],'000123')
+
+    def test_order_transport_failure_is_not_retried(self):
+        broker=object.__new__(KisBroker)
+        broker.access=broker.key=broker.secret='fixture'
+        for error in (TimeoutError(),ConnectionResetError()):
+            with patch('urllib.request.urlopen',side_effect=error) as wire:
+                with self.assertRaises(type(error)):
+                    broker.request('/uapi/domestic-stock/v1/trading/order-cash','TTTC0012U',{},post=True)
+                self.assertEqual(wire.call_count,1)
+
     def test_missing_and_stale_source_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TradingBlocked):scan_candidates(pathlib.Path(directory)/'none',dt.datetime.now(ZoneInfo('Asia/Seoul')))
@@ -274,6 +325,16 @@ class PostgresRuntimeTests(unittest.TestCase):
         with patch.object(self.ledger,'ack',side_effect=RuntimeError()):
             with self.assertRaises(TradingBlocked):self.cycle()
         self.assertTrue(self.ledger.halted()); self.assertIsNone(self.ledger.pending()[0]['broker_order_id'])
+    def test_malformed_ack_retains_unknown_halts_and_never_resends(self):
+        self.broker.submit=lambda plan:{'rt_cd':'0','output':{'ODNO':''}}
+        with self.assertRaisesRegex(TradingBlocked,'UNCERTAIN'):
+            self.cycle()
+        self.assertTrue(self.ledger.halted())
+        self.assertEqual(self.ledger.pending()[0]['status'],'SUBMISSION_UNKNOWN')
+        with patch.object(self.broker,'submit') as retry:
+            self.assertEqual(self.cycle()['status'],'BLOCKED_UNRESOLVED_ORDERS')
+            retry.assert_not_called()
+
     def test_reservation_db_failure_sends_nothing(self):
         with patch.object(self.ledger,'reserve_plan',side_effect=RuntimeError()):
             with self.assertRaises(RuntimeError):self.cycle()

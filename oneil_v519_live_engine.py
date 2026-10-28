@@ -529,6 +529,11 @@ def scan_candidates(source, now):
 def read_buy_control(*, opener=None, now=None, access_token=None):
     """Read owner-private desired buy setting. Failure blocks BUY only."""
     import urllib.request
+    class NoControlRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            # A Site service credential must never follow a redirect, including
+            # login redirects, to another origin or endpoint.
+            raise TradingBlocked('CONTROL_REDIRECT_REJECTED')
     supplied_now=now
     token=os.getenv('DASHBOARD_SITE_ACCESS_TOKEN','') if access_token is None else access_token
     denied={'enabled':False,'connected':False,'revision':None,'reason':'CONTROL_CONNECTION_MISSING'}
@@ -537,7 +542,7 @@ def read_buy_control(*, opener=None, now=None, access_token=None):
     try:
         req=urllib.request.Request('https://oneil-control-desk.asura2367.chatgpt.site/api/runtime-control',
             headers={'OAI-Sites-Authorization':'Bearer '+token,'Cache-Control':'no-cache'},method='GET')
-        with (opener or urllib.request.urlopen)(req,timeout=5) as response:
+        with (opener or urllib.request.build_opener(NoControlRedirect()).open)(req,timeout=5) as response:
             body=json.load(response)
         at=dt.datetime.fromisoformat(body['observed_at'])
         checked_at=supplied_now or dt.datetime.now(dt.timezone.utc)
