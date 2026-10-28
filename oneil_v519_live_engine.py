@@ -629,7 +629,7 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
             if str(response.get('rt_cd'))!='0' or not isinstance(order_id,str) or not re.fullmatch('[0-9]{1,20}',order_id):
                 raise TradingBlocked('BROKER_ACK_INVALID')
             ledger.ack(ident,order_id)
-            result.update(status='ACKNOWLEDGED',orders_sent=1)
+            result.update(status='ACKNOWLEDGED',gate='ALLOW',orders_sent=1)
         except Exception:
             # The committed intent is evidence of a possible send, NOT a fill.
             # Also covers DB failure after a successful KIS response.
@@ -641,6 +641,8 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
 def activate_live_account(ledger, broker, candidates, *, now, operator, acknowledged=False):
     if not acknowledged or not isinstance(operator,str) or not re.fullmatch('[A-Za-z0-9-]{1,39}',operator):
         raise TradingBlocked('OPERATOR_ACTIVATION_CONFIRMATION_REQUIRED')
+    if os.getenv('GITHUB_ACTIONS')=='true' and operator!=os.getenv('GITHUB_REPOSITORY_OWNER'):
+        raise TradingBlocked('ACCOUNT_OWNER_ACTIVATION_REQUIRED')
     require_live_release()
     # Same account/history/position/control readers, with execution=False:
     # operator activation itself never submits an order.

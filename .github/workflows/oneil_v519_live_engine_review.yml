@@ -125,9 +125,11 @@ jobs:
                 python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem
               fi ;;
             activate)
+              [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
               [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
               LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --activate --operator "$GITHUB_ACTOR" --acknowledge-live-risk --dashboard-public-key data/live/dashboard_public_key.pem ;;
             trade)
+              [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
               [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
               LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --run --execute --dashboard-public-key data/live/dashboard_public_key.pem ;;
             close) python oneil_v519_live_engine.py --close --dashboard-public-key data/live/dashboard_public_key.pem ;;

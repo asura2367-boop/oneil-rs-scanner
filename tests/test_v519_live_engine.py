@@ -557,11 +557,14 @@ class PostgresRuntimeTests(unittest.TestCase):
 
     def test_operator_activation_requires_confirmation_and_sends_nothing(self):
         flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES'}
+        flags['GITHUB_REPOSITORY_OWNER']='fixture'
         self.ledger.halt();self.conn.execute('TRUNCATE v519_live_activation')
         with patch('oneil_v519_live_engine.RELEASE_LIVE_APPROVED',True),patch.dict(os.environ,flags):
             with self.assertRaises(TradingBlocked):
                 activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,operator='fixture')
             self.assertTrue(self.ledger.halted())
+            with patch.dict(os.environ,{'GITHUB_ACTIONS':'true'}),self.assertRaisesRegex(TradingBlocked,'ACCOUNT_OWNER_ACTIVATION_REQUIRED'):
+                activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,operator='other',acknowledged=True)
             r=activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,
                 operator='fixture',acknowledged=True)
         self.assertEqual(r['status'],'LIVE_ACCOUNT_ACTIVATED')
