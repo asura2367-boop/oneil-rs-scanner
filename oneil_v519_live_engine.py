@@ -239,11 +239,13 @@ class KisBroker:
     REST quotes are indicative only; certified execution prices remain a live gate.
     """
     def __init__(self, *, execution=False):
+        if execution:
+            require_live_release()
         self.execution=execution
         self.quote_evidence={}
         from kis_buying_power_readonly import credentials
         from oneil_v519_live_runner import token
-        self.key, self.secret, self.account, self.product = credentials()
+        self.key, self.secret, self.account, self.product = credentials(read_only=not execution)
         self.access = token(self.key, self.secret)
         self.fingerprint = hashlib.sha256((self.account+'|'+self.product).encode()).hexdigest()
 
@@ -547,7 +549,7 @@ def runtime_main():
                     # Resolve fingerprint before acquiring a token so early auth
                     # failures can still be recorded in the permanent run log.
                     from kis_buying_power_readonly import credentials
-                    _,_,account,product=credentials()
+                    _,_,account,product=credentials(read_only=not args.execute)
                     fingerprint=hashlib.sha256((account+'|'+product).encode()).hexdigest()
                     ledger=PgRuntimeLedger(db,fingerprint)
                     ledger.start_run(run_id)
