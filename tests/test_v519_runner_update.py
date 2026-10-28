@@ -17,3 +17,14 @@ class CashBudgetTests(unittest.TestCase):
   self.assertIn('LIVE_EXECUTION_UNAVAILABLE_UNTIL_EVIDENCE_AND_RECOVERY_AUDITED',inspect.getsource(r.run))
  def test_unfilled_global_block(self):
   self.assertIn('UNFILLED_ORDERS_REQUIRE_COMMITMENT_RECONCILIATION',inspect.getsource(r.run))
+
+class OrderEnvelopeTests(unittest.TestCase):
+ def test_invalid_side_blocked(self):
+  with self.assertRaisesRegex(r.Blocked,'ORDER_SIDE_INVALID'):
+   r.live_submit('t','k','s','12345678','01','005930',1,50000,'OTHER')
+ def test_zero_qty_blocked(self):
+  with self.assertRaisesRegex(r.Blocked,'ORDER_QUANTITY_OR_PRICE_INVALID'):
+   r.live_submit('t','k','s','12345678','01','005930',0,50000,'BUY')
+ def test_invalid_account_blocked(self):
+  with self.assertRaisesRegex(r.Blocked,'ACCOUNT_CONFIG_INVALID'):
+   r.live_submit('t','k','s','123','01','005930',1,50000,'BUY')
