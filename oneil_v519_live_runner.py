@@ -124,15 +124,6 @@ def open_persistent_journal(state):
     return journal
 
 def live_submit(tok,key,secret,cano,prod,ticker,qty,price,side):
-    # Validate the order envelope before any possible network request.
-    if side not in ("BUY", "SELL"):
-        raise Blocked("ORDER_SIDE_INVALID")
-    if not isinstance(ticker, str) or not CODE.fullmatch(ticker):
-        raise Blocked("TICKER_INVALID")
-    if type(qty) is not int or qty <= 0 or type(price) is not int or price <= 0:
-        raise Blocked("ORDER_QUANTITY_OR_PRICE_INVALID")
-    if not isinstance(cano, str) or not re.fullmatch(r"\d{8}", cano) or not isinstance(prod, str) or not re.fullmatch(r"\d{2}", prod):
-        raise Blocked("ACCOUNT_CONFIG_INVALID")
     if not (flag("LIVE_ENABLED") and flag("KIS_ALLOW_ORDER")
             and os.environ.get("I_APPROVE_LIVE_KIS_ORDERS")=="YES"):
         raise Blocked("USER_APPROVAL_MISSING")
