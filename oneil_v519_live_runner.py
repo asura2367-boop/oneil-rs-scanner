@@ -65,6 +65,38 @@ def price_reference(tok,key,secret,ticker):
     out=body.get("output")
     if not isinstance(out,dict):raise Blocked("QUOTE_MISSING")
     return strict_amount(out.get("stck_prpr"))
+def determine_exit(*, held_qty, average_cost_krw, reference_price_krw,
+                   stop_loss_pct=5, take_profit_pct=10):
+    """Conservative sell *signal* only, never a broker order price/approval.
+
+    Percent limits are configuration examples, not an established user preference.
+    Fees, taxes and slip are not included. Never sell more than verified holdings.
+    """
+    for amount in (held_qty, average_cost_krw, reference_price_krw):
+        integer(amount)
+    if held_qty <= 0 or average_cost_krw <= 0 or reference_price_krw <= 0:
+        raise Blocked("INVALID_HOLDING_OR_QUOTE")
+    for pct in (stop_loss_pct, take_profit_pct):
+        if type(pct) is not int or not 1 <= pct <= 50:
+            raise Blocked("EXIT_PARAMETER_INVALID")
+    loss_hit = reference_price_krw * 100 <= average_cost_krw * (100 - stop_loss_pct)
+    profit_hit = reference_price_krw * 100 >= average_cost_krw * (100 + take_profit_pct)
+    reason = "STOP_LOSS" if loss_hit else "TAKE_PROFIT" if profit_hit else "HOLD"
+    return {"decision": reason, "max_sell_qty": held_qty if reason != "HOLD" else 0,
+            "gate": "DENY", "executable_price_approved": False, "orders_sent": 0}
+
+def local_status(state):
+    """Inspect durable journal without KIS side effects or exposing private IDs."""
+    with open(state / "oneil.lock", "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        journal = OrderJournal(state / "orders.sqlite")
+        try:
+            pending = journal.pending()
+            return {"gate":"DENY", "pending_orders":len(pending),
+                    "can_start_new_orders":False, "orders_sent":0}
+        finally:
+            journal.close()
+
 def open_persistent_journal(state):
     """Open the durable journal on a persistent host; fail closed on unresolved orders."""
     journal = OrderJournal(state / "orders.sqlite")
@@ -103,6 +135,16 @@ def run(args):
     state=Path(args.state_dir).resolve()
     if not state.exists() or not state.is_dir():raise Blocked("PERSISTENT_STATE_DIR_MISSING")
     if state.stat().st_mode & 0o022:raise Blocked("INSECURE_STATE_DIR")
+    if args.status_only:
+        print(json.dumps(local_status(state), ensure_ascii=False))
+        return
+    if args.exit_preview:
+        if not (args.held_qty is not None and args.average_cost is not None and args.reference_price is not None):
+            raise Blocked("EXIT_INPUT_MISSING")
+        print(json.dumps(determine_exit(held_qty=args.held_qty,
+            average_cost_krw=args.average_cost,reference_price_krw=args.reference_price,
+            stop_loss_pct=args.stop_loss_pct,take_profit_pct=args.take_profit_pct),ensure_ascii=False))
+        return
     if args.recover_only:
         print(json.dumps(recover_orders_readonly(state), ensure_ascii=False))
         return
@@ -154,6 +196,13 @@ def main():
     p.add_argument("--order-history-reconciled",action="store_true")
     p.add_argument("--external-ledger-verified",action="store_true")
     p.add_argument("--max-qty",type=int,default=None)
+    p.add_argument("--status-only",action="store_true")
+    p.add_argument("--exit-preview",action="store_true")
+    p.add_argument("--held-qty",type=int)
+    p.add_argument("--average-cost",type=int)
+    p.add_argument("--reference-price",type=int)
+    p.add_argument("--stop-loss-pct",type=int,default=5)
+    p.add_argument("--take-profit-pct",type=int,default=10)
     p.add_argument("--recover-only",action="store_true")
     p.add_argument("--execute",action="store_true")
     a=p.parse_args()
