@@ -1,0 +1,20 @@
+name: V5.19 Cash-based Integration Diagnostics (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test cash observation schema, protection and hard DENY
+        run: python -m unittest -v tests.test_v519_cash_bridge
+      - name: No-order diagnostic
+        run: python oneil_v519_cash_bridge.py
