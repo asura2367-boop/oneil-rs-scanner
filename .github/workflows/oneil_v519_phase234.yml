@@ -1,0 +1,116 @@
+name: Oneil V5.19 Phases 2-4 Unified Simulation (NO ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      broker_read:
+        description: 'Read-only KIS account, power and history'
+        type: boolean
+        required: true
+        default: false
+      network:
+        description: 'Observe KRX/NXT frames (unattested)'
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: oneil-v519-phase234-safe
+  cancel-in-progress: false
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      BROKER_READ: ${{ inputs.broker_read }}
+      NETWORK: ${{ inputs.network }}
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install read-only dependencies
+        run: python -m pip install cryptography requests websockets
+      - name: Run existing and new offline safety suites
+        run: |
+          python -m unittest -v tests/test_v519_phase234.py
+          python -m unittest -v tests/test_v519_final_diagnostic.py
+          python -m unittest -v tests/test_v519_evidence_integrity.py
+          python -m unittest -v tests/test_v519_history_observe.py
+      - name: Clear report files from previous checkouts
+        run: |
+          rm -f v5_9_candidates_review.json v5_11_review.json v5_13_review.json \
+            v5_19_indicative_power.json v5_18_report.json v5_19_history_observe.json \
+            v5_19_phase234.json
+      - name: Reuse KIS token within this run (NO ORDERS)
+        run: |
+          if [ "$BROKER_READ" = 'true' ]; then
+            python oneil_v519_token_bootstrap.py --broker-read
+          else
+            python oneil_v519_token_bootstrap.py
+          fi
+      - name: Build review candidates
+        run: |
+          python oneil_live_v5_9.py --output v5_9_candidates_review.json
+          python oneil_live_v5_11.py --candidates v5_9_candidates_review.json --output v5_11_review.json
+      - name: Observe KIS holdings (read-only)
+        run: |
+          if [ "$BROKER_READ" = 'true' ]; then
+            python oneil_live_v5_13.py --intents v5_11_review.json --output v5_13_review.json --broker-read
+          else
+            python oneil_live_v5_13.py --intents v5_11_review.json --output v5_13_review.json
+          fi
+      - name: Observe indicative buying power (read-only)
+        run: |
+          if [ "$BROKER_READ" = 'true' ]; then
+            python oneil_v519_broker_power_observe.py --intents v5_11_review.json --output v5_19_indicative_power.json --broker-read
+          else
+            python oneil_v519_broker_power_observe.py --intents v5_11_review.json --output v5_19_indicative_power.json
+          fi
+      - name: Observe KIS order and fill history (read-only)
+        run: |
+          if [ "$BROKER_READ" = 'true' ]; then
+            python oneil_v519_history_observe.py --broker-read --output v5_19_history_observe.json
+          else
+            python oneil_v519_history_observe.py --output v5_19_history_observe.json
+          fi
+      - name: Observe KRX and NXT frames (unattested)
+        run: |
+          if [ "$NETWORK" = 'true' ]; then
+            python oneil_live_v5_18.py --network --seconds 12 --output v5_18_report.json
+          else
+            python oneil_live_v5_18.py --output v5_18_report.json
+          fi
+      - name: Phase 2-4 unified no-order diagnostic
+        run: |
+          python oneil_v519_phase234.py --candidate v5_11_review.json --account v5_13_review.json --quote v5_18_report.json --history v5_19_history_observe.json --output v5_19_phase234.json
+          python - <<'PY'
+          import json
+          r=json.load(open('v5_19_phase234.json',encoding='utf8'))
+          assert r['gate']=='DENY' and r['orders_sent']==0 and r['broker_order_api_calls']==0
+          assert r['LIVE_ENABLED'] is False and r['KIS_ALLOW_ORDER'] is False
+          assert 'EXECUTABLE_PRICE_NOT_CERTIFIED' in r['issues']
+          assert 'WHOLE_ACCOUNT_DAILY_LOSS_NOT_VERIFIED' in r['issues']
+          print('PHASE234_SAFE_DENY; orders_sent=0')
+          PY
+      - name: Upload sanitized evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v519-phase234-no-orders
+          path: |
+            v5_19_phase234.json
+            v5_18_report.json
+            v5_19_history_observe.json
+          if-no-files-found: warn
+          retention-days: 3
