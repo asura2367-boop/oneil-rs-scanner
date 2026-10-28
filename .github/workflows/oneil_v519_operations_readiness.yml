@@ -1,0 +1,25 @@
+name: Oneil V5.19 Operational Readiness (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test real cash allocation and fail-closed operational proofs
+        run: python -m unittest -v tests.test_v519_operations
+      - name: Emit safe diagnostic only
+        run: python oneil_v519_operations.py
+      - name: Upload sanitized status only
+        uses: actions/upload-artifact@v4
+        with:
+          name: v519-operations-no-orders
+          path: v5_19_operations_readiness.json
