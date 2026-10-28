@@ -1,0 +1,29 @@
+name: V5.19 Evening Session Classifier (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  session-test:
+    runs-on: ubuntu-latest
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify evening windows and hard DENY
+        run: python -m unittest -v tests/test_v519_session_guard.py
+      - name: Confirm V5.18 imports safe session classifier
+        run: |
+          python - <<'PY'
+          from oneil_live_v5_18 import phase
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now=datetime(2026,10,28,17,0,tzinfo=ZoneInfo('Asia/Seoul'))
+          assert phase('KRX',now)=='EVENING_WINDOW_ONLY'
+          assert phase('NXT',now)=='EVENING_WINDOW_ONLY'
+          print('EVENING_WINDOWS=RECOGNIZED; orders_sent=0')
+          PY
