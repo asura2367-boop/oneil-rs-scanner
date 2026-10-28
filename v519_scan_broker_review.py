@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""V5.19 same-run scan -> KIS read-only evidence -> Supabase read-only status.
-NEVER sends, reserves or amends orders. Fail closed on incomplete evidence.
-"""
+"""V5.19 candidate/KIS/Supabase read-only review with safe stage diagnostics."""
 import argparse
 import datetime as dt
 import json
@@ -11,74 +9,108 @@ from zoneinfo import ZoneInfo
 from v519_same_run_candidates import build
 from v519_pg_ledger import connect, status
 
-KST = ZoneInfo('Asia/Seoul')
+KST = ZoneInfo("Asia/Seoul")
+class ReviewBlocked(RuntimeError):
+    def __init__(self, stage, reason):
+        super().__init__(reason)
+        self.stage, self.reason = stage, reason
+
+def checked(stage, func):
+    try:
+        return func()
+    except ReviewBlocked:
+        raise
+    except Exception:
+        raise ReviewBlocked(stage, "OPERATION_FAILED") from None
 
 def review(csv_path, day, *, now=None, broker=None, ledger=None):
     now = now or dt.datetime.now(KST)
-    if os.getenv('LIVE_ENABLED', 'false').lower() != 'false' or os.getenv('KIS_ALLOW_ORDER', 'false').lower() != 'false':
-        raise ValueError('LIVE_SWITCH_MUST_BE_OFF')
+    if os.getenv("LIVE_ENABLED", "false").lower() != "false" or os.getenv("KIS_ALLOW_ORDER", "false").lower() != "false":
+        raise ReviewBlocked("LIVE_GATE", "SWITCH_MUST_BE_OFF")
     if now.astimezone(KST).date().isoformat() != day:
-        raise ValueError('DAY_MISMATCH')
-    candidates = build(csv_path, day, now)['candidates']
+        raise ReviewBlocked("DATE", "DAY_MISMATCH")
+    candidates = checked("CANDIDATE_INPUT", lambda: build(csv_path, day, now)["candidates"])
     if not candidates:
-        return {'gate':'DENY','orders_sent':0,'status':'NO_ELIGIBLE_CANDIDATES','candidates':[]}
+        return {"gate":"DENY","orders_sent":0,"status":"NO_ELIGIBLE_CANDIDATES","candidates":[]}
     if ledger is None or broker is None:
-        raise ValueError('BROKER_AND_LEDGER_REQUIRED')
-    control = ledger()
-    if control['halted'] is not True or control['unresolved'] != 0:
-        raise ValueError('LEDGER_NOT_HALTED_OR_UNRESOLVED')
-    rows=[]
+        raise ReviewBlocked("CONFIG", "ADAPTER_MISSING")
+    control = checked("SUPABASE_STATUS", ledger)
+    if control.get("halted") is not True or control.get("unresolved") != 0:
+        raise ReviewBlocked("SUPABASE_CONTROL", "HALTED_OR_UNRESOLVED")
+    rows = []
     for c in candidates:
-        evidence = broker(c['ticker'])
-        if evidence.get('ticker') != c['ticker']:
-            raise ValueError('BROKER_TICKER_MISMATCH')
-        price=evidence.get('price')
-        if type(price) is not int or price<=0:
-            raise ValueError('INVALID_REFERENCE_PRICE')
-        if evidence.get('held') or evidence.get('pending'):
-            # Refuse even theoretical quantity for existing holdings or pending orders.
-            qty=0
-        else:
-            qty=min(180000//price, evidence.get('broker_qty',0), evidence.get('broker_cash',0)//price)
-        rows.append({'ticker':c['ticker'],'rs':c['rs'],'reference_price':price,
-                     'theoretical_max_qty':max(0,qty),'quote_executable_verified':False,
-                     'order_authorized':False})
-    return {'gate':'DENY','orders_sent':0,'status':'READ_ONLY_BROKER_REVIEW',
-            'risk_limits_krw':{'capital':1000000,'reserve':400000,'trading':600000,'per_stock':180000},
-            'candidates':rows}
+        evidence = checked("KIS_CANDIDATE", lambda: broker(c["ticker"]))
+        if not isinstance(evidence,dict) or evidence.get("ticker") != c["ticker"]:
+            raise ReviewBlocked("KIS_CANDIDATE", "TICKER_MISMATCH")
+        price = evidence.get("price")
+        if type(price) is not int or price <= 0:
+            raise ReviewBlocked("KIS_PRICE", "INVALID_PRICE")
+        broker_qty = evidence.get("broker_qty")
+        broker_cash = evidence.get("broker_cash")
+        if type(broker_qty) is not int or broker_qty < 0 or type(broker_cash) is not int or broker_cash < 0:
+            raise ReviewBlocked("KIS_BUYING_POWER", "INVALID_AMOUNT")
+        qty = 0 if evidence.get("held") or evidence.get("pending") else min(180000//price,broker_qty,broker_cash//price)
+        rows.append({"ticker":c["ticker"],"rs":c["rs"],"reference_price":price,
+                     "theoretical_max_qty":qty,"quote_executable_verified":False,
+                     "order_authorized":False})
+    return {"gate":"DENY","orders_sent":0,"status":"READ_ONLY_BROKER_REVIEW",
+            "risk_limits_krw":{"capital":1000000,"reserve":400000,"trading":600000,"per_stock":180000},
+            "candidates":rows}
 
 def broker_adapter():
     from oneil_v519_live_runner import token, price_reference, buying_power
     from kis_buying_power_readonly import credentials
     from kis_safety_v3 import verified_balance_snapshot, unfilled_codes
-    key,secret,cano,prod=credentials()
-    tok=token(key,secret)
-    held,_=verified_balance_snapshot(key,secret,cano,prod,tok)
-    pending=unfilled_codes(key,secret,cano,prod,tok)
+    key,secret,cano,prod = checked("KIS_CREDENTIALS", credentials)
+    tok = checked("KIS_TOKEN", lambda: token(key,secret))
+    held,_ = checked("KIS_BALANCE", lambda: verified_balance_snapshot(key,secret,cano,prod,tok))
+    pending = checked("KIS_UNFILLED", lambda: unfilled_codes(key,secret,cano,prod,tok))
     def get(ticker):
-        price=price_reference(tok,key,secret,ticker)
-        amount,qty=buying_power(tok,key,secret,cano,prod,ticker,price)
-        return {'ticker':ticker,'price':price,'broker_qty':qty,'broker_cash':amount,
-                'held':ticker in held,'pending':bool(pending)}
+        price = checked("KIS_PRICE", lambda: price_reference(tok,key,secret,ticker))
+        amount,qty = checked("KIS_BUYING_POWER", lambda: buying_power(tok,key,secret,cano,prod,ticker,price))
+        return {"ticker":ticker,"price":price,"broker_qty":qty,"broker_cash":amount,
+                "held":ticker in held,"pending":bool(pending)}
     return get
 
 def ledger_adapter():
-    with connect() as db:
-        return status(db)
+    def read():
+        with connect() as db:
+            return status(db)
+    return checked("SUPABASE_STATUS", read)
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('--csv',required=True)
-    parser.add_argument('--date',required=True)
-    parser.add_argument('--output',default='v519_broker_review.json')
+    parser.add_argument("--csv",required=True)
+    parser.add_argument("--date",required=True)
+    parser.add_argument("--output",default="v519_broker_review.json")
     args=parser.parse_args()
     try:
-        result=review(args.csv,args.date,broker=broker_adapter(),ledger=ledger_adapter())
+        # Check candidate input and Supabase before initializing broker adapter.
+        # This avoids hiding candidate errors behind unrelated KIS authentication errors.
+        today=dt.datetime.now(KST)
+        if today.date().isoformat()!=args.date:
+            raise ReviewBlocked("DATE","DAY_MISMATCH")
+        candidates=checked("CANDIDATE_INPUT",lambda:build(args.csv,args.date,today)["candidates"])
+        if not candidates:
+            result={"gate":"DENY","orders_sent":0,"status":"NO_ELIGIBLE_CANDIDATES","candidates":[]}
+        else:
+            ledger=ledger_adapter()
+            if ledger.get("halted") is not True or ledger.get("unresolved")!=0:
+                raise ReviewBlocked("SUPABASE_CONTROL","HALTED_OR_UNRESOLVED")
+            broker=broker_adapter()
+            result=review(args.csv,args.date,now=today,broker=broker,ledger=lambda:ledger)
         code=0
-    except Exception:
-        result={'gate':'DENY','orders_sent':0,'status':'BLOCKED','candidates':[]}
+    except ReviewBlocked as e:
+        result={"gate":"DENY","orders_sent":0,"status":"BLOCKED","stage":e.stage,
+                "reason":e.reason,"candidates":[]}
         code=2
-    Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
-    print('V519_REVIEW='+result['status']+'; orders_sent=0')
+    except Exception:
+        result={"gate":"DENY","orders_sent":0,"status":"BLOCKED","stage":"UNEXPECTED",
+                "reason":"OPERATION_FAILED","candidates":[]}
+        code=2
+    Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+"\\n",encoding="utf-8")
+    print("V519_REVIEW="+result["status"]+"; stage="+result.get("stage","OK")+"; reason="+result.get("reason","NONE")+"; orders_sent=0")
     raise SystemExit(code)
-if __name__=='__main__':main()
+
+if __name__=="__main__":
+    main()
