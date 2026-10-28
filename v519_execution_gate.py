@@ -21,10 +21,16 @@ def check(plan, evidence, now=None):
     # Even with attested evidence, this module is not an order sender.
     orders=plan.get('orders',[])
     if not isinstance(orders,list): raise Blocked('ORDERS_INVALID')
+    from v519_cash_policy import limits
+    caps=limits(evidence['cash_krw'],evidence['invested_krw'],evidence['orderable_krw'])
+    remaining=caps['remaining']
     for o in orders:
         if not re.fullmatch(r'\d{6}',str(o.get('ticker',''))):raise Blocked('TICKER_INVALID')
         if type(o.get('preview_quantity')) is not int or type(o.get('reference_price')) is not int:raise Blocked('SIZE_INVALID')
-        if o['preview_quantity']*o['reference_price']>180000:raise Blocked('STOCK_LIMIT')
+        if o['preview_quantity']<0 or o['reference_price']<=0:raise Blocked('SIZE_INVALID')
+        amount=o['preview_quantity']*o['reference_price']
+        if amount>min(caps['per_stock'],remaining):raise Blocked('STOCK_LIMIT')
+        remaining-=amount
     return {'gate':'DENY','status':'RISK_EVIDENCE_REVIEWED_NOT_EXECUTABLE','orders_sent':0}
 
 def main():

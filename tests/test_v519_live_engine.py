@@ -71,3 +71,208 @@ class Tests(unittest.TestCase):
  def test_gate_deny(self):
   self.assertEqual(readiness()["gate"],"DENY")
 if __name__=="__main__":unittest.main()
+
+# Integration tests live in the existing engine test module. No validator scripts.
+import os
+import datetime as dt
+from contextlib import contextmanager
+from unittest.mock import patch
+
+class BrokerFixture:
+    def __init__(self):
+        self.calls=[]; self.rows={}; self.failure=None
+        self.cash=5_000_000; self.invested=0; self.positions={}; self.pending=set()
+        self.prices={}; self.amount=5_000_000; self.broker_qty=10000
+    def snapshot(self):
+        return dict(cash=self.cash,invested=self.invested,positions=self.positions,pending=self.pending)
+    def quote(self,ticker,side): return self.prices.get((ticker,side),10000)
+    def power(self,ticker,price): return self.amount,self.broker_qty
+    def submit(self,plan):
+        self.calls.append(plan)
+        if self.failure: raise self.failure
+        return {'rt_cd':'0','output':{'ODNO':f'{122+len(self.calls):06d}'}}
+    def history(self,day): return self.rows.get(day,[])
+
+class RuntimeRiskTests(unittest.TestCase):
+    def test_multiple_cash_sizes_no_fixed_cap(self):
+        for cash in (500_000,2_000_000,5_000_000,50_000_000):
+            b=BrokerFixture(); b.cash=cash; b.amount=cash
+            snap=b.snapshot(); snap['managed']={}
+            plans,lim=plan_orders([{'ticker':str(100000+i)} for i in range(10)],snap,b.quote,b.power)
+            charges=[(p.quantity*p.price*1005+999)//1000 for p in plans]
+            self.assertLessEqual(sum(charges),cash*60//100)
+            self.assertTrue(all(n<=(cash*60//100)*30//100 for n in charges))
+            self.assertEqual(lim['reserve'],cash-cash*60//100)
+    def test_holdings_and_broker_limits(self):
+        b=BrokerFixture(); b.invested=2_950_000; b.amount=40_000; b.broker_qty=2
+        snap=b.snapshot(); snap['managed']={}
+        plans,_=plan_orders([{'ticker':'144960'}],snap,b.quote,b.power)
+        self.assertEqual(plans[0].quantity,2)
+        b.invested=3_000_000; snap=b.snapshot(); snap['managed']={}
+        self.assertEqual(plan_orders([{'ticker':'144960'}],snap,b.quote,b.power)[0],[])
+    def test_pending_blocks_both_sides(self):
+        b=BrokerFixture(); snap=b.snapshot(); snap['managed']={}; snap['pending']={'005930'}
+        with self.assertRaises(TradingBlocked):plan_orders([{'ticker':'144960'}],snap,b.quote,b.power)
+    def test_exits_only_managed_sellable_positions(self):
+        b=BrokerFixture(); b.positions={'144960':{'quantity':10,'sellable':7,'average':'11000.25'},
+            '005930':{'quantity':100,'sellable':100,'average':'10000'}}
+        snap=b.snapshot(); snap['managed']={'144960':8}
+        plans,_=plan_orders([],snap,b.quote,b.power)
+        self.assertEqual([(p.ticker,p.side,p.quantity,p.reason) for p in plans],
+                         [('144960','SELL',7,'STOP_LOSS')])
+        b.prices[('144960','SELL')]=13000
+        self.assertEqual(plan_orders([],snap,b.quote,b.power)[0][0].reason,'TAKE_PROFIT')
+    def test_repeat_buy_today_and_held_block(self):
+        b=BrokerFixture(); snap=b.snapshot(); snap['managed']={}; snap['bought_today']={'144960'}
+        self.assertEqual(plan_orders([{'ticker':'144960'}],snap,b.quote,b.power)[0],[])
+    def test_all_live_flags_cannot_unlock_release_or_legacy_submit(self):
+        from oneil_v519_live_runner import live_submit,Blocked
+        flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES'}
+        with patch.dict(os.environ,flags),patch('urllib.request.urlopen') as wire:
+            with self.assertRaises(TradingBlocked):require_live_release()
+            with self.assertRaises(Blocked):live_submit('t','k','s','12345678','01','144960',1,10000,'BUY')
+            b=object.__new__(KisBroker)
+            with self.assertRaises(TradingBlocked):b._send_verified(OrderPlan('144960','BUY',1,10000,'rs','RS'))
+            wire.assert_not_called()
+    def test_missing_and_stale_source_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(TradingBlocked):scan_candidates(pathlib.Path(directory)/'none',dt.datetime.now(ZoneInfo('Asia/Seoul')))
+
+@unittest.skipUnless(os.getenv('V519_TEST_DB_URL'),'PostgreSQL integration URL not supplied')
+class PostgresRuntimeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import psycopg,uuid
+        from urllib.parse import urlparse
+        from v519_pg_ledger import migrate_runtime
+        cls.url=os.environ['V519_TEST_DB_URL']
+        if urlparse(cls.url).hostname not in ('localhost','127.0.0.1'):
+            raise RuntimeError('TEST_DATABASE_MUST_BE_LOCAL')
+        cls.schema='v519_test_'+uuid.uuid4().hex
+        cls.conn=psycopg.connect(cls.url,autocommit=True)
+        cls.conn.execute('CREATE SCHEMA '+cls.schema)
+        cls.conn.execute('SET search_path TO '+cls.schema)
+        migrate_runtime(cls.conn)
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.execute('DROP SCHEMA '+cls.schema+' CASCADE'); cls.conn.close()
+    def setUp(self):
+        from v519_pg_ledger import PgRuntimeLedger
+        self.conn.execute('TRUNCATE v519_order_intents,v519_runs')
+        self.conn.execute('UPDATE v519_control SET halted=false')
+        self.ledger=PgRuntimeLedger(self.conn,'b'*64)
+        self.broker=BrokerFixture()
+        self.now=dt.datetime(2026,10,29,10,0,tzinfo=ZoneInfo('Asia/Seoul'))
+        self.candidates=[{'ticker':'144960','rs':98}]
+    def cycle(self,execute=True):
+        return integrated_cycle(self.ledger,self.broker,self.candidates,execute=execute,now=self.now)
+    def seed(self,side='BUY',day=None):
+        plan=OrderPlan('144960',side,10,10000,'rs','TEST')
+        return self.ledger.reserve_plan(plan,day or self.now.date())
+    def history_row(self,day,fill=10,remaining=0,side='02',**extra):
+        return dict(odno='000123',ord_dt=day,pdno='144960',sll_buy_dvsn_cd=side,
+                    ord_qty='10',tot_ccld_qty=str(fill),rmn_qty=str(remaining),cncl_yn='N',**extra)
+    def test_observe_halted_no_reservation_no_send(self):
+        self.ledger.halt(); r=self.cycle(False)
+        self.assertEqual(r['planned_buys'],1); self.assertEqual(self.broker.calls,[])
+        self.assertEqual(self.ledger.pending(),[])
+    def test_commit_before_wire_and_ack_restart(self):
+        import psycopg
+        original=self.broker.submit
+        def submit(plan):
+            with psycopg.connect(self.url,autocommit=True) as other:
+                other.execute('SET search_path TO '+self.schema)
+                self.assertEqual(other.execute('SELECT status FROM v519_order_intents').fetchone()[0],'SUBMISSION_UNKNOWN')
+            return original(plan)
+        self.broker.submit=submit
+        self.assertEqual(self.cycle()['orders_sent'],1)
+        self.assertEqual(self.ledger.pending()[0]['broker_order_id'],'000123')
+        # Restart with an empty broker history never resubmits.
+        self.assertEqual(self.cycle()['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(len(self.broker.calls),1)
+    def test_timeout_unknown_halts_and_never_resubmits(self):
+        self.broker.failure=TimeoutError()
+        with self.assertRaisesRegex(TradingBlocked,'UNCERTAIN'):self.cycle()
+        self.assertTrue(self.ledger.halted())
+        self.assertEqual(self.ledger.pending()[0]['status'],'SUBMISSION_UNKNOWN')
+        self.assertEqual(self.cycle()['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(len(self.broker.calls),1)
+    def test_ack_db_failure_keeps_unknown_and_halts(self):
+        with patch.object(self.ledger,'ack',side_effect=RuntimeError()):
+            with self.assertRaises(TradingBlocked):self.cycle()
+        self.assertTrue(self.ledger.halted()); self.assertIsNone(self.ledger.pending()[0]['broker_order_id'])
+    def test_reservation_db_failure_sends_nothing(self):
+        with patch.object(self.ledger,'reserve_plan',side_effect=RuntimeError()):
+            with self.assertRaises(RuntimeError):self.cycle()
+        self.assertEqual(self.broker.calls,[])
+    def test_duplicate_day_intent_after_cancel_stays_blocked(self):
+        from v519_pg_ledger import LedgerBlocked
+        ident=self.seed(); self.ledger.ack(ident,'000123')
+        self.ledger.reconcile(self.ledger.pending()[0],'CANCELLED',0)
+        with self.assertRaises(LedgerBlocked):self.seed()
+        self.assertEqual(self.cycle()['planned_buys'],0)
+    def test_partial_fill_then_full_recovery_across_day(self):
+        day=self.now.date()-dt.timedelta(days=1); ident=self.seed(day=day)
+        self.ledger.ack(ident,'000123'); raw=day.strftime('%Y%m%d')
+        self.broker.rows[raw]=[self.history_row(raw,fill=4,remaining=6)]
+        r=recover_pending(self.ledger,self.broker)
+        self.assertEqual(r['unresolved'],1); self.assertEqual(self.ledger.managed(),{'144960':4})
+        self.broker.rows[raw]=[self.history_row(raw)]
+        self.assertEqual(recover_pending(self.ledger,self.broker)['unresolved'],0)
+        self.assertEqual(self.ledger.managed(),{'144960':10})
+    def test_cancelled_partial_retains_filled_position(self):
+        ident=self.seed(); self.ledger.ack(ident,'000123'); day=self.now.strftime('%Y%m%d')
+        row=self.history_row(day,fill=3,remaining=0); row['cncl_yn']='Y'
+        self.broker.rows[day]=[row]
+        self.assertEqual(recover_pending(self.ledger,self.broker)['unresolved'],0)
+        self.assertEqual(self.ledger.managed(),{'144960':3})
+    def test_wrong_side_or_date_does_not_unlock(self):
+        ident=self.seed(); self.ledger.ack(ident,'000123'); day=self.now.strftime('%Y%m%d')
+        self.broker.rows[day]=[self.history_row(day,side='01')]
+        with self.assertRaises(TradingBlocked):recover_pending(self.ledger,self.broker)
+        self.broker.rows[day]=[self.history_row('20261028')]
+        self.assertEqual(recover_pending(self.ledger,self.broker)['unresolved'],1)
+    def test_fill_regression_rejected(self):
+        from v519_pg_ledger import LedgerBlocked
+        ident=self.seed(); self.ledger.ack(ident,'000123'); row=self.ledger.pending()[0]
+        self.ledger.reconcile(row,'PART_FILLED',5)
+        with self.assertRaises(LedgerBlocked):self.ledger.reconcile(row,'PART_FILLED',4)
+    def test_unknown_id_never_fuzzy_recovers(self):
+        self.seed(); day=self.now.strftime('%Y%m%d')
+        self.broker.rows[day]=[self.history_row(day)]
+        self.assertEqual(recover_pending(self.ledger,self.broker)['unresolved'],1)
+    def test_emergency_halt_before_send_blocks(self):
+        original=self.ledger.reserve_plan
+        def reserve(*args):
+            ident=original(*args); self.ledger.halt(); return ident
+        with patch.object(self.ledger,'reserve_plan',side_effect=reserve):
+            with self.assertRaises(TradingBlocked):self.cycle()
+        self.assertEqual(self.broker.calls,[])
+    def test_distributed_lock_and_account_scope(self):
+        import psycopg
+        from v519_pg_ledger import PgRuntimeLedger,LedgerBlocked
+        with psycopg.connect(self.url,autocommit=True) as conn:
+            conn.execute('SET search_path TO '+self.schema)
+            other=PgRuntimeLedger(conn,'b'*64)
+            with self.ledger.lock():
+                with self.assertRaises(LedgerBlocked):
+                    with other.lock():pass
+            # The lock is released after normal/exceptional exits.
+            with other.lock():pass
+            self.seed()
+            isolated=PgRuntimeLedger(conn,'c'*64)
+            self.assertEqual(isolated.pending(),[])
+    def test_sell_is_durable_and_cannot_oversell(self):
+        ident=self.seed(); self.ledger.ack(ident,'000122')
+        self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
+        self.broker.positions={'144960':{'quantity':10,'sellable':6,'average':'12000'}}
+        self.candidates=[]
+        r=self.cycle()
+        self.assertEqual(r['orders_sent'],1)
+        self.assertEqual((self.broker.calls[0].side,self.broker.calls[0].quantity),('SELL',6))
+    def test_run_log_persists_summary(self):
+        self.ledger.start_run('test'); self.ledger.finish_run('test',{'status':'OBSERVED','orders_sent':0})
+        result=self.conn.execute("SELECT result FROM v519_runs WHERE run_id='test'").fetchone()[0]
+        self.assertEqual(result['orders_sent'],0)
+
+if __name__=='__main__':unittest.main()

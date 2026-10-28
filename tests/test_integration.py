@@ -3,7 +3,7 @@ import oneil_v519_live_runner as runner
 class T(unittest.TestCase):
  def test_live_is_blocked_before_network(self):
   text=inspect.getsource(runner.run)
-  self.assertLess(text.index('LIVE_EVIDENCE_ATTESTATION_AND_BROKER_RECOVERY_NOT_READY'), text.index('t=token(key,secret)'))
+  self.assertLess(text.index('LIVE_EXECUTION_UNAVAILABLE_UNTIL_EVIDENCE_AND_RECOVERY_AUDITED'), text.index('t=token(key,secret)'))
  def test_full_portfolio_read(self):
   code=inspect.getsource(runner.run)
   self.assertIn('verified_balance_snapshot',code)

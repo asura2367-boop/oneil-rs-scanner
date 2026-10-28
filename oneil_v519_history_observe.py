@@ -27,7 +27,7 @@ def fetch_page(key,secret,cano,product,token,date,fk,nk,continuing):
             'INQR_DVSN_2':'','CTX_AREA_FK100':fk,'CTX_AREA_NK100':nk,
             'EXCG_ID_DVSN_CD':'ALL'}
     headers={'authorization':'Bearer '+token,'appkey':key,'appsecret':secret,
-             'tr_id':'TTTC8001R','custtype':'P'}
+             'tr_id':'TTTC0081R','custtype':'P'}
     if continuing:headers['tr_cont']='N'
     req=urllib.request.Request(URL+'?'+urlencode(params),headers=headers,method='GET')
     with urllib.request.urlopen(req,timeout=15) as resp:

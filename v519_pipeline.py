@@ -29,19 +29,23 @@ def pipeline(report, *, broker_reader=None, ledger_reader=None, now=None):
         price=evidence['quote']
         if type(price) is not int or price<=0:raise RuntimeError('BAD_QUOTE')
         # Not an executable quote; quantity is a theoretical cap, not an order.
-        qty=min(180000//price,600000//price)
+        from v519_cash_policy import quantity
+        qty=quantity(evidence['cash'],evidence['invested'],evidence['orderable'],price,evidence['broker_qty'])
         results.append({'ticker':ticker,'rs':candidate['rs'],'reference_price':price,
                         'theoretical_max_qty':qty,'order_authorized':False})
     return {'gate':'DENY','orders_sent':0,'status':'BROKER_OBSERVED_NOT_ORDERABLE',
-            'risk_limit_krw':{'total':1000000,'reserve':400000,'trading':600000,'per_stock':180000},
+            'risk_policy_pct':{'reserve':40,'trading':60,'per_stock_of_trading':30},
             'candidates':results}
 
 def live_broker_reader():
-    from oneil_v519_live_runner import token,price_reference
-    from kis_buying_power_readonly import credentials
-    key,secret,_,_=credentials()
-    tok=token(key,secret)
-    return lambda ticker:{'ticker':ticker,'quote':price_reference(tok,key,secret,ticker)}
+    from oneil_v519_live_engine import KisBroker
+    broker=KisBroker()
+    snapshot=broker.snapshot()
+    def read(ticker):
+        price=broker.quote(ticker,'BUY'); amount,qty=broker.power(ticker,price)
+        return {'ticker':ticker,'quote':price,'cash':snapshot['cash'],
+                'invested':snapshot['invested'],'orderable':amount,'broker_qty':qty}
+    return read
 
 def live_ledger_reader():
     with connect() as db:return status(db)

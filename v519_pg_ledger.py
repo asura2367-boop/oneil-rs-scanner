@@ -93,3 +93,166 @@ if __name__ == '__main__':
     except Exception as e:
         print(json.dumps({'gate':'DENY','orders_sent':0,'error':str(e) if isinstance(e,LedgerBlocked) else 'DATABASE_OPERATION_FAILED'}))
         raise SystemExit(2)
+
+# Idempotent migration of the existing ledger, not a parallel order database.
+RUNTIME_SCHEMA = '''
+ALTER TABLE v519_order_intents ADD COLUMN IF NOT EXISTS trading_day date;
+ALTER TABLE v519_order_intents ADD COLUMN IF NOT EXISTS limit_price bigint CHECK (limit_price > 0);
+ALTER TABLE v519_order_intents ADD COLUMN IF NOT EXISTS signal text;
+ALTER TABLE v519_order_intents DROP CONSTRAINT IF EXISTS v519_order_intents_broker_order_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS v519_broker_identity
+ ON v519_order_intents(account_fingerprint,trading_day,broker_order_id)
+ WHERE broker_order_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS v519_one_buy_per_day
+ ON v519_order_intents(account_fingerprint,trading_day,ticker) WHERE side='BUY';
+CREATE TABLE IF NOT EXISTS v519_runs (
+ run_id text PRIMARY KEY, account_fingerprint text NOT NULL,
+ started_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz,
+ result jsonb NOT NULL DEFAULT '{"status":"STARTED"}'::jsonb
+);
+ALTER TABLE v519_order_intents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE v519_control ENABLE ROW LEVEL SECURITY;
+ALTER TABLE v519_runs ENABLE ROW LEVEL SECURITY;
+'''
+
+
+def migrate_runtime(conn):
+    initialize(conn)
+    with conn.cursor() as cur:
+        cur.execute(RUNTIME_SCHEMA)
+
+
+class PgRuntimeLedger:
+    """Session-lock-backed runtime. Requires a DIRECT or SESSION pool connection.
+
+    Transaction-pool URLs (port 6543) cannot preserve advisory session locks.
+    Use a restricted trusted server role. No browser/anon policies are installed.
+    """
+    def __init__(self, conn, fingerprint):
+        if not re.fullmatch('[0-9a-f]{64}',fingerprint):
+            raise LedgerBlocked('ACCOUNT_FINGERPRINT_INVALID')
+        if not conn.autocommit:
+            raise LedgerBlocked('RUNTIME_REQUIRES_AUTOCOMMIT_CONNECTION')
+        self.conn=conn; self.fingerprint=fingerprint
+        self.lock_key=int(fingerprint[:16],16) % (2**63)
+
+    def rows(self, sql, params=()):
+        from psycopg.rows import dict_row
+        with self.conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(sql,params)
+            return cur.fetchall()
+
+    @contextmanager
+    def lock(self):
+        with self.conn.cursor() as cur:
+            cur.execute('SELECT pg_try_advisory_lock(%s)',(self.lock_key,))
+            if cur.fetchone()[0] is not True:
+                raise LedgerBlocked('ACCOUNT_RUNTIME_ALREADY_RUNNING')
+        try:
+            yield
+        finally:
+            with self.conn.cursor() as cur:
+                cur.execute('SELECT pg_advisory_unlock(%s)',(self.lock_key,))
+
+    def halted(self):
+        rows=self.rows('SELECT halted FROM v519_control WHERE singleton=true')
+        if len(rows)!=1:
+            raise LedgerBlocked('HALT_CONTROL_MISSING')
+        return rows[0]['halted']
+
+    def halt(self):
+        with self.conn.cursor() as cur:
+            cur.execute('UPDATE v519_control SET halted=true,updated_at=now() WHERE singleton=true')
+            if cur.rowcount!=1:
+                raise LedgerBlocked('HALT_CONTROL_MISSING')
+
+    @contextmanager
+    def send_guard(self):
+        with self.conn.transaction():
+            rows=self.rows('SELECT halted FROM v519_control WHERE singleton=true FOR UPDATE')
+            if len(rows)!=1 or rows[0]['halted'] is not False:
+                raise LedgerBlocked('EMERGENCY_HALT_ACTIVE')
+            yield
+
+    def pending(self):
+        return self.rows('''SELECT * FROM v519_order_intents WHERE account_fingerprint=%s
+            AND status NOT IN ('FILLED','CANCELLED','REJECTED') ORDER BY created_at''',(self.fingerprint,))
+
+    def managed(self):
+        rows=self.rows('''SELECT ticker, sum(CASE WHEN side='BUY' THEN filled_quantity
+            ELSE -filled_quantity END) AS quantity FROM v519_order_intents
+            WHERE account_fingerprint=%s GROUP BY ticker''',(self.fingerprint,))
+        if any(r['quantity']<0 for r in rows):
+            raise LedgerBlocked('MANAGED_POSITION_NEGATIVE')
+        return {r['ticker']:int(r['quantity']) for r in rows if r['quantity']>0}
+
+    def bought_today(self, day):
+        return {r['ticker'] for r in self.rows('''SELECT ticker FROM v519_order_intents
+            WHERE account_fingerprint=%s AND trading_day=%s AND side='BUY' ''',(self.fingerprint,day))}
+
+    def reserve_plan(self, plan, day):
+        import hashlib
+        if (not re.fullmatch('[0-9]{6}',plan.ticker) or plan.side not in ('BUY','SELL') or
+                type(plan.quantity) is not int or plan.quantity<=0 or
+                type(plan.price) is not int or plan.price<=0):
+            raise LedgerBlocked('INVALID_ORDER_PLAN')
+        ident=hashlib.sha256(f'v519|{self.fingerprint}|{day}|{plan.ticker}|{plan.side}'.encode()).hexdigest()
+        # Own transaction commits the UNKNOWN record before any broker send.
+        with self.conn.transaction():
+            with self.conn.cursor() as cur:
+                cur.execute('SELECT halted FROM v519_control WHERE singleton=true FOR UPDATE')
+                row=cur.fetchone()
+                if row is None or row[0] is not False:
+                    raise LedgerBlocked('EMERGENCY_HALT_ACTIVE')
+                if self.pending():
+                    raise LedgerBlocked('UNRESOLVED_ORDERS')
+                cur.execute('''INSERT INTO v519_order_intents
+                    (intent_id,account_fingerprint,ticker,side,venue,quantity,trading_day,limit_price,signal)
+                    VALUES(%s,%s,%s,%s,'KRX',%s,%s,%s,%s)
+                    ON CONFLICT DO NOTHING RETURNING intent_id''',
+                    (ident,self.fingerprint,plan.ticker,plan.side,plan.quantity,day,plan.price,plan.signal))
+                if not cur.fetchone():
+                    raise LedgerBlocked('DUPLICATE_INTENT_NO_RETRY')
+        return ident
+
+    def ack(self, ident, order_id):
+        if not isinstance(order_id,str) or not re.fullmatch('[0-9]{1,20}',order_id):
+            raise LedgerBlocked('INVALID_BROKER_ID')
+        with self.conn.cursor() as cur:
+            cur.execute('''UPDATE v519_order_intents SET broker_order_id=%s,status='ACKNOWLEDGED',updated_at=now()
+                WHERE intent_id=%s AND account_fingerprint=%s AND status='SUBMISSION_UNKNOWN'
+                RETURNING intent_id''',(order_id,ident,self.fingerprint))
+            if cur.fetchone() is None:
+                raise LedgerBlocked('ACK_CONFLICT')
+
+    def reconcile(self, order, state, filled):
+        from v519_pg_reconcile import FINAL, ALLOWED
+        if type(filled) is not int or state not in ALLOWED:
+            raise LedgerBlocked('INVALID_RECONCILIATION')
+        with self.conn.transaction():
+            rows=self.rows('''SELECT * FROM v519_order_intents WHERE intent_id=%s
+                AND account_fingerprint=%s FOR UPDATE''',(order['intent_id'],self.fingerprint))
+            if len(rows)!=1:
+                raise LedgerBlocked('INTENT_NOT_FOUND')
+            old=rows[0]
+            if (old['status'] in FINAL or old['broker_order_id']!=order['broker_order_id'] or
+                    not old['filled_quantity']<=filled<=old['quantity']):
+                raise LedgerBlocked('ORDER_STATE_CONFLICT')
+            if (state=='FILLED' and filled!=old['quantity'] or
+                state=='PART_FILLED' and not 0<filled<old['quantity'] or
+                old['status']=='PART_FILLED' and state=='ACKNOWLEDGED'):
+                raise LedgerBlocked('FILL_STATE_CONFLICT')
+            with self.conn.cursor() as cur:
+                cur.execute('''UPDATE v519_order_intents SET status=%s,filled_quantity=%s,
+                    updated_at=now() WHERE intent_id=%s''',(state,filled,order['intent_id']))
+
+    def start_run(self, run_id):
+        with self.conn.cursor() as cur:
+            cur.execute('INSERT INTO v519_runs(run_id,account_fingerprint) VALUES(%s,%s)',
+                        (run_id,self.fingerprint))
+
+    def finish_run(self, run_id, result):
+        from psycopg.types.json import Jsonb
+        with self.conn.cursor() as cur:
+            cur.execute('UPDATE v519_runs SET finished_at=now(),result=%s WHERE run_id=%s',
+                        (Jsonb(result),run_id))
