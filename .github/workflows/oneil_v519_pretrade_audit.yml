@@ -1,0 +1,31 @@
+name: Oneil V5.19 Pretrade Evidence Audit (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fail-closed audit unit tests (nonzero tests)
+        run: python -m unittest -v tests/test_v519_pretrade_audit.py
+      - name: Read only existing evidence; always deny
+        run: python oneil_v519_pretrade_audit.py
+      - name: Upload sanitized audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v519-pretrade-audit-no-orders
+          path: v5_19_pretrade_audit.json
+          retention-days: 3
