@@ -130,11 +130,39 @@ def recover_orders_readonly(state):
         finally:
             journal.close()
 
+def emergency_halt(state):
+    """Persist an irreversible-until-manual-review emergency halt."""
+    import tempfile
+    halt_file=state / "EMERGENCY_HALT.json"
+    with open(state / "oneil.lock", "a+") as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        doc={"halted":True,"at_kst":dt.datetime.now(KST).isoformat(),
+             "reason":"OPERATOR_EMERGENCY_HALT"}
+        fd,temp=tempfile.mkstemp(dir=str(state),prefix=".halt-")
+        try:
+            with os.fdopen(fd,"w",encoding="utf8") as out:
+                json.dump(doc,out,ensure_ascii=False)
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(temp,halt_file)
+        finally:
+            if os.path.exists(temp):os.unlink(temp)
+        return {"halted":True,"gate":"DENY","orders_sent":0}
+
+def require_not_halted(state):
+    halt_file=state / "EMERGENCY_HALT.json"
+    if halt_file.exists():
+        raise Blocked("EMERGENCY_HALT_ACTIVE_MANUAL_REVIEW_REQUIRED")
+
 def run(args):
     if os.environ.get("GITHUB_ACTIONS")=="true":raise Blocked("EPHEMERAL_RUNNER_UNSAFE_FOR_LIVE")
     state=Path(args.state_dir).resolve()
     if not state.exists() or not state.is_dir():raise Blocked("PERSISTENT_STATE_DIR_MISSING")
     if state.stat().st_mode & 0o022:raise Blocked("INSECURE_STATE_DIR")
+    if args.emergency_halt:
+        print(json.dumps(emergency_halt(state),ensure_ascii=False))
+        return
+    require_not_halted(state)
     if args.status_only:
         print(json.dumps(local_status(state), ensure_ascii=False))
         return
@@ -150,7 +178,13 @@ def run(args):
         return
     if not args.ticker or not CODE.fullmatch(args.ticker):raise Blocked("TICKER_INVALID")
     # This release is BUY-only. Sell workflows require verified held quantity.
+    if args.execute:
+        raise Blocked("LIVE_EXECUTION_UNAVAILABLE_UNTIL_EVIDENCE_AND_RECOVERY_AUDITED")
     if args.side!="BUY":raise Blocked("SELL_NOT_SUPPORTED_IN_THIS_RELEASE")
+    # CLI flags are user assertions, never independent certification.
+    # No live order may be transmitted based on these flags alone.
+    if args.execute:
+        raise Blocked("LIVE_EVIDENCE_ATTESTATION_AND_BROKER_RECOVERY_NOT_READY")
     if not args.certified_quote or not args.daily_loss_evidence or not args.order_history_reconciled:
         raise Blocked("QUOTE_PNL_OR_ORDER_RECONCILIATION_MISSING")
     if not args.external_ledger_verified:raise Blocked("LEDGER_RECOVERY_NOT_PROVEN")
@@ -162,15 +196,27 @@ def run(args):
     if not re.fullmatch(r"\d{8}",cano) or not re.fullmatch(r"\d{2}",prod):
         raise Blocked("ACCOUNT_CONFIG_INVALID")
     t=token(key,secret)
-    cash,held=balance(t,key,secret,cano,prod)
+    # A first-page balance response is not a complete portfolio snapshot.
+    from kis_safety_v3 import verified_balance_snapshot, unfilled_codes
+    held, _portfolio_value = verified_balance_snapshot(key, secret, cano, prod, t)
+    unfilled = unfilled_codes(key, secret, cano, prod, t)
     if args.ticker in held:raise Blocked("ALREADY_HELD")
+    if args.ticker in unfilled:raise Blocked("EXISTING_UNFILLED_ORDER")
+    # Read current cash separately. This is account observation, not certified
+    # whole-account daily PnL and not evidence of a stable 60% trading ceiling.
+    cash,_=balance(t,key,secret,cano,prod)
     # IMPORTANT: require external independently verified unfilled/order history as well.
     quote=price_reference(t,key,secret,args.ticker)
     if quote==0:raise Blocked("QUOTE_INVALID")
     amount,broker_qty=buying_power(t,key,secret,cano,prod,args.ticker,quote)
     qty=min((cash*60//100)*30//100//quote,amount//quote,broker_qty)
     if qty<=0:raise Blocked("ZERO_ORDER_QUANTITY")
-    if args.max_qty:qty=min(qty,args.max_qty)
+    if args.max_qty is not None:
+        if type(args.max_qty) is not int or args.max_qty <= 0:
+            raise Blocked("INVALID_MAX_QTY")
+        qty=min(qty,args.max_qty)
+    if qty <= 0 or qty * quote > (cash * 60 // 100) * 30 // 100:
+        raise Blocked("PER_STOCK_BUDGET_EXCEEDED")
     ident=hashlib.sha256(f"{now.date()}|{args.ticker}|{args.side}|{args.signal_id}".encode()).hexdigest()
     with open(state/"oneil.lock","a+") as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -196,6 +242,7 @@ def main():
     p.add_argument("--order-history-reconciled",action="store_true")
     p.add_argument("--external-ledger-verified",action="store_true")
     p.add_argument("--max-qty",type=int,default=None)
+    p.add_argument("--emergency-halt",action="store_true")
     p.add_argument("--status-only",action="store_true")
     p.add_argument("--exit-preview",action="store_true")
     p.add_argument("--held-qty",type=int)
