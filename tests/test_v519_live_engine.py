@@ -197,6 +197,13 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.ledger.halt(); r=self.cycle(False)
         self.assertEqual(r['planned_buys'],1); self.assertEqual(self.broker.calls,[])
         self.assertEqual(self.ledger.pending(),[])
+    def test_history_outage_blocks_before_reservation(self):
+        self.broker.history=lambda day:None
+        with self.assertRaisesRegex(TradingBlocked,'HISTORY_INCOMPLETE'):
+            self.cycle()
+        self.assertEqual(self.ledger.pending(),[])
+        self.assertEqual(self.broker.calls,[])
+
     def test_commit_before_wire_and_ack_restart(self):
         import psycopg
         original=self.broker.submit
