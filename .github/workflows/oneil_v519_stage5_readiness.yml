@@ -1,0 +1,26 @@
+name: Oneil V5.19 Stage 5 Readiness Review (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Stage 5 deterministic safety tests
+        run: python -m unittest -v tests.test_v519_stage5_readiness
+      - name: Generate explicit readiness blocker report
+        run: python oneil_v519_stage5_readiness.py
+      - name: Publish sanitized readiness
+        uses: actions/upload-artifact@v4
+        with:
+          name: v519-stage5-readiness-no-orders
+          path: v519_stage5_readiness.json
+          retention-days: 3
