@@ -90,3 +90,6 @@ KIS 공식 매핑 근거: [현금 주문](https://github.com/koreainvestment/ope
 실제 주문 이력이 없으면 `NO_REAL_ROWS`로 기록한다. 조회 성공이나 PostgreSQL/모의 응답 테스트 통과를 실제 주문 접수 또는 재시작 복구 성공으로 간주하지 않는다. `actual_order_submission_verified`와 `restart_recovery_verified`는 이 읽기 전용 점검으로 true가 되지 않는다.
 
 KIS 모의서버 실증에는 별도의 모의투자 계좌와 모의투자 API 자격이 필요하다. 기존 실전 키를 모의용으로 간주하거나 실전 서버 주문으로 대체하지 않는다. 실계좌 전송·자동 활성화는 이 작업 범위에 포함하지 않는다. [KIS 공식 주문 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/order_cash/order_cash.py)는 real/demo 구분과 별도의 주문 TR ID를 정의한다.
+
+
+실전 조회 점검 결과: [broker-audit 실행](https://github.com/asura2367-boop/oneil-rs-scanner/actions/runs/40773684884)에서 실제 계좌 조회 및 최근 5일 이력 조회가 완료됐으나 주문·체결 행은 0개였다. 실행 시점은 엔진의 KRX 연속매매 허용 시간 밖이어서 `OUTSIDE_KRX_CONTINUOUS_SESSION`으로 호가 검증을 차단했다. 이 진단 실행은 미완료 검증을 비정상 종료로 표시하며, 기존 정상 계좌 대시보드의 상태를 덮어쓰지 않는다. 실제 주문 접수·재시작 복구는 검증되지 않았고 주문 시도/전송은 모두 0건이다. 통합 CI 94개(엔진 59개와 기존 회귀 35개)는 통과했다. 모의계좌를 생성하거나 모의서버 주문으로 진행하지 않았다.
