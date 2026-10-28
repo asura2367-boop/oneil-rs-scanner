@@ -36,8 +36,6 @@ def validate(ticker, side, qty, price, signal):
         raise LedgerBlocked('INVALID_ORDER')
     if type(qty) is not int or type(price) is not int or qty <= 0 or price <= 0:
         raise LedgerBlocked('INVALID_SIZE')
-    if qty * price > 180_000:
-        raise LedgerBlocked('PER_STOCK_CAP_EXCEEDED')
     if not signal or len(signal) > 128:
         raise LedgerBlocked('SIGNAL_REQUIRED')
     now = dt.datetime.now(KST)

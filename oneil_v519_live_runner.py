@@ -124,13 +124,15 @@ def open_persistent_journal(state):
     return journal
 
 def live_submit(tok,key,secret,cano,prod,ticker,qty,price,side):
-    if not (flag("LIVE_ENABLED") and flag("KIS_ALLOW_ORDER")
-            and os.environ.get("I_APPROVE_LIVE_KIS_ORDERS")=="YES"):
-        raise Blocked("USER_APPROVAL_MISSING")
-    payload={"CANO":cano,"ACNT_PRDT_CD":prod,"PDNO":ticker,"ORD_DVSN":"00",
-             "ORD_QTY":str(qty),"ORD_UNPR":str(price)}
-    return api("/uapi/domestic-stock/v1/trading/order-cash",tok,key,secret,
-        "TTTC0012U" if side=="BUY" else "TTTC0011U",method="POST",payload=payload)
+    """Compatibility entry point: orders must use the integrated durable engine."""
+    if side not in ('BUY','SELL'):
+        raise Blocked('ORDER_SIDE_INVALID')
+    if type(qty) is not int or qty<=0 or type(price) is not int or price<=0:
+        raise Blocked('ORDER_QUANTITY_OR_PRICE_INVALID')
+    if not re.fullmatch('[0-9]{8}',cano) or not re.fullmatch('[0-9]{2}',prod):
+        raise Blocked('ACCOUNT_CONFIG_INVALID')
+    raise Blocked("RELEASE_LOCKED_PENDING_USER_APPROVAL")
+
 def recover_orders_readonly(state):
     """Reconcile persisted order IDs against complete same-day KIS history.
     Unknown submissions remain locked and are NEVER automatically retried.

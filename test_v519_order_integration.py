@@ -1,13 +1,3 @@
-import sys, types
-ledger = types.ModuleType('v519_pg_ledger')
-class LedgerBlocked(RuntimeError): pass
-ledger.LedgerBlocked = LedgerBlocked
-ledger.connect = lambda: None
-sys.modules['v519_pg_ledger'] = ledger
-submit = types.ModuleType('v519_durable_submit')
-submit.make_intent_id = lambda *a: None
-submit.submit_once = lambda *a, **k: None
-sys.modules['v519_durable_submit'] = submit
 import unittest
 from v519_order_integration import make_execution_review, execute_live
 from v519_pg_ledger import LedgerBlocked
@@ -19,7 +9,7 @@ class IntegrationTests(unittest.TestCase):
             {'ticker':'234690','reference_price':11350,'preview_quantity':15}]}
         self.snapshot={'held':set(),'pending':set(),'invested':0,
                        'complete_daily_pnl':False,'complete_history':False,
-                       'executable_quote_verified':False}
+                       'executable_quote_verified':False,'cash_verified':True,'cash_krw':2000000,'orderable_krw':2000000}
         self.ledger={'halted':True,'unresolved':0}
     def test_readonly_plan(self):
         r=make_execution_review(self.plan,self.snapshot,self.ledger)

@@ -49,27 +49,26 @@ def review(csv_path, day, *, now=None, broker=None, ledger=None):
         broker_cash = evidence.get("broker_cash")
         if type(broker_qty) is not int or broker_qty < 0 or type(broker_cash) is not int or broker_cash < 0:
             raise ReviewBlocked("KIS_BUYING_POWER", "INVALID_AMOUNT")
-        qty = 0 if evidence.get("held") or evidence.get("pending") else min(180000//price,broker_qty,broker_cash//price)
+        from v519_cash_policy import quantity
+        qty = 0 if evidence.get("held") or evidence.get("pending") else quantity(
+            evidence['cash'], evidence['invested'], broker_cash, price, broker_qty)
         rows.append({"ticker":c["ticker"],"rs":c["rs"],"reference_price":price,
                      "theoretical_max_qty":qty,"quote_executable_verified":False,
                      "order_authorized":False})
     return {"gate":"DENY","orders_sent":0,"status":"READ_ONLY_BROKER_REVIEW",
-            "risk_limits_krw":{"capital":1000000,"reserve":400000,"trading":600000,"per_stock":180000},
+            "risk_policy_pct":{"reserve":40,"trading":60,"per_stock_of_trading":30},
             "candidates":rows}
 
 def broker_adapter():
-    from oneil_v519_live_runner import token, price_reference, buying_power
-    from kis_buying_power_readonly import credentials
-    from kis_safety_v3 import verified_balance_snapshot, unfilled_codes
-    key,secret,cano,prod = checked("KIS_CREDENTIALS", credentials)
-    tok = checked("KIS_TOKEN", lambda: token(key,secret))
-    held,_ = checked("KIS_BALANCE", lambda: verified_balance_snapshot(key,secret,cano,prod,tok))
-    pending = checked("KIS_UNFILLED", lambda: unfilled_codes(key,secret,cano,prod,tok))
+    from oneil_v519_live_engine import KisBroker
+    broker=checked('KIS_AUTH',KisBroker)
+    snapshot=checked('KIS_BALANCE',broker.snapshot)
     def get(ticker):
-        price = checked("KIS_PRICE", lambda: price_reference(tok,key,secret,ticker))
-        amount,qty = checked("KIS_BUYING_POWER", lambda: buying_power(tok,key,secret,cano,prod,ticker,price))
-        return {"ticker":ticker,"price":price,"broker_qty":qty,"broker_cash":amount,
-                "held":ticker in held,"pending":bool(pending)}
+        price=checked('KIS_PRICE',lambda:broker.quote(ticker,'BUY'))
+        amount,qty=checked('KIS_BUYING_POWER',lambda:broker.power(ticker,price))
+        return {'ticker':ticker,'price':price,'broker_qty':qty,'broker_cash':amount,
+                'cash':snapshot['cash'],'invested':snapshot['invested'],
+                'held':ticker in snapshot['positions'],'pending':bool(snapshot['pending'])}
     return get
 
 def ledger_adapter():

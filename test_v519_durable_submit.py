@@ -13,21 +13,12 @@ class DurableTests(unittest.TestCase):
             m.submit_once(intent_id='a'*64,fingerprint='b'*64,ticker='222800',side='BUY',quantity=1,
                 price=129100,verified=False,approved=True,broker_submit=lambda *x:calls.append(x))
         self.assertEqual(calls,[])
-    def test_timeout_never_retries(self):
+    def test_legacy_boolean_approval_cannot_submit(self):
         calls=[]
-        def broker(*args):
-            calls.append(args)
-            raise TimeoutError()
-        with patch.object(m,'record_intent'):
-            with self.assertRaisesRegex(LedgerBlocked,'NO_RETRY'):
-                m.submit_once(intent_id='a'*64,fingerprint='b'*64,ticker='222800',side='BUY',quantity=1,
-                    price=129100,verified=True,approved=True,broker_submit=broker)
-        self.assertEqual(len(calls),1)
-    def test_acknowledgement(self):
-        with patch.object(m,'record_intent'), patch.object(m,'persist_acknowledgement') as ack:
-            out=m.submit_once(intent_id='a'*64,fingerprint='b'*64,ticker='222800',side='BUY',quantity=1,
-                price=129100,verified=True,approved=True,
-                broker_submit=lambda *args:{'rt_cd':'0','output':{'ODNO':'12345'}})
-        self.assertEqual(out['status'],'ACKNOWLEDGED')
-        ack.assert_called_once_with('a'*64,'12345')
+        with patch.object(m,'record_intent') as reserve:
+            with self.assertRaisesRegex(LedgerBlocked,'RELEASE_LOCKED'):
+                m.submit_once(intent_id='a'*64,fingerprint='b'*64,ticker='222800',side='BUY',quantity=10,
+                    price=129100,verified=True,approved=True,broker_submit=lambda *a:calls.append(a))
+        reserve.assert_not_called()
+        self.assertEqual(calls,[])
 if __name__=='__main__': unittest.main()

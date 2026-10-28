@@ -1,18 +1,52 @@
-# V5.19 일괄 안전 점검 추가
+# V5.19 통합 배포 운영 안내
 
-기존 Paper 파일은 변경하지 않습니다. 아래 두 파일을 저장소에 업로드합니다.
-- `oneil_v519_execution_safety.py` → 저장소 루트
-- `tests/test_v519_execution_safety.py` → tests 폴더
+이 배포는 기존 `oneil_v519_live_engine.py`를 단일 실행 엔진으로 확장한다. 실계좌 전송은 `RELEASE_LIVE_APPROVED=False`로 잠겨 있다. 환경변수나 Actions 입력으로 잠금을 해제할 수 없다. 사용자의 명시 승인 전에는 활성화 커밋을 만들지 않는다.
 
-기존 `.github/workflows/oneil_live_v5_19.yml`의 `Merge same-run evidence and hard DENY` 단계 바로 앞에 추가:
+## 실행 경로
 
-```yaml
-      - name: Test consolidated execution safety
-        run: python -m unittest discover -s tests -p 'test_v519_execution_safety.py' -v
-      - name: Audit order-state recovery with hard deny
-        run: python oneil_v519_execution_safety.py --candidate v5_11_review.json --account v5_13_review.json --quote v5_18_report.json --risk data/live/v4_8_audit.json --output v5_19_execution_safety.json
+- 후보: 기존 V5.9 `analyze()`의 RS·거래량·상승 채널·외국인/기관 수급 필터 재사용, RS 90 이상. 기존 CSV가 없거나 형식·날짜가 유효하지 않으면 신규 매수 후보를 만들지 않는다. 필터는 원천 CSV의 수집 정확성을 증명하지 않는다.
+- 계좌: 기존 KIS 인증/미체결/주문가능금액 조회 재사용. 잔고는 헤더 기반 전 페이지 조회, 페이지 합계 불일치 차단. 예수금 `dnca_tot_amt`, 주문가능액은 `ord_psbl_cash`와 `nrcvb_buy_amt` 중 작은 값, 수량은 `nrcvb_buy_qty` 한도 적용.
+- 자금: 조회 예수금의 40% 안전자금, 60% 매매한도, 그 한도의 30% 종목한도. 보유 전체의 원가/평가액 중 큰 노출액을 매매한도에서 차감한다. 매수에는 0.5% 비용 여유를 포함하며 실제 수수료율 보장은 아니다. 고정 운용금은 사용하지 않는다. 이 방식은 매 실행의 현금 기준을 다시 계산하므로 매수 후 한도가 더 보수적으로 줄어든다.
+- 매도: 원장의 누적 체결로 확인된 보유분과 KIS 매도가능수량 중 작은 수량. 수동 보유분은 자동 매도 대상으로 편입하지 않는다. 기본 손절 5%/익절 10%는 검토용 설정이며 승인된 사용자 선호가 아니다. `--stop-loss-pct`, `--take-profit-pct`로 변경 가능.
+- 원장: 기존 Supabase PostgreSQL 테이블 확장. 계좌 지문·거래일·주문번호 조합으로 식별하고, 일자/계좌/종목 중복 매수를 차단한다. 계좌 세션 advisory lock과 control 행 잠금으로 실행·전송을 직렬화한다. 원장 저장이 커밋된 뒤에만 KIS POST가 가능하다.
+- 복구: 매 실행 전 미해결 원장을 주문일별 전 페이지 KIS 내역과 비교한다. 주문번호·일자·종목·방향·수량이 정확히 일치해야 체결을 갱신한다. 부분체결·전량체결·명시 취소를 반영하며 체결 감소/초과를 거부한다. 85일 이전 내역, 주문번호 없는 응답 유실, 정체 불명 주문은 자동 해제/재주문하지 않는다.
+- 주문: 실제 KIS 현금 지정가 매수/매도 payload 및 TR ID 구현. KRX만 지원. 실전 경로에는 당일 일봉과 3초 이내 호가·호가수량·스프레드 검사가 있으며 실서버 실증은 아직 필요하다. 1회 최대 1건 전송, 미해결 주문이 있으면 새 주문 차단.
+- 기록: 시작/완료 결과는 `v519_runs`에 저장하고 Actions에는 계좌번호·종목별 잔고·주문번호 없는 요약만 업로드한다. 프로세스 강제 종료 시 STARTED 기록이 남아 중단을 식별할 수 있다. DB 자체 장애 시 영구 기록은 불가능하므로 Actions 실패/결과 아티팩트도 확인한다.
+
+## 배포와 명령
+
+서버 비밀값: `KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_ACCOUNT_NO`, `KIS_ACCOUNT_PRODUCT`, `SUPABASE_DB_URL`.
+
+DB URL은 TLS가 적용되는 direct 연결 또는 **session pooler**를 사용한다. transaction pooler(통상 6543)는 사용할 수 없다. 테이블 생성/수정 권한이 있는 신뢰된 서버 역할이 필요하다. RLS를 활성화하며 anon/browser용 정책은 만들지 않는다. DB 비밀값을 클라이언트에 넣지 않는다.
+
+```bash
+pip install -r requirements.txt
+python oneil_v519_live_engine.py --migrate
+python oneil_v519_live_engine.py --run
+python oneil_v519_live_engine.py --recover
+python oneil_v519_live_engine.py --halt
 ```
 
-아티팩트 업로드 `path`에 `v5_19_execution_safety.json`을 추가합니다. 기존 실계좌/호가 조회 옵션은 변경하지 않습니다.
+마이그레이션은 기존 원장을 삭제하지 않는다. 새 control 행은 halted=true로 생성하며 기존 정지 상태를 임의 변경하지 않는다. 기존 주문의 거래일을 추측해서 채우지 않는다. 레거시 주문번호 없는 미해결 원장은 수동 대사가 필요하다. 이 릴리스에는 정지 해제 명령이 없다.
 
-**제약:** 이는 주문 상태 전이와 증빙 검증의 오프라인 테스트입니다. 실제 주문 접수, 취소, 체결 복구, 일일 실손익 산출은 아직 미구현입니다. `LIVE_ENABLED=false`, `KIS_ALLOW_ORDER=false` 유지.
+기존 `oneil_v519_live_engine_review.yml`을 통합 워크플로로 수정했다. PR에서 로컬 PostgreSQL 서비스와 회귀 테스트를 실행하고, main 변경 시 마이그레이션 후 조회 실행한다. 예약은 평일 KST 09:10~14:50 20분 간격, 15:10/16:10이며 실주문은 모두 잠겨 있다. 수동 작업은 observe/recover/halt/migrate 중 선택한다. 휴장·장외에는 조회만 가능하고 추후 실전 실행도 09:05~15:15 KRX 연속매매 시간으로 제한한다.
+
+## 실전 활성화 전 남은 제한
+
+1. 이 배포의 실주문은 0건이어야 한다. 실제 KIS/Supabase 연결 확인은 Actions 결과를 별도로 확인해야 한다. 오프라인/로컬 DB 테스트 통과는 실계좌 주문·실체결 복구 성공의 증거가 아니다.
+2. 실서버 호가 필드·시각·거래일·계좌별 주문가능수량과 체결/취소 응답을 조회 및 모의 환경에서 대조하고, 통신 장애·프로세스 재시작 복구를 운영 환경에서 검증해야 한다. 확인 후에도 사용자의 명시 승인 전에는 실계좌를 활성화하지 않는다.
+3. Actions는 지연·누락될 수 있고 예약 간격 사이의 손절을 보장하지 않는다. 실전 상시 위험관리는 지속 실행 서버/감시 체계가 필요하다. 지정가 매도는 체결을 보장하지 않는다. 갭 하락·거래정지·미체결·DB/API 장애는 손실 제한을 무력화할 수 있다.
+4. 미체결을 자동 취소·정정하거나 불명 주문을 자동 재전송하지 않는다. 미해결 주문은 전체 계좌 신규 주문을 막는다. 비상정지는 새 전송을 막으며 이미 접수된 주문을 취소하지 않는다.
+5. 같은 날 같은 종목 매수 재진입 및 동일 방향의 자동 재주문은 보수적으로 차단한다. 부분체결 후 취소된 매도의 잔여분은 당일 자동 재주문되지 않는다. 수동 매매·다른 봇과 계좌를 공유하면 보유 출처를 완전히 구분할 수 없으므로 운영 전 대사가 필요하다.
+6. 일일 손실 한도 함수는 기존 엔진에 유지했지만, 입출금 대사가 포함된 일일 손익 인증은 통합 자동매매의 활성화 조건으로 아직 연결하지 않았다. NXT/SOR·신용·해외주식은 지원하지 않는다.
+
+KIS 공식 매핑 근거: [현금 주문](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/order_cash/order_cash.py), [일별 체결 조회](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_daily_ccld/inquire_daily_ccld.py), [호가 조회](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_asking_price_exp_ccn/inquire_asking_price_exp_ccn.py).
+
+## 이번 작업의 검증 결과 (2026-10-29)
+
+- 기준 main: `110616a93bbf70ff6e2ef9425da2d6d82d7d618d`.
+- 기존 엔진 테스트 파일의 39개 중 오프라인 24개 통과, PostgreSQL 통합 15개는 로컬 DB 미제공으로 건너뜀. PostgreSQL 16 서비스에서 실행할 Actions 설정은 포함했으나 아직 실행되지 않았다.
+- 모듈을 격리해 전체 unittest 541개 수집: 522개 통과, 15개 건너뜀, 기존 실패 2개와 기존 import 오류 2개. V5.18 야간 세션 기대값 불일치 2건, paper V5.1 손익 assert 오류, priority 함수 부재는 변경 전 원본에서도 재현했다. 함수명이 겹치는 루트/tests 구조 때문에 전체 discover 한 번 대신 파일별 격리 실행을 사용했다. import 시 검증하는 `test_live_trade.py`는 별도 스크립트 실행 성공.
+- Python 컴파일과 diff 공백 검사는 통과. 모든 실전 환경변수를 켠 경우에도 주문 전송은 릴리스 잠금으로 거부됨을 확인했다.
+- GitHub tree 생성 및 branch ref 쓰기가 모두 `403 Resource not accessible by integration`으로 거부됨. 원격 저장소 변경, PR/CI 실행, Supabase 마이그레이션, KIS 실서버 통합 검증은 완료되지 않았다. 실제 주문은 보내지 않았다.
+- 다음 순서: GitHub Contents/Workflows 쓰기 접근 복구 → 패치 반영 및 PostgreSQL CI → 실제 KIS/Supabase 조회 검증 및 모의 주문/장애 복구 검증 → 결과 검토 → 사용자 명시 승인 → 별도 활성화 릴리스.

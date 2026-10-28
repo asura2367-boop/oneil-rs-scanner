@@ -70,24 +70,5 @@ def submit_once(*, intent_id, fingerprint, ticker, side, quantity, price,
         raise LedgerBlocked('INDEPENDENT_LIVE_RISK_APPROVAL_MISSING')
     if type(price) is not int or price <= 0 or type(quantity) is not int or quantity <= 0:
         raise LedgerBlocked('INVALID_SIZE')
-    if quantity * price > 180000:
-        raise LedgerBlocked('PER_STOCK_LIMIT')
-    record_intent(intent_id=intent_id, fingerprint=fingerprint, ticker=ticker,
-                  side=side, quantity=quantity)
-    # From this point on, ANY exception leaves the intent SUBMISSION_UNKNOWN.
-    # The operator must reconcile broker history; never auto-retry.
-    try:
-        response = broker_submit(ticker, side, quantity, price)
-    except Exception:
-        raise LedgerBlocked('BROKER_SUBMISSION_UNKNOWN_NO_RETRY') from None
-    try:
-        if not isinstance(response, dict) or str(response.get('rt_cd')) != '0':
-            raise LedgerBlocked('BROKER_RESPONSE_UNKNOWN_NO_RETRY')
-        output = response.get('output')
-        broker_id = output.get('ODNO') if isinstance(output, dict) else None
-        if not isinstance(broker_id, str) or not BROKER_ID.fullmatch(broker_id):
-            raise LedgerBlocked('BROKER_ID_MISSING_NO_RETRY')
-        persist_acknowledgement(intent_id, broker_id)
-    except Exception:
-        raise LedgerBlocked('ACK_UNCERTAIN_RECONCILE_BEFORE_NEW_ORDER') from None
-    return {'status': 'ACKNOWLEDGED', 'orders_submitted': 1, 'fills_confirmed': False}
+    # Legacy bool attestations cannot authorize orders. Use integrated runtime.
+    raise LedgerBlocked('RELEASE_LOCKED_USE_INTEGRATED_ENGINE')

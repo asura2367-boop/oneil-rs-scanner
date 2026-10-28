@@ -25,5 +25,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(len(j.pending()),1)
             j.close()
     def test_order_transmission_still_locked(self):
-        self.assertTrue("LIVE_ORDER_RELEASE_NOT_YET_ATTESTED" in
-            __import__("inspect").getsource(runner.run))
+        with patch('urllib.request.urlopen') as network:
+            with self.assertRaises(runner.Blocked):
+                runner.live_submit('t','k','s','12345678','01','144960',1,10000,'BUY')
+            network.assert_not_called()
