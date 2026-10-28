@@ -1,0 +1,39 @@
+name: Oneil V5.19 Loss and History Diagnostics (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify ten offline safety cases
+        run: python -m unittest -v tests/test_v519_loss_history_guard.py
+      - name: Fail closed without independent private broker evidence
+        run: |
+          python oneil_v519_loss_history_guard.py --output v5_19_loss_history_diagnostic.json
+          python - <<'PY'
+          import json
+          r=json.load(open('v5_19_loss_history_diagnostic.json',encoding='utf8'))
+          assert r['gate']=='DENY' and r['orders_sent']==0 and r['broker_order_api_calls']==0
+          assert not r['daily_loss_evidence_valid'] and not r['order_history_structure_valid']
+          print('LOSS_HISTORY_GUARD=SAFE_DENY; orders_sent=0')
+          PY
+      - name: Upload sanitized diagnostic only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v519-loss-history-no-orders
+          path: v5_19_loss_history_diagnostic.json
+          retention-days: 3
