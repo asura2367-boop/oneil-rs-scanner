@@ -1,0 +1,38 @@
+name: V5.19 Supabase ledger preflight (NO LIVE ORDERS)
+on:
+  workflow_dispatch:
+    inputs:
+      initialize:
+        description: 'Initialize schema and halted control (true once only)'
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: v519-supabase-ledger
+  cancel-in-progress: false
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      I_APPROVE_LIVE_KIS_ORDERS: 'NO'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'psycopg[binary]==3.2.9'
+      - name: PostgreSQL schema/status check (NO ORDERS)
+        env:
+          INIT_LEDGER: ${{ inputs.initialize }}
+        run: |
+          if [ "$INIT_LEDGER" = 'true' ]; then
+            python v519_pg_ledger.py --initialize
+          else
+            python v519_pg_ledger.py --status
+          fi
