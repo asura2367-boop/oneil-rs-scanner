@@ -134,6 +134,27 @@ class RuntimeRiskTests(unittest.TestCase):
             b=object.__new__(KisBroker)
             with self.assertRaises(TradingBlocked):b._send_verified(OrderPlan('144960','BUY',1,10000,'rs','RS'))
             wire.assert_not_called()
+    def test_live_broker_construction_is_locked_before_authentication(self):
+        with patch('oneil_v519_live_runner.token') as auth:
+            with self.assertRaisesRegex(TradingBlocked,'RELEASE_LOCKED'):
+                KisBroker(execution=True)
+            auth.assert_not_called()
+
+    def test_shared_credentials_dont_block_an_approved_execution_profile(self):
+        # Simulate a FUTURE reviewed release; all wire calls remain mocked.
+        # This prevents the legacy read-only config guard from making the
+        # integrated execution profile impossible to activate after approval.
+        flags={'KIS_APP_KEY':'test','KIS_APP_SECRET':'test','KIS_ACCOUNT_NO':'12345678',
+               'KIS_ACCOUNT_PRODUCT':'01','LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true',
+               'I_APPROVE_LIVE_KIS_ORDERS':'YES'}
+        import oneil_v519_live_engine as engine
+        with patch.dict(os.environ,flags),patch.object(engine,'RELEASE_LIVE_APPROVED',True), \
+                patch('oneil_v519_live_runner.token',return_value='test-token'), \
+                patch('urllib.request.urlopen') as wire:
+            broker=KisBroker(execution=True)
+            self.assertEqual(broker.account,'12345678')
+            wire.assert_not_called()
+
     def test_missing_and_stale_source_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TradingBlocked):scan_candidates(pathlib.Path(directory)/'none',dt.datetime.now(ZoneInfo('Asia/Seoul')))
@@ -176,6 +197,13 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.ledger.halt(); r=self.cycle(False)
         self.assertEqual(r['planned_buys'],1); self.assertEqual(self.broker.calls,[])
         self.assertEqual(self.ledger.pending(),[])
+    def test_history_outage_blocks_before_reservation(self):
+        self.broker.history=lambda day:None
+        with self.assertRaisesRegex(TradingBlocked,'HISTORY_INCOMPLETE'):
+            self.cycle()
+        self.assertEqual(self.ledger.pending(),[])
+        self.assertEqual(self.broker.calls,[])
+
     def test_commit_before_wire_and_ack_restart(self):
         import psycopg
         original=self.broker.submit

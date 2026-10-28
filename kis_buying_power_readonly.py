@@ -32,8 +32,10 @@ def require_ok(body, what):
         raise RuntimeError(f'{what} rejected (code: {str(body.get("msg_cd", "unknown"))[:24]})')
     return body
 
-def credentials():
-    if os.getenv('LIVE_ENABLED', 'false').lower() != 'false':
+def credentials(*, read_only=True):
+    # Configuration validation is shared; callers own order authorization.
+    # Standalone read-only scripts keep their existing switch guard.
+    if read_only and os.getenv('LIVE_ENABLED', 'false').lower() != 'false':
         raise RuntimeError('HARD STOP: LIVE_ENABLED must be false')
     key = os.environ['KIS_APP_KEY'].strip()
     secret = os.environ['KIS_APP_SECRET'].strip()

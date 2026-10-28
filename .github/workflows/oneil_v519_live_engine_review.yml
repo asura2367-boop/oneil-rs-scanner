@@ -27,7 +27,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: v519-integrated-${{ github.event_name == 'pull_request' && github.ref || 'account' }}
+  group: v519-integrated-${{ inputs.operation == 'halt' && 'emergency-halt' || (github.event_name == 'pull_request' && github.ref || 'account') }}
   cancel-in-progress: false
 jobs:
   test:

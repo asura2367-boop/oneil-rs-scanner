@@ -239,11 +239,14 @@ class KisBroker:
     REST quotes are indicative only; certified execution prices remain a live gate.
     """
     def __init__(self, *, execution=False):
+        if execution:
+            require_live_release()
         self.execution=execution
         self.quote_evidence={}
+        self.history_cache={}
         from kis_buying_power_readonly import credentials
         from oneil_v519_live_runner import token
-        self.key, self.secret, self.account, self.product = credentials()
+        self.key, self.secret, self.account, self.product = credentials(read_only=not execution)
         self.access = token(self.key, self.secret)
         self.fingerprint = hashlib.sha256((self.account+'|'+self.product).encode()).hexdigest()
 
@@ -321,8 +324,10 @@ class KisBroker:
         from oneil_v519_broker_recovery import read_full_day
         if (dt.date.today()-dt.datetime.strptime(day,'%Y%m%d').date()).days > 85:
             raise TradingBlocked('HISTORY_TOO_OLD_MANUAL_RECONCILIATION')
-        return read_full_day(lambda date,fk,nk,again: fetch_page(self.key,self.secret,
-            self.account,self.product,self.access,date,fk,nk,again), day)
+        if day not in self.history_cache:
+            self.history_cache[day]=read_full_day(lambda date,fk,nk,again: fetch_page(self.key,self.secret,
+                self.account,self.product,self.access,date,fk,nk,again), day)
+        return self.history_cache[day]
 
     def quote(self, ticker, side):
         from oneil_v519_live_runner import price_reference
@@ -446,10 +451,16 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
     if now.tzinfo is None:
         raise TradingBlocked('CLOCK_INVALID')
     with ledger.lock():
+        # Validate the complete current-day broker history even with no local
+        # intents. A missing history response must never look like no orders.
+        today_history=broker.history(now.strftime('%Y%m%d'))
+        if not isinstance(today_history,list):
+            raise TradingBlocked('BROKER_HISTORY_INCOMPLETE')
         recovery = recover_pending(ledger, broker)
         result = {'status':'OBSERVED','gate':'DENY','orders_sent':0,'order_attempts':0,
                   'recovery':recovery,'candidate_count':len(candidates),'planned_buys':0,'planned_sells':0,
-                  'live_release_approved':RELEASE_LIVE_APPROVED}
+                  'live_release_approved':RELEASE_LIVE_APPROVED,
+                  'broker_history_read_verified':True,'history_rows_observed':len(today_history)}
         if recovery['unresolved']:
             result['status']='BLOCKED_UNRESOLVED_ORDERS'
             return result
@@ -547,7 +558,7 @@ def runtime_main():
                     # Resolve fingerprint before acquiring a token so early auth
                     # failures can still be recorded in the permanent run log.
                     from kis_buying_power_readonly import credentials
-                    _,_,account,product=credentials()
+                    _,_,account,product=credentials(read_only=not args.execute)
                     fingerprint=hashlib.sha256((account+'|'+product).encode()).hexdigest()
                     ledger=PgRuntimeLedger(db,fingerprint)
                     ledger.start_run(run_id)
