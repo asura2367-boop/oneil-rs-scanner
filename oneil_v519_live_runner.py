@@ -6,6 +6,7 @@ NEVER run live on ephemeral GitHub Actions because local SQLite state would vani
 import argparse, datetime as dt, fcntl, hashlib, json, os, re, sqlite3, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from oneil_v519_order_recovery import OrderJournal, ReconcileBlocked
 
 KST=ZoneInfo("Asia/Seoul")
 HOST="https://openapi.koreainvestment.com:9443"
@@ -64,20 +65,14 @@ def price_reference(tok,key,secret,ticker):
     out=body.get("output")
     if not isinstance(out,dict):raise Blocked("QUOTE_MISSING")
     return strict_amount(out.get("stck_prpr"))
-def init_db(path):
-    cx=sqlite3.connect(path)
-    cx.execute("PRAGMA journal_mode=WAL")
-    cx.execute("""CREATE TABLE IF NOT EXISTS orders(
-       intent TEXT PRIMARY KEY,ticker TEXT NOT NULL,side TEXT NOT NULL,
-       qty INTEGER NOT NULL,price INTEGER NOT NULL,created TEXT NOT NULL,
-       status TEXT NOT NULL,broker_order_id TEXT)""")
-    cx.commit();return cx
-def record_unknown(cx,ident,ticker,side,qty,price):
-    try:
-        cx.execute("INSERT INTO orders VALUES(?,?,?,?,?,?,?,NULL)",
-            (ident,ticker,side,qty,price,dt.datetime.now(KST).isoformat(),"SUBMISSION_UNKNOWN"))
-        cx.commit()
-    except sqlite3.IntegrityError:raise Blocked("DUPLICATE_OR_UNKNOWN_SUBMISSION") from None
+def open_persistent_journal(state):
+    """Open the durable journal on a persistent host; fail closed on unresolved orders."""
+    journal = OrderJournal(state / "orders.sqlite")
+    if journal.pending():
+        journal.close()
+        raise Blocked("UNRESOLVED_BROKER_ORDERS_RECONCILIATION_REQUIRED")
+    return journal
+
 def live_submit(tok,key,secret,cano,prod,ticker,qty,price,side):
     if not (flag("LIVE_ENABLED") and flag("KIS_ALLOW_ORDER")
             and os.environ.get("I_APPROVE_LIVE_KIS_ORDERS")=="YES"):
@@ -117,14 +112,16 @@ def run(args):
     ident=hashlib.sha256(f"{now.date()}|{args.ticker}|{args.side}|{args.signal_id}".encode()).hexdigest()
     with open(state/"oneil.lock","a+") as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        cx=init_db(state/"orders.sqlite")
+        journal=open_persistent_journal(state)
         if not args.execute:
             print(json.dumps({"gate":"DENY","phase":"REVIEW","ticker":args.ticker,
               "broker_cash_observed":True,"price_is_reference_only":True,"qty_preview":qty,
               "orders_sent":0},ensure_ascii=False))
+            journal.close()
             return
         # No live order can proceed until price is certified by venue-specific book,
         # full holdings/unfilled exposure and daily loss are independently verified.
+        journal.close()
         raise Blocked("LIVE_ORDER_RELEASE_NOT_YET_ATTESTED")
 def main():
     p=argparse.ArgumentParser()
