@@ -45,6 +45,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_oneil_live_v5_19.py' -v
       - name: Buying power fail closed unit tests
         run: python -m unittest -v test_v519_power_bridge.py
+      - name: Batch risk audit safety tests
+        run: python -m unittest discover -s tests -p 'test_v519_risk_audit.py' -v
       - name: Make review-only candidate evidence in this run
         shell: bash
         run: |
@@ -84,6 +86,8 @@ jobs:
           fi
       - name: Verify non-authorizing buying power guard
         run: python oneil_v519_power_bridge.py --intents v5_11_review.json --output v5_19_power_report.json
+      - name: Batch risk evidence audit hard DENY
+        run: python oneil_v519_risk_audit.py --candidate v5_11_review.json --account v5_13_review.json --quote v5_18_report.json --risk data/live/v4_8_audit.json --output v5_19_risk_audit.json
       - name: Merge same-run evidence and hard DENY
         run: python oneil_live_v5_19.py --candidates v5_11_review.json --quotes v5_18_report.json --account v5_13_review.json --risk data/live/v4_8_audit.json --output v5_19_report.json
       - name: Upload sanitized non-authorizing result only
@@ -94,5 +98,6 @@ jobs:
           path: |
             v5_19_report.json
             v5_19_power_report.json
+            v5_19_risk_audit.json
           if-no-files-found: warn
           retention-days: 3
