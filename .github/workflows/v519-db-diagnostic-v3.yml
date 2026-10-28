@@ -1,0 +1,22 @@
+name: V5.19 Supabase diagnostic V3 (NO ORDERS)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      I_APPROVE_LIVE_KIS_ORDERS: 'NO'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'psycopg[binary]==3.2.9'
+      - name: Diagnose TCP PostgreSQL SSL request and connection (NO ORDERS)
+        run: python v519_db_diagnostic_v3.py
