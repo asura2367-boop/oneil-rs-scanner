@@ -83,6 +83,7 @@ class BrokerFixture:
         self.calls=[]; self.rows={}; self.failure=None
         self.cash=5_000_000; self.invested=0; self.positions={}; self.pending=set()
         self.prices={}; self.amount=5_000_000; self.broker_qty=10000
+    def buy_control(self): return {'enabled':True,'connected':True,'revision':1}
     def snapshot(self):
         return dict(cash=self.cash,invested=self.invested,positions=self.positions,pending=self.pending)
     def quote(self,ticker,side): return self.prices.get((ticker,side),10000)
@@ -183,6 +184,21 @@ class RuntimeRiskTests(unittest.TestCase):
             self.assertEqual(json.loads(plain),original)
             altered=bytearray(dec(envelope['ciphertext']));altered[0]^=1
             with self.assertRaises(InvalidTag):AESGCM(aes).decrypt(dec(envelope['nonce']),bytes(altered),aad)
+
+    def test_buy_control_missing_or_failed_blocks_buys(self):
+        self.assertFalse(read_buy_control(access_token='')['enabled'])
+        def failed(*args,**kwargs):raise TimeoutError()
+        result=read_buy_control(access_token='test',opener=failed)
+        self.assertFalse(result['enabled']);self.assertFalse(result['connected'])
+
+    def test_buy_control_requires_valid_fresh_response(self):
+        import io
+        now=dt.datetime(2026,10,29,0,0,tzinfo=dt.timezone.utc)
+        valid={'schema_version':1,'enabled':True,'revision':2,'observed_at':now.isoformat()}
+        read=lambda body:read_buy_control(access_token='test',now=now,opener=lambda *a,**k:io.StringIO(json.dumps(body)))
+        self.assertTrue(read(valid)['enabled'])
+        self.assertFalse(read({**valid,'enabled':'true'})['enabled'])
+        self.assertFalse(read({**valid,'observed_at':(now-dt.timedelta(minutes=1)).isoformat()})['enabled'])
 
     def test_missing_and_stale_source_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -335,6 +351,22 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertEqual(data['orders'],[])
         self.assertFalse(data['orders_enabled'])
         self.assertNotIn('account_fingerprint',json.dumps(data,default=str))
+
+    def test_buy_off_preserves_sell_management(self):
+        ident=self.seed();self.ledger.ack(ident,'000122')
+        self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
+        self.broker.positions={'144960':{'quantity':10,'sellable':6,'average':'12000'}}
+        self.broker.buy_control=lambda:{'enabled':False,'connected':True,'revision':2}
+        r=self.cycle()
+        self.assertEqual(r['planned_buys'],0)
+        self.assertEqual(self.broker.calls[0].side,'SELL')
+
+    def test_buy_off_rechecked_before_reservation(self):
+        states=iter([{'enabled':True,'connected':True,'revision':1},{'enabled':False,'connected':True,'revision':2}])
+        self.broker.buy_control=lambda:next(states)
+        r=self.cycle()
+        self.assertEqual(r['status'],'BUY_SWITCH_OFF')
+        self.assertEqual(self.broker.calls,[]);self.assertEqual(self.ledger.pending(),[])
 
     def test_run_log_persists_summary(self):
         self.ledger.start_run('test'); self.ledger.finish_run('test',{'status':'OBSERVED','orders_sent':0})

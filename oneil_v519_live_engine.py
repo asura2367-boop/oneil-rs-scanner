@@ -373,6 +373,9 @@ class KisBroker:
         from oneil_v519_live_runner import buying_power
         return buying_power(self.access,self.key,self.secret,self.account,self.product,ticker,price)
 
+    def buy_control(self):
+        return read_buy_control()
+
     def submit(self, plan):
         require_live_release()
         # Price evidence is obtained by the broker reader; no CLI attestation.
@@ -465,12 +468,13 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
         if recovery['unresolved']:
             result['status']='BLOCKED_UNRESOLVED_ORDERS'
             return result
+        control=broker.buy_control() if callable(getattr(broker,'buy_control',None)) else {'enabled':False,'connected':False,'revision':None}
         snapshot=broker.snapshot()
         snapshot['managed']=ledger.managed()
         snapshot['bought_today']=ledger.bought_today(now.date())
-        plans, allocation = plan_orders(candidates,snapshot,broker.quote,broker.power,
+        plans, allocation = plan_orders(candidates if control['enabled'] else [],snapshot,broker.quote,broker.power,
             stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct)
-        ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now}
+        ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control}
         result['planned_buys']=sum(p.side=='BUY' for p in plans)
         result['planned_sells']=sum(p.side=='SELL' for p in plans)
         if not execute:
@@ -483,6 +487,13 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
             result['status']='NO_ORDER'
             return result
         plan=plans[0]
+        if plan.side=='BUY':
+            latest=broker.buy_control()
+            if not latest.get('enabled'):
+                ledger.dashboard_state['buy_control']=latest
+                ledger.dashboard_state['plans']=[p for p in plans if p.side=='SELL']
+                result.update(status='BUY_SWITCH_OFF',planned_buys=0)
+                return result
         ident=ledger.reserve_plan(plan,now.date())  # committed BEFORE network send
         result['order_attempts']=1
         try:
@@ -513,6 +524,31 @@ def scan_candidates(source, now):
     if fatal.intersection(report['reason_codes']):
         raise TradingBlocked('CANDIDATE_SOURCE_INVALID_OR_STALE')
     return report['review_candidates']
+
+
+def read_buy_control(*, opener=None, now=None, access_token=None):
+    """Read owner-private desired buy setting. Failure blocks BUY only."""
+    import urllib.request
+    supplied_now=now
+    token=os.getenv('DASHBOARD_SITE_ACCESS_TOKEN','') if access_token is None else access_token
+    denied={'enabled':False,'connected':False,'revision':None,'reason':'CONTROL_CONNECTION_MISSING'}
+    if not token:
+        return denied
+    try:
+        req=urllib.request.Request('https://oneil-control-desk.asura2367.chatgpt.site/api/runtime-control',
+            headers={'OAI-Sites-Authorization':'Bearer '+token,'Cache-Control':'no-cache'},method='GET')
+        with (opener or urllib.request.urlopen)(req,timeout=5) as response:
+            body=json.load(response)
+        at=dt.datetime.fromisoformat(body['observed_at'])
+        checked_at=supplied_now or dt.datetime.now(dt.timezone.utc)
+        if (body.get('schema_version')!=1 or type(body.get('enabled')) is not bool or
+                type(body.get('revision')) is not int or body['revision']<0 or
+                at.tzinfo is None or not -2<=(checked_at-at).total_seconds()<=15):
+            raise TradingBlocked('CONTROL_RESPONSE_INVALID')
+        return {'enabled':body['enabled'],'connected':True,'revision':body['revision'],
+                'updated_at':body.get('updated_at'),'reason':'OWNER_SETTING'}
+    except Exception:
+        return {**denied,'reason':'CONTROL_READ_FAILED'}
 
 
 def monitoring_open(now):
@@ -547,6 +583,7 @@ def dashboard_snapshot(ledger,result):
     return {'schema_version':1,'generated_at':state['at'].isoformat(),
         'mode':'OBSERVE_ONLY','orders_enabled':False,'halted':ledger.halted(),
         'monitoring_open':monitoring_open(state['at']) and result.get('status')!='DAILY_CLOSED',
+        'buy_control':state['buy_control'],
         'monitor_hours':'09:00–20:00 KST','poll_minutes':20,'venue':'KRX',
         'result':result,'allocation':state['allocation'],
         'account':{'cash':snap['cash'],'equity':snap.get('equity'),
