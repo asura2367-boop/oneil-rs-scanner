@@ -81,11 +81,31 @@ def live_submit(tok,key,secret,cano,prod,ticker,qty,price,side):
              "ORD_QTY":str(qty),"ORD_UNPR":str(price)}
     return api("/uapi/domestic-stock/v1/trading/order-cash",tok,key,secret,
         "TTTC0012U" if side=="BUY" else "TTTC0011U",method="POST",payload=payload)
+def recover_orders_readonly(state):
+    """Reconcile persisted order IDs against complete same-day KIS history.
+    Unknown submissions remain locked and are NEVER automatically retried.
+    """
+    if flag("LIVE_ENABLED") or flag("KIS_ALLOW_ORDER"):
+        raise Blocked("RECOVERY_REQUIRES_LIVE_FLAGS_OFF")
+    from oneil_v519_broker_recovery import observe_and_reconcile
+    with open(state / "oneil.lock", "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        journal = OrderJournal(state / "orders.sqlite")
+        try:
+            result = observe_and_reconcile(journal)
+            return {"gate": "DENY", "recovered": result["matched"],
+                    "unresolved": len(journal.pending()), "orders_sent": 0}
+        finally:
+            journal.close()
+
 def run(args):
     if os.environ.get("GITHUB_ACTIONS")=="true":raise Blocked("EPHEMERAL_RUNNER_UNSAFE_FOR_LIVE")
     state=Path(args.state_dir).resolve()
     if not state.exists() or not state.is_dir():raise Blocked("PERSISTENT_STATE_DIR_MISSING")
     if state.stat().st_mode & 0o022:raise Blocked("INSECURE_STATE_DIR")
+    if args.recover_only:
+        print(json.dumps(recover_orders_readonly(state), ensure_ascii=False))
+        return
     if not args.ticker or not CODE.fullmatch(args.ticker):raise Blocked("TICKER_INVALID")
     # This release is BUY-only. Sell workflows require verified held quantity.
     if args.side!="BUY":raise Blocked("SELL_NOT_SUPPORTED_IN_THIS_RELEASE")
@@ -126,14 +146,15 @@ def run(args):
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--state-dir",required=True)
-    p.add_argument("--ticker",required=True)
+    p.add_argument("--ticker")
     p.add_argument("--side",default="BUY",choices=["BUY","SELL"])
-    p.add_argument("--signal-id",required=True)
+    p.add_argument("--signal-id")
     p.add_argument("--certified-quote",action="store_true")
     p.add_argument("--daily-loss-evidence",action="store_true")
     p.add_argument("--order-history-reconciled",action="store_true")
     p.add_argument("--external-ledger-verified",action="store_true")
     p.add_argument("--max-qty",type=int,default=None)
+    p.add_argument("--recover-only",action="store_true")
     p.add_argument("--execute",action="store_true")
     a=p.parse_args()
     try:run(a)
