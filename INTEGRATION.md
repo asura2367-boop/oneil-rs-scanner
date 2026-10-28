@@ -78,6 +78,6 @@ KIS 공식 매핑 근거: [현금 주문](https://github.com/koreainvestment/ope
 
 기존 엔진은 본인 전용 Site의 `/api/runtime-control`을 조회하며, `DASHBOARD_SITE_ACCESS_TOKEN` GitHub Actions 비밀값이 없거나 응답을 검증하지 못하면 신규 매수를 차단한다. BUY 주문 예약 직전에도 설정을 다시 확인한다. OFF는 이미 접수된 주문을 취소하지 않는다. 대시보드는 요청 설정과 마지막 엔진 확인 상태를 구분해 표시한다.
 
-이 연결용 비밀값은 공개 저장소·로그·채팅에 넣지 않는다. GitHub의 비밀값 등록은 현재 연결 도구에서 지원하지 않아 별도의 안전한 설정 절차가 필요하다. 연결이 완료되기 전에는 ON 저장만으로 엔진 매수가 허용되지 않는다.
+이 연결용 비밀값은 공개 저장소·로그·채팅에 넣지 않는다. 2026-10-29 소유자의 명시적 저장 승인 후 GitHub의 Repository Secrets에 `DASHBOARD_SITE_ACCESS_TOKEN`을 등록했다. [읽기 전용 실행](https://github.com/asura2367-boop/oneil-rs-scanner/actions/runs/40772036901)이 성공했고, 비공개 보고에서 엔진 `connected=true`, 대시보드와 엔진 모두 매수 OFF·revision 0, 주문 전송 0건을 확인했다. 계좌 정보는 공개 문서에 포함하지 않는다. 이 자격은 비공개 Site 접근 권한을 가지므로 저장소의 신뢰할 수 있는 워크플로에서만 사용한다. 실주문 릴리스 잠금과 비상정지는 별개로 유지한다.
 
 2026-10-29 사용자가 실거래 허용 의사를 명시했다. 이는 위험관리·실제 주문 및 체결 복구 검증을 완료했다는 뜻이 아니다. 현재 `RELEASE_LIVE_APPROVED=False`와 실주문 비활성을 유지한다. 실계좌 주문을 실행하거나 9시에 자동으로 잠금을 해제하는 예약은 만들지 않았다.
