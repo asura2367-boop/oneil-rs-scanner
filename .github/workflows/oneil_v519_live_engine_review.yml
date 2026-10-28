@@ -90,6 +90,7 @@ jobs:
       KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
       KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      DASHBOARD_SITE_ACCESS_TOKEN: ${{ secrets.DASHBOARD_SITE_ACCESS_TOKEN }}
       OPERATION: ${{ github.event.schedule == '0 11 * * *' && 'close' || inputs.operation || 'observe' }}
     steps:
       - uses: actions/checkout@v4
