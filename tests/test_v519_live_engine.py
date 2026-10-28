@@ -251,6 +251,89 @@ class RuntimeRiskTests(unittest.TestCase):
                     broker.request('/uapi/domestic-stock/v1/trading/order-cash','TTTC0012U',{},post=True)
                 self.assertEqual(wire.call_count,1)
 
+    def test_broker_audit_empty_history_does_not_claim_fill_verification(self):
+        b=BrokerFixture();b.execution_quote=lambda *args:10000
+        with patch.object(b,'submit') as wire:
+            result=audit_broker_evidence(b,[{'ticker':'144960'}],now=dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul')))
+            wire.assert_not_called()
+        self.assertEqual(result['history_days_verified'],5)
+        self.assertEqual(result['order_fill_evidence'],'NO_REAL_ROWS')
+        self.assertFalse(result['actual_order_submission_verified'])
+        self.assertFalse(result['restart_recovery_verified'])
+        self.assertEqual(result['orders_sent'],0)
+
+    def test_broker_audit_validates_real_row_shapes_without_private_output(self):
+        b=BrokerFixture();b.execution_quote=lambda *args:10000
+        day='20261029'
+        base={'ord_dt':day,'pdno':'144960','sll_buy_dvsn_cd':'02','ord_qty':'10','cncl_yn':'N'}
+        b.rows[day]=[{**base,'odno':'000123','tot_ccld_qty':'10','rmn_qty':'0'},
+            {**base,'odno':'000124','tot_ccld_qty':'4','rmn_qty':'6'},
+            {**base,'odno':'000125','tot_ccld_qty':'3','rmn_qty':'0','cncl_yn':'Y'}]
+        r=audit_broker_evidence(b,[{'ticker':'144960'}],now=dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul')))
+        self.assertEqual(r['history_rows_verified'],3)
+        self.assertEqual([r['fill_states_observed'][k] for k in ('FILLED','PART_FILLED','CANCELLED')],[1,1,1])
+        self.assertNotIn('000123',json.dumps(r));self.assertNotIn('144960',json.dumps(r))
+        self.assertFalse(r['restart_recovery_verified'])
+
+    def test_broker_audit_rejects_conflicting_history(self):
+        now=dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul'))
+        base={'ord_dt':'20261029','pdno':'144960','sll_buy_dvsn_cd':'02','ord_qty':'10',
+              'odno':'000123','tot_ccld_qty':'4','rmn_qty':'6','cncl_yn':'N'}
+        for changes in ({'ord_dt':'20261028'},{'ord_qty':'0'},{'tot_ccld_qty':'11'},
+                        {'sll_buy_dvsn_cd':'00'},{'rmn_qty':None}):
+            with self.subTest(changes=changes):
+                b=BrokerFixture();b.execution_quote=lambda *args:10000
+                b.rows['20261029']=[{**base,**changes}]
+                r=audit_broker_evidence(b,[{'ticker':'144960'}],now=now,lookback_days=1)
+                self.assertEqual(r['status'],'BLOCKED_BROKER_EVIDENCE')
+                self.assertEqual(r['history_rows_verified'],0)
+                self.assertIn('HISTORY_RESPONSE_INVALID',r['errors'])
+
+    def test_broker_audit_is_bounded_before_network(self):
+        b=BrokerFixture()
+        for days in (0,11,True):
+            with patch.object(b,'snapshot') as read:
+                with self.assertRaises(TradingBlocked):
+                    audit_broker_evidence(b,[],now=dt.datetime.now(ZoneInfo('Asia/Seoul')),lookback_days=days)
+                read.assert_not_called()
+
+    def quote_reader(self, book=None, day='20261029'):
+        broker=object.__new__(KisBroker);broker.quote_evidence={}
+        book=book or {'aspr_acpt_hour':'100000','askp1':'10000','bidp1':'9990',
+                     'askp_rsqn1':'10','bidp_rsqn1':'20'}
+        broker.request=lambda path,*args,**kwargs:(None,{'output':[{'stck_bsop_date':day}]}
+            if 'inquire-daily-price' in path else {'output1':book})
+        return broker
+
+    def test_execution_book_uses_current_day_price_side_and_depth(self):
+        now=dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul'))
+        class Clock(dt.datetime):
+            @classmethod
+            def now(cls,tz=None):return now if tz else now.replace(tzinfo=None)
+        b=self.quote_reader()
+        with patch('oneil_v519_live_engine.dt.datetime',Clock):
+            self.assertEqual(b.execution_quote('144960','BUY'),10000)
+            self.assertEqual(b.execution_quote('144960','SELL'),9990)
+        self.assertEqual(b.quote_evidence[('144960','BUY')]['size'],10)
+        self.assertEqual(b.quote_evidence[('144960','SELL')]['size'],20)
+
+    def test_execution_book_blocks_stale_future_wide_and_empty_quotes(self):
+        now=dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul'))
+        class Clock(dt.datetime):
+            @classmethod
+            def now(cls,tz=None):return now if tz else now.replace(tzinfo=None)
+        base={'aspr_acpt_hour':'100000','askp1':'10000','bidp1':'9990',
+              'askp_rsqn1':'10','bidp_rsqn1':'20'}
+        for changes in ({'aspr_acpt_hour':'095956'},{'aspr_acpt_hour':'100001'},
+                        {'aspr_acpt_hour':''},{'askp1':'11000'},{'askp_rsqn1':'0'}):
+            with self.subTest(changes=changes),patch('oneil_v519_live_engine.dt.datetime',Clock):
+                b=self.quote_reader({**base,**changes})
+                with self.assertRaises(TradingBlocked):b.execution_quote('144960','BUY')
+                self.assertEqual(b.quote_evidence,{})
+        with patch('oneil_v519_live_engine.dt.datetime',Clock):
+            with self.assertRaisesRegex(TradingBlocked,'EXCHANGE_DAY_NOT_CONFIRMED'):
+                self.quote_reader(day='20261028').execution_quote('144960','BUY')
+
     def test_missing_and_stale_source_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TradingBlocked):scan_candidates(pathlib.Path(directory)/'none',dt.datetime.now(ZoneInfo('Asia/Seoul')))
