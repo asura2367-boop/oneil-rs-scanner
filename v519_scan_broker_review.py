@@ -108,7 +108,7 @@ def main():
         result={"gate":"DENY","orders_sent":0,"status":"BLOCKED","stage":"UNEXPECTED",
                 "reason":"OPERATION_FAILED","candidates":[]}
         code=2
-    Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+"\\n",encoding="utf-8")
+    Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     print("V519_REVIEW="+result["status"]+"; stage="+result.get("stage","OK")+"; reason="+result.get("reason","NONE")+"; orders_sent=0")
     raise SystemExit(code)
 

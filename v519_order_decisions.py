@@ -40,7 +40,7 @@ def main():
     except Exception:
         result={'status':'BLOCKED','gate':'DENY','orders_sent':0,'orders':[]}
         exit_code=2
-    Path(a.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\\n',encoding='utf-8')
+    Path(a.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     print('V519_PLAN='+result['status']+'; orders_sent=0')
     raise SystemExit(exit_code)
 if __name__=='__main__':main()
