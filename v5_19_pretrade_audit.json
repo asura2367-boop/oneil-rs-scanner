@@ -1,0 +1,30 @@
+{
+  "version": "5.19-pretrade-audit",
+  "generated_at_kst": "2026-10-28T12:15:16+09:00",
+  "gate": "DENY",
+  "candidate_count": 0,
+  "account_observed": false,
+  "indicative_buying_power_observed": false,
+  "quote_diagnostic_observed": false,
+  "daily_pnl_input_observed": false,
+  "order_history_observed": false,
+  "reserve_pct": 40,
+  "trading_pct": 60,
+  "stock_pct_of_trading_budget": 30,
+  "approved_order_quantity_count": 0,
+  "block_codes": [
+    "CANDIDATE_NOT_VERIFIED",
+    "ACCOUNT_NOT_VERIFIED",
+    "INDICATIVE_BUYING_POWER_NOT_OBSERVED",
+    "QUOTE_DIAGNOSTIC_MISSING_OR_STALE",
+    "EXECUTABLE_QUOTE_NOT_ATTESTED",
+    "DAILY_PNL_EVIDENCE_MISSING_OR_STALE",
+    "DAILY_LOSS_INDEPENDENT_RECONCILIATION_REQUIRED",
+    "BROKER_ORDER_HISTORY_MISSING_OR_UNVERIFIED",
+    "AUTOMATIC_RETRY_AND_ORDER_TRANSMISSION_DISABLED"
+  ],
+  "LIVE_ENABLED": false,
+  "KIS_ALLOW_ORDER": false,
+  "orders_sent": 0,
+  "broker_order_api_calls": 0
+}
