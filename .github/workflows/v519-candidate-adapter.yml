@@ -1,0 +1,22 @@
+name: V5.19 candidate adapter checks (NO ORDERS)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'v519_candidate_adapter.py'
+      - 'test_v519_candidate_adapter.py'
+      - '.github/workflows/v519-candidate-adapter.yml'
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest test_v519_candidate_adapter.py -v
