@@ -81,3 +81,12 @@ KIS 공식 매핑 근거: [현금 주문](https://github.com/koreainvestment/ope
 이 연결용 비밀값은 공개 저장소·로그·채팅에 넣지 않는다. 2026-10-29 소유자의 명시적 저장 승인 후 GitHub의 Repository Secrets에 `DASHBOARD_SITE_ACCESS_TOKEN`을 등록했다. [읽기 전용 실행](https://github.com/asura2367-boop/oneil-rs-scanner/actions/runs/40772036901)이 성공했고, 비공개 보고에서 엔진 `connected=true`, 대시보드와 엔진 모두 매수 OFF·revision 0, 주문 전송 0건을 확인했다. 계좌 정보는 공개 문서에 포함하지 않는다. 이 자격은 비공개 Site 접근 권한을 가지므로 저장소의 신뢰할 수 있는 워크플로에서만 사용한다. 실주문 릴리스 잠금과 비상정지는 별개로 유지한다.
 
 2026-10-29 사용자가 실거래 허용 의사를 명시했다. 이는 위험관리·실제 주문 및 체결 복구 검증을 완료했다는 뜻이 아니다. 현재 `RELEASE_LIVE_APPROVED=False`와 실주문 비활성을 유지한다. 실계좌 주문을 실행하거나 9시에 자동으로 잠금을 해제하는 예약은 만들지 않았다.
+
+
+## 주문·체결 실증 전 읽기 전용 점검
+
+기존 엔진의 `--broker-audit` 및 기존 통합 Actions의 `broker-audit` 작업은 주문을 보내지 않고 실제 KIS 잔고, 최근 5일 전 페이지 주문 이력, 당일 호가와 주문가능금액을 대조한다. 체결 수량 검사는 실행 엔진의 복구 경로와 같은 함수를 사용한다. 주문번호·종목별 주문 내역·계좌 금액은 공개 결과에 포함하지 않는다. 이 진단은 계좌 대시보드의 정상/오류 상태 파일을 덮어쓰지 않는다.
+
+실제 주문 이력이 없으면 `NO_REAL_ROWS`로 기록한다. 조회 성공이나 PostgreSQL/모의 응답 테스트 통과를 실제 주문 접수 또는 재시작 복구 성공으로 간주하지 않는다. `actual_order_submission_verified`와 `restart_recovery_verified`는 이 읽기 전용 점검으로 true가 되지 않는다.
+
+KIS 모의서버 실증에는 별도의 모의투자 계좌와 모의투자 API 자격이 필요하다. 기존 실전 키를 모의용으로 간주하거나 실전 서버 주문으로 대체하지 않는다. 실계좌 전송·자동 활성화는 이 작업 범위에 포함하지 않는다. [KIS 공식 주문 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/order_cash/order_cash.py)는 real/demo 구분과 별도의 주문 TR ID를 정의한다.

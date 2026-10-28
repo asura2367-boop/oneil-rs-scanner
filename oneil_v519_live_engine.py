@@ -404,6 +404,78 @@ class KisBroker:
         return response
 
 
+def broker_fill_state(row, quantity):
+    """Validate KIS quantities before any durable state transition."""
+    from oneil_v519_broker_recovery import exact_int
+    filled=exact_int(row.get('tot_ccld_qty')); remaining=exact_int(row.get('rmn_qty'))
+    if type(quantity) is not int or quantity<=0 or filled>quantity or filled+remaining>quantity:
+        raise TradingBlocked('BROKER_FILL_CONFLICT')
+    if filled==quantity and remaining==0:
+        return 'FILLED',filled
+    if row.get('cncl_yn')=='Y' and remaining==0:
+        return 'CANCELLED',filled
+    if 0<filled<quantity:
+        return 'PART_FILLED',filled
+    return 'ACKNOWLEDGED',filled
+
+
+def audit_broker_evidence(broker, candidates, *, now, lookback_days=5):
+    """READ ONLY operating evidence. Empty history cannot prove fill recovery.
+
+    Shares the runtime's broker readers and fill parser. No reserve/submit/halt
+    operation or order-ID/amount output exists in this path.
+    """
+    from oneil_v519_broker_recovery import exact_int
+    if now.tzinfo is None or type(lookback_days) is not int or not 1<=lookback_days<=10:
+        raise TradingBlocked('AUDIT_PARAMETERS_INVALID')
+    now=now.astimezone(ZoneInfo('Asia/Seoul'))
+    result={'status':'BROKER_EVIDENCE_AUDITED','gate':'DENY','orders_sent':0,
+        'order_attempts':0,'actual_order_submission_verified':False,
+        'restart_recovery_verified':False,'history_days_verified':0,'history_rows_verified':0,
+        'fill_states_observed':{s:0 for s in ('ACKNOWLEDGED','PART_FILLED','FILLED','CANCELLED')},
+        'account_read_verified':False,'fresh_book_verified':False,'buying_power_read_verified':False,
+        'errors':[]}
+    snapshot=broker.snapshot();result['account_read_verified']=True
+    for offset in range(lookback_days):
+        day=(now.date()-dt.timedelta(days=offset)).strftime('%Y%m%d')
+        try:
+            rows=broker.history(day)
+            if not isinstance(rows,list):raise TradingBlocked('BROKER_HISTORY_INCOMPLETE')
+            seen=set();counts={s:0 for s in result['fill_states_observed']}
+            for row in rows:
+                if not isinstance(row,dict):raise TradingBlocked('BROKER_HISTORY_ROW_INVALID')
+                ident=row.get('odno')
+                if (not isinstance(ident,str) or not re.fullmatch('[0-9]{1,20}',ident.strip()) or
+                        ident.strip() in seen or row.get('ord_dt')!=day or
+                        not isinstance(row.get('pdno'),str) or not CODE.fullmatch(row['pdno']) or
+                        row.get('sll_buy_dvsn_cd') not in ('01','02')):
+                    raise TradingBlocked('BROKER_HISTORY_IDENTITY_INVALID')
+                seen.add(ident.strip())
+                state,_=broker_fill_state(row,exact_int(row.get('ord_qty')))
+                counts[state]+=1
+            result['history_days_verified']+=1;result['history_rows_verified']+=len(rows)
+            for state,n in counts.items():result['fill_states_observed'][state]+=n
+        except Exception:
+            result['errors'].append('HISTORY_RESPONSE_INVALID')
+    result['order_fill_evidence']='REAL_ROWS_OBSERVED' if result['history_rows_verified'] else 'NO_REAL_ROWS'
+    ticker=next((c.get('ticker') for c in candidates if isinstance(c,dict) and
+        isinstance(c.get('ticker'),str) and CODE.fullmatch(c['ticker'])),None)
+    ticker=ticker or next(iter(snapshot['positions']),None)
+    if ticker:
+        try:
+            price=broker.execution_quote(ticker,'BUY')
+            broker.execution_quote(ticker,'SELL')
+            result['fresh_book_verified']=True
+            amount,qty=broker.power(ticker,price);money(amount);money(qty)
+            result['buying_power_read_verified']=True
+        except Exception as exc:
+            result['errors'].append(str(exc) if isinstance(exc,TradingBlocked) else 'QUOTE_OR_POWER_READ_FAILED')
+    else:
+        result['errors'].append('NO_AUDIT_INSTRUMENT')
+    if result['errors']:result['status']='BLOCKED_BROKER_EVIDENCE'
+    return result
+
+
 def recover_pending(ledger, broker):
     """Exact account/day/ID/side/ticker/size match; unknown submissions stay locked.
 
@@ -427,17 +499,7 @@ def recover_pending(ledger, broker):
                 ('02' if order['side']=='BUY' else '01') or
                 exact_int(r.get('ord_qty'))!=order['quantity']):
             raise TradingBlocked('BROKER_ORDER_IDENTITY_CONFLICT')
-        filled=exact_int(r.get('tot_ccld_qty')); remaining=exact_int(r.get('rmn_qty'))
-        if filled>order['quantity'] or filled+remaining>order['quantity']:
-            raise TradingBlocked('BROKER_FILL_CONFLICT')
-        if filled==order['quantity'] and remaining==0:
-            state='FILLED'
-        elif r.get('cncl_yn')=='Y' and remaining==0:
-            state='CANCELLED'
-        elif 0<filled<order['quantity']:
-            state='PART_FILLED'
-        else:
-            state='ACKNOWLEDGED'
+        state,filled=broker_fill_state(r,order['quantity'])
         ledger.reconcile(order, state, filled)
         matched+=1
     return {'matched':matched,'unresolved':len(ledger.pending())}
@@ -636,6 +698,7 @@ def runtime_main():
     modes.add_argument('--halt',action='store_true')
     modes.add_argument('--recover',action='store_true')
     modes.add_argument('--close',action='store_true')
+    modes.add_argument('--broker-audit',action='store_true')
     p.add_argument('--execute',action='store_true')
     p.add_argument('--source',default='data/v4b/candidates.csv')
     p.add_argument('--output',default='v5_19_report.json')
@@ -648,7 +711,7 @@ def runtime_main():
     try:
         if args.execute:
             require_live_release()  # deny before DB, token or any network order
-        if not any((args.run,args.migrate,args.halt,args.recover,args.close)):
+        if not any((args.run,args.migrate,args.halt,args.recover,args.close,args.broker_audit)):
             print(json.dumps(result))
             return
         if urlparse(os.getenv('SUPABASE_DB_URL','')).port==6543:
@@ -680,7 +743,14 @@ def runtime_main():
                         ledger.halt()  # Closing never liquidates or retries broker orders.
                     try:
                         broker=KisBroker(execution=args.execute)
-                        if args.recover:
+                        if args.broker_audit:
+                            now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
+                            try:candidates=scan_candidates(args.source,now)
+                            except Exception:candidates=[]
+                            with ledger.lock():
+                                result=audit_broker_evidence(broker,candidates,now=now)
+                            if result['status'].startswith('BLOCKED'):code=2
+                        elif args.recover:
                             with ledger.lock():
                                 recovery=recover_pending(ledger,broker)
                             result.update(status='RECOVERY_CHECKED',recovery=recovery)
