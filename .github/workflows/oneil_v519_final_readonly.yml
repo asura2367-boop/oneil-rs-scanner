@@ -47,6 +47,7 @@ jobs:
           python -m unittest -v tests/test_v519_pretrade_audit.py
           python -m unittest -v tests/test_v519_loss_history_guard.py
           python -m unittest -v tests/test_v519_final_diagnostic.py
+          python -m unittest -v tests/test_v519_evidence_integrity.py
       - name: Clear prior-run evidence
         run: |
           rm -f v5_9_candidates_review.json v5_11_review.json v5_13_review.json \
@@ -101,6 +102,8 @@ jobs:
           assert 'BROKER_ORDER_HISTORY_INDEPENDENCE_UNVERIFIED' in x['block_codes']
           print('FINAL_SAFETY=DENY; orders_sent=0')
           PY
+      - name: Independently check missing equity and complete order history (ALWAYS DENY)
+        run: python oneil_v519_evidence_integrity.py --output v5_19_evidence_integrity.json
       - name: Upload only sanitized reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -111,5 +114,6 @@ jobs:
             v5_18_report.json
             v5_19_loss_history_diagnostic.json
             v5_19_final_diagnostic.json
+            v5_19_evidence_integrity.json
           if-no-files-found: warn
           retention-days: 3
