@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """V5.19 integrated runtime: scanner, cash sizing, PostgreSQL ledger and recovery.
-Real KIS buy/sell transport is implemented but release-locked pending approval.
+KIS automatic buy/sell runtime with operator-reviewed source and persistent activation.
 """
 from __future__ import annotations
 import datetime as dt
@@ -150,14 +150,40 @@ def readiness():
             "LIVE_ENABLED":False,"KIS_ALLOW_ORDER":False,
             "broker_order_transport_enabled":False,"current_cash_not_fixed":True}
 
-# Integrated runtime. A separate reviewed release is required after user approval;
-# environment variables, workflow inputs and CLI arguments cannot unlock this build.
+# Operator-controlled runtime: exact source approval and durable account activation
+# are separate prerequisites. Ordinary LIVE flags alone never authorize an order.
 RELEASE_LIVE_APPROVED = False
 
 
+RELEASE_FILES = (
+    'oneil_v519_live_engine.py','v519_pg_ledger.py','v519_pg_reconcile.py',
+    'v519_cash_policy.py','oneil_v519_live_runner.py','oneil_v519_history_observe.py',
+    'oneil_v519_broker_recovery.py','oneil_v519_order_recovery.py',
+    'kis_buying_power_readonly.py','kis_safety_v3.py','oneil_live_v5_9.py',
+    '.github/workflows/oneil_v519_live_engine_review.yml',
+)
+
+
+def release_fingerprint(root=None):
+    root=Path(root) if root is not None else Path(__file__).resolve().parent
+    digest=hashlib.sha256(b'oneil-v519-operator-release-v1\0')
+    for name in RELEASE_FILES:
+        digest.update(name.encode()+b'\0'+(root/name).read_bytes()+b'\0')
+    return digest.hexdigest()
+
+
+def release_is_approved():
+    # The compatibility constant is False in source; tests may override it.
+    # An operator must approve the exact code AND activate this account in DB.
+    import hmac
+    approved=os.getenv('V519_APPROVED_RELEASE','')
+    return RELEASE_LIVE_APPROVED or (bool(re.fullmatch('[0-9a-f]{64}',approved)) and
+        hmac.compare_digest(approved,release_fingerprint()))
+
+
 def require_live_release():
-    if not RELEASE_LIVE_APPROVED:
-        raise TradingBlocked('RELEASE_LOCKED_PENDING_USER_APPROVAL')
+    if not release_is_approved():
+        raise TradingBlocked('RELEASE_LOCKED_PENDING_OPERATOR_ACTIVATION')
     if not (os.getenv('LIVE_ENABLED') == 'true' and os.getenv('KIS_ALLOW_ORDER') == 'true'
             and os.getenv('I_APPROVE_LIVE_KIS_ORDERS') == 'YES'):
         raise TradingBlocked('USER_APPROVAL_MISSING')
@@ -173,7 +199,7 @@ class OrderPlan:
     reason: str
 
 
-def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_profit_pct=10):
+def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_profit_pct=10, max_buys=None):
     """One broker snapshot, exits first, conservative whole-account exposure.
 
     Thresholds are configurable defaults requiring review before activation.
@@ -208,9 +234,17 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
         if reason:
             plans.append(OrderPlan(ticker, 'SELL', qty, price, 'exit', reason))
     b = limits(cash, invested, cash)
+    if max_buys is not None and (type(max_buys) is not int or max_buys<1):
+        raise TradingBlocked('BUY_BATCH_INVALID')
+    if max_buys is not None and plans:
+        return plans,b  # exits do not wait for candidate quote/power reads
     remaining = b['remaining']
     seen = set()
-    for c in candidates:
+    def rank(c):
+        rs=Decimal(str(c.get('rs',0)))
+        if not rs.is_finite():raise TradingBlocked('RS_INVALID')
+        return (-rs,0 if c.get('flow_category')=='BOTH' else 1,str(c.get('ticker','')))
+    for c in sorted(candidates,key=rank):
         ticker = c['ticker']
         if not isinstance(ticker, str) or not CODE.fullmatch(ticker) or ticker in seen:
             raise TradingBlocked('CANDIDATE_INVALID')
@@ -229,6 +263,8 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
             charge = (qty * price * 1005 + 999) // 1000
             remaining -= charge
             plans.append(OrderPlan(ticker, 'BUY', qty, price, 'rs', 'RS_SELECTION'))
+            if max_buys is not None and sum(p.side=='BUY' for p in plans)>=max_buys:
+                break
     return plans, b
 
 
@@ -238,15 +274,15 @@ class KisBroker:
     This release implements real order payloads but keeps the send gate locked.
     REST quotes are indicative only; certified execution prices remain a live gate.
     """
-    def __init__(self, *, execution=False):
-        if execution:
+    def __init__(self, *, execution=False, operator_activation=False):
+        if execution or operator_activation:
             require_live_release()
         self.execution=execution
         self.quote_evidence={}
         self.history_cache={}
         from kis_buying_power_readonly import credentials
         from oneil_v519_live_runner import token
-        self.key, self.secret, self.account, self.product = credentials(read_only=not execution)
+        self.key, self.secret, self.account, self.product = credentials(read_only=not (execution or operator_activation))
         self.access = token(self.key, self.secret)
         self.fingerprint = hashlib.sha256((self.account+'|'+self.product).encode()).hexdigest()
 
@@ -339,7 +375,7 @@ class KisBroker:
     def execution_quote(self,ticker,side):
         from oneil_v519_broker_recovery import exact_int
         now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
-        if now.weekday()>=5 or not dt.time(9,5)<=now.time().replace(tzinfo=None)<dt.time(15,15):
+        if now.weekday()>=5 or not dt.time(9)<=now.time().replace(tzinfo=None)<dt.time(15,15):
             raise TradingBlocked('OUTSIDE_KRX_CONTINUOUS_SESSION')
         # A current daily bar and a fresh KRX book are required together. Any
         # missing field or delayed/closed-market response blocks an order.
@@ -525,17 +561,19 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
         recovery = recover_pending(ledger, broker)
         result = {'status':'OBSERVED','gate':'DENY','orders_sent':0,'order_attempts':0,
                   'recovery':recovery,'candidate_count':len(candidates),'planned_buys':0,'planned_sells':0,
-                  'live_release_approved':RELEASE_LIVE_APPROVED,
+                  'live_release_approved':release_is_approved(),'execution_requested':execute,
                   'broker_history_read_verified':True,'history_rows_observed':len(today_history)}
         if recovery['unresolved']:
             result['status']='BLOCKED_UNRESOLVED_ORDERS'
             return result
+        if execute and not ledger.release_authorized(release_fingerprint()):
+            raise TradingBlocked('ACCOUNT_RELEASE_NOT_ACTIVATED')
         control=broker.buy_control() if callable(getattr(broker,'buy_control',None)) else {'enabled':False,'connected':False,'revision':None}
         snapshot=broker.snapshot()
         snapshot['managed']=ledger.managed()
         snapshot['bought_today']=ledger.bought_today(now.date())
         plans, allocation = plan_orders(candidates if control['enabled'] else [],snapshot,broker.quote,broker.power,
-            stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct)
+            stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,max_buys=1 if execute else None)
         ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control}
         result['planned_buys']=sum(p.side=='BUY' for p in plans)
         result['planned_sells']=sum(p.side=='SELL' for p in plans)
@@ -543,7 +581,7 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
             return result
         if ledger.halted():
             raise TradingBlocked('EMERGENCY_HALT_ACTIVE')
-        if now.weekday()>=5 or not dt.time(9,5)<=now.timetz().replace(tzinfo=None)<dt.time(15,15):
+        if now.weekday()>=5 or not dt.time(9)<=now.timetz().replace(tzinfo=None)<dt.time(15,15):
             raise TradingBlocked('OUTSIDE_KRX_CONTINUOUS_SESSION')
         if not plans:
             result['status']='NO_ORDER'
@@ -556,6 +594,28 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                 ledger.dashboard_state['plans']=[p for p in plans if p.side=='SELL']
                 result.update(status='BUY_SWITCH_OFF',planned_buys=0)
                 return result
+        if isinstance(broker,KisBroker):
+            fresh=broker.execution_quote(plan.ticker,plan.side)
+            evidence=broker.quote_evidence[(plan.ticker,plan.side)]
+            quantity=min(plan.quantity,evidence['size']);fresh_reason=plan.reason
+            if plan.side=='BUY':
+                amount,broker_qty=broker.power(plan.ticker,fresh)
+                money(amount);money(broker_qty)
+                cap=min(allocation['remaining'],allocation['per_stock'],amount)
+                quantity=min(quantity,broker_qty,cap*1000//(fresh*1005))
+            else:
+                from decimal import Decimal
+                average=Decimal(str(snapshot['positions'][plan.ticker]['average']))
+                still_exit=(fresh*100<=average*(100-stop_loss_pct) or
+                    fresh*100>=average*(100+take_profit_pct))
+                if not still_exit:quantity=0
+                else:fresh_reason='STOP_LOSS' if fresh*100<=average*(100-stop_loss_pct) else 'TAKE_PROFIT'
+            if quantity<1:
+                result.update(status='QUOTE_CHANGED_NO_ORDER',planned_buys=0,planned_sells=0)
+                ledger.dashboard_state['plans']=[]
+                return result  # no intent exists when no POST was attempted
+            plan=OrderPlan(plan.ticker,plan.side,quantity,fresh,plan.signal,fresh_reason)
+            ledger.dashboard_state['plans']=[plan]
         ident=ledger.reserve_plan(plan,now.date())  # committed BEFORE network send
         result['order_attempts']=1
         try:
@@ -576,6 +636,22 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
             ledger.halt()
             raise TradingBlocked('SUBMISSION_UNCERTAIN_NO_RETRY') from None
         return result
+
+
+def activate_live_account(ledger, broker, candidates, *, now, operator, acknowledged=False):
+    if not acknowledged or not isinstance(operator,str) or not re.fullmatch('[A-Za-z0-9-]{1,39}',operator):
+        raise TradingBlocked('OPERATOR_ACTIVATION_CONFIRMATION_REQUIRED')
+    require_live_release()
+    # Same account/history/position/control readers, with execution=False:
+    # operator activation itself never submits an order.
+    result=integrated_cycle(ledger,broker,candidates,execute=False,now=now)
+    if result['recovery']['unresolved'] or ledger.dashboard_state['snapshot']['pending']:
+        raise TradingBlocked('ACTIVATION_REQUIRES_RECONCILED_ORDERS')
+    with ledger.lock():
+        ledger.activate_release(release_fingerprint(),operator)
+    result.update(status='LIVE_ACCOUNT_ACTIVATED',execution_requested=False,orders_sent=0,
+        live_release_approved=True)
+    return result
 
 
 def scan_candidates(source, now):
@@ -647,8 +723,17 @@ def dashboard_snapshot(ledger,result):
         for r in reversed(runs) if isinstance(r.get('result'),dict) and
         isinstance(r['result'].get('account_snapshot'),dict) and
         r['result']['account_snapshot'].get('equity') is not None]
+    approved=release_is_approved();authorized=ledger.release_authorized(release_fingerprint())
+    halted=ledger.halted();armed=approved and authorized and not halted
     return {'schema_version':1,'generated_at':state['at'].isoformat(),
-        'mode':'OBSERVE_ONLY','orders_enabled':False,'halted':ledger.halted(),
+        'mode':('LIVE_EXECUTION' if result.get('execution_requested') else 'LIVE_ARMED') if armed else 'OBSERVE_ONLY',
+        'orders_enabled':armed,'halted':halted,
+        'activation':{'expected_release':release_fingerprint(),'release_configured':approved,
+            'account_activated':authorized,'halted':halted,'live_armed':armed,
+            'trading_hours':'09:00–15:15 KST','stop_loss_pct':5,'take_profit_pct':10,
+            'broker_receipt_observed':any(o['broker_order_id'] for o in orders),
+            'broker_fill_recovery_observed':any(o['filled_quantity']>0 for o in orders),
+            'restart_failure_drill_verified':False},
         'monitoring_open':monitoring_open(state['at']) and result.get('status')!='DAILY_CLOSED',
         'buy_control':state['buy_control'],
         'monitor_hours':'09:00–20:00 KST','poll_minutes':20,'venue':'KRX',
@@ -691,7 +776,7 @@ def runtime_main():
     import uuid
     from urllib.parse import urlparse
     from v519_pg_ledger import connect, migrate_runtime, PgRuntimeLedger
-    p=argparse.ArgumentParser(description='Integrated V5.19 runtime; real orders locked in this release')
+    p=argparse.ArgumentParser(description='Integrated V5.19 automatic runtime; operator activation required')
     modes=p.add_mutually_exclusive_group()
     modes.add_argument('--run',action='store_true')
     modes.add_argument('--migrate',action='store_true')
@@ -699,6 +784,10 @@ def runtime_main():
     modes.add_argument('--recover',action='store_true')
     modes.add_argument('--close',action='store_true')
     modes.add_argument('--broker-audit',action='store_true')
+    modes.add_argument('--activate',action='store_true')
+    modes.add_argument('--release-info',action='store_true')
+    p.add_argument('--operator')
+    p.add_argument('--acknowledge-live-risk',action='store_true')
     p.add_argument('--execute',action='store_true')
     p.add_argument('--source',default='data/v4b/candidates.csv')
     p.add_argument('--output',default='v5_19_report.json')
@@ -709,9 +798,16 @@ def runtime_main():
     args=p.parse_args()
     result=readiness(); code=0; ledger=None; run_id=uuid.uuid4().hex
     try:
+        if args.release_info:
+            print(json.dumps({'expected_release':release_fingerprint(),'release_configured':release_is_approved(),'orders_sent':0}))
+            return
+        if args.activate:
+            if args.execute:raise TradingBlocked('ACTIVATION_CANNOT_SUBMIT')
+            if not args.acknowledge_live_risk:raise TradingBlocked('OPERATOR_ACTIVATION_CONFIRMATION_REQUIRED')
+            require_live_release()
         if args.execute:
             require_live_release()  # deny before DB, token or any network order
-        if not any((args.run,args.migrate,args.halt,args.recover,args.close,args.broker_audit)):
+        if not any((args.run,args.migrate,args.halt,args.recover,args.close,args.broker_audit,args.activate)):
             print(json.dumps(result))
             return
         if urlparse(os.getenv('SUPABASE_DB_URL','')).port==6543:
@@ -735,15 +831,20 @@ def runtime_main():
                     # Resolve fingerprint before acquiring a token so early auth
                     # failures can still be recorded in the permanent run log.
                     from kis_buying_power_readonly import credentials
-                    _,_,account,product=credentials(read_only=not args.execute)
+                    _,_,account,product=credentials(read_only=not (args.execute or args.activate))
                     fingerprint=hashlib.sha256((account+'|'+product).encode()).hexdigest()
                     ledger=PgRuntimeLedger(db,fingerprint)
                     ledger.start_run(run_id)
-                    if args.close:
-                        ledger.halt()  # Closing never liquidates or retries broker orders.
+                    # Daily close is a time boundary, not an emergency halt.
+                    # Emergency stops persist until an operator explicitly activates again.
                     try:
-                        broker=KisBroker(execution=args.execute)
-                        if args.broker_audit:
+                        broker=KisBroker(execution=args.execute,operator_activation=args.activate)
+                        if args.activate:
+                            now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
+                            candidates=scan_candidates(args.source,now)
+                            result=activate_live_account(ledger,broker,candidates,now=now,
+                                operator=args.operator,acknowledged=args.acknowledge_live_risk)
+                        elif args.broker_audit:
                             now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
                             try:candidates=scan_candidates(args.source,now)
                             except Exception:candidates=[]
@@ -789,7 +890,7 @@ def runtime_main():
         # Never log raw DB/KIS exception strings or credential-bearing URLs.
         reason=str(exc) if isinstance(exc,TradingBlocked) else 'BROKER_OR_DATABASE_FAILURE'
         result={'status':'BLOCKED','gate':'DENY','reason':reason,
-                'orders_sent':None if args.execute and RELEASE_LIVE_APPROVED else 0}
+                'orders_sent':None if args.execute and release_is_approved() else 0}
         code=2
     Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
     print(json.dumps(result,ensure_ascii=False))

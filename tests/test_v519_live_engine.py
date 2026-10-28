@@ -334,6 +334,38 @@ class RuntimeRiskTests(unittest.TestCase):
             with self.assertRaisesRegex(TradingBlocked,'EXCHANGE_DAY_NOT_CONFIRMED'):
                 self.quote_reader(day='20261028').execution_quote('144960','BUY')
 
+    def test_exact_code_approval_and_environment_flags_are_both_required(self):
+        expected=release_fingerprint()
+        with patch.dict(os.environ,{'V519_APPROVED_RELEASE':expected,'LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false'}):
+            self.assertTrue(release_is_approved())
+            with self.assertRaisesRegex(TradingBlocked,'USER_APPROVAL_MISSING'):require_live_release()
+        with patch.dict(os.environ,{'V519_APPROVED_RELEASE':'0'*64}):self.assertFalse(release_is_approved())
+
+    def test_release_digest_changes_with_trading_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            for name in RELEASE_FILES:
+                p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('fixture')
+            before=release_fingerprint(root)
+            (root/RELEASE_FILES[0]).write_text('changed')
+            self.assertNotEqual(before,release_fingerprint(root))
+
+    def test_rs_priority_and_bounded_execution_plan(self):
+        b=BrokerFixture();snap=b.snapshot();snap['managed']={}
+        rows=[{'ticker':'005930','rs':92},{'ticker':'144960','rs':99},{'ticker':'000660','rs':95}]
+        with patch.object(b,'quote',wraps=b.quote) as quote:
+            plans,_=plan_orders(rows,snap,quote,b.power,max_buys=1)
+        self.assertEqual([p.ticker for p in plans],['144960'])
+        self.assertEqual(quote.call_count,1)
+
+    def test_exit_plan_precedes_all_candidate_quote_work(self):
+        b=BrokerFixture();snap=b.snapshot();snap['managed']={'144960':10}
+        snap['positions']={'144960':{'quantity':10,'sellable':10,'average':'12000'}}
+        with patch.object(b,'quote',wraps=b.quote) as quote:
+            plans,_=plan_orders([{'ticker':'005930','rs':99}],snap,quote,b.power,max_buys=1)
+        self.assertEqual([p.side for p in plans],['SELL'])
+        quote.assert_called_once_with('144960','SELL')
+
     def test_missing_and_stale_source_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TradingBlocked):scan_candidates(pathlib.Path(directory)/'none',dt.datetime.now(ZoneInfo('Asia/Seoul')))
@@ -358,9 +390,10 @@ class PostgresRuntimeTests(unittest.TestCase):
         cls.conn.execute('DROP SCHEMA '+cls.schema+' CASCADE'); cls.conn.close()
     def setUp(self):
         from v519_pg_ledger import PgRuntimeLedger
-        self.conn.execute('TRUNCATE v519_order_intents,v519_runs')
+        self.conn.execute('TRUNCATE v519_order_intents,v519_runs,v519_live_activation')
         self.conn.execute('UPDATE v519_control SET halted=false')
         self.ledger=PgRuntimeLedger(self.conn,'b'*64)
+        self.ledger.activate_release(release_fingerprint(),'fixture')
         self.broker=BrokerFixture()
         self.now=dt.datetime(2026,10,29,10,0,tzinfo=ZoneInfo('Asia/Seoul'))
         self.candidates=[{'ticker':'144960','rs':98}]
@@ -511,6 +544,48 @@ class PostgresRuntimeTests(unittest.TestCase):
         r=self.cycle()
         self.assertEqual(r['status'],'BUY_SWITCH_OFF')
         self.assertEqual(self.broker.calls,[]);self.assertEqual(self.ledger.pending(),[])
+
+    def test_missing_account_activation_blocks_every_order(self):
+        self.conn.execute('TRUNCATE v519_live_activation')
+        with self.assertRaisesRegex(TradingBlocked,'ACCOUNT_RELEASE_NOT_ACTIVATED'):self.cycle()
+        self.assertEqual(self.ledger.pending(),[]);self.assertEqual(self.broker.calls,[])
+
+    def test_account_activation_is_bound_to_reviewed_release(self):
+        self.ledger.activate_release('a'*64,'fixture')
+        with self.assertRaisesRegex(TradingBlocked,'ACCOUNT_RELEASE_NOT_ACTIVATED'):self.cycle()
+        self.assertEqual(self.broker.calls,[])
+
+    def test_operator_activation_requires_confirmation_and_sends_nothing(self):
+        flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES'}
+        self.ledger.halt();self.conn.execute('TRUNCATE v519_live_activation')
+        with patch('oneil_v519_live_engine.RELEASE_LIVE_APPROVED',True),patch.dict(os.environ,flags):
+            with self.assertRaises(TradingBlocked):
+                activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,operator='fixture')
+            self.assertTrue(self.ledger.halted())
+            r=activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,
+                operator='fixture',acknowledged=True)
+        self.assertEqual(r['status'],'LIVE_ACCOUNT_ACTIVATED')
+        self.assertFalse(self.ledger.halted());self.assertTrue(self.ledger.release_authorized(release_fingerprint()))
+        self.assertEqual(self.broker.calls,[]);self.assertEqual(self.ledger.pending(),[])
+
+    def test_confirmed_partial_exit_can_finish_remaining_position(self):
+        ident=self.seed();self.ledger.ack(ident,'000122')
+        self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
+        self.broker.positions={'144960':{'quantity':10,'sellable':6,'average':'12000'}}
+        self.candidates=[]
+        self.cycle();first=self.ledger.pending()[0]
+        self.ledger.reconcile(first,'FILLED',6)
+        self.broker.positions={'144960':{'quantity':4,'sellable':4,'average':'12000'}}
+        self.cycle();second=self.ledger.pending()[0]
+        self.assertNotEqual(first['intent_id'],second['intent_id'])
+        self.assertEqual([p.quantity for p in self.broker.calls],[6,4])
+
+    def test_live_snapshot_reports_armed_state_without_fabricated_execution(self):
+        with patch('oneil_v519_live_engine.RELEASE_LIVE_APPROVED',True):
+            self.cycle(False);data=dashboard_snapshot(self.ledger,{'status':'OBSERVED','execution_requested':False})
+        self.assertEqual(data['mode'],'LIVE_ARMED');self.assertTrue(data['orders_enabled'])
+        self.assertFalse(data['activation']['broker_receipt_observed'])
+        self.assertFalse(data['activation']['restart_failure_drill_verified'])
 
     def test_run_log_persists_summary(self):
         self.ledger.start_run('test'); self.ledger.finish_run('test',{'status':'OBSERVED','orders_sent':0})
