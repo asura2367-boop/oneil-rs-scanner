@@ -948,4 +948,67 @@ class PostgresRuntimeTests(unittest.TestCase):
         result=self.conn.execute("SELECT result FROM v519_runs WHERE run_id='test'").fetchone()[0]
         self.assertEqual(result['orders_sent'],0)
 
+class CandidateRefreshScheduleTests(unittest.TestCase):
+    def source(self):
+        return (pathlib.Path(__file__).resolve().parents[1]/'.github/workflows/v4b_candidate_save_auto.yml').read_text()
+
+    def script(self, name):
+        import textwrap
+        step=self.source().split('      - name: '+name+'\n',1)[1].split('      - name:',1)[0]
+        return textwrap.dedent(step.split("          python - <<'PY'\n",1)[1].split('\n          PY',1)[0])
+
+    def test_refresh_crons_are_three_weekday_kst_slots(self):
+        import re
+        crons=re.findall(r"- cron: '([^']+)'",self.source())
+        start=dt.datetime(2026,10,25,tzinfo=dt.timezone.utc)
+        scheduled=[]
+        for hour in range(7*24):
+            utc=start+dt.timedelta(hours=hour)
+            for cron in crons:
+                minute,hours,_,_,weekdays=cron.split()
+                low,high=map(int,weekdays.split('-'))
+                if int(minute)==0 and utc.hour in map(int,hours.split(',')) and low<=(utc.weekday()+1)%7<=high:
+                    scheduled.append(utc.astimezone(ZoneInfo('Asia/Seoul')))
+        self.assertEqual(len(scheduled),15)
+        for day in range(26,31):
+            self.assertEqual(sorted(t.hour for t in scheduled if t.day==day),[8,11,14])
+        self.assertTrue(all(t.weekday()<5 for t in scheduled))
+
+    def test_refresh_keeps_morning_archive_and_records_source_time(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);data=root/'data/v4b';history=data/'history';history.mkdir(parents=True)
+            morning=history/'candidates_2026-10-29.csv';morning.write_text('opening archive')
+            (root/'candidate_target.txt').write_text('2026-10-29')
+            (root/'candidate_previous.txt').write_text('2026-10-28')
+            (root/'candidate_archive.txt').write_text('candidates_2026-10-29_refresh_123_1.csv')
+            (data/'candidates.csv').write_text('date,ticker,rs,foreign_5d,institution_5d,volume_ratio,channel_position,signal_date\n2026-10-29,234690,95,10,0,1.2,0.4,2026-10-28\n')
+            (data/'diagnostics.json').write_text(json.dumps({'latest_signal_day':'2026-10-28','selected':1}))
+            subprocess.run(['python','-c',self.script('Validate and archive candidates')],cwd=root,check=True,capture_output=True)
+            subprocess.run(['python','-c',self.script('Record confirmed-data refresh time')],cwd=root,
+                env={**os.environ,'GITHUB_STEP_SUMMARY':str(root/'summary')},check=True,capture_output=True)
+            self.assertEqual(morning.read_text(),'opening archive')
+            self.assertEqual((history/'candidates_2026-10-29_refresh_123_1.csv').read_bytes(),(data/'candidates.csv').read_bytes())
+            report=json.loads((data/'diagnostics.json').read_text())
+            self.assertEqual(report['source_basis'],'PREVIOUS_CONFIRMED_SESSION')
+            self.assertEqual(dt.datetime.fromisoformat(report['refreshed_at_kst']).utcoffset(),dt.timedelta(hours=9))
+            self.assertIn('orders sent by this workflow: 0',(root/'summary').read_text())
+
+    def test_invalid_refresh_cannot_archive_or_overwrite_old_snapshot(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);data=root/'data/v4b';history=data/'history';history.mkdir(parents=True)
+            old=history/'candidates_2026-10-29.csv';old.write_text('opening archive')
+            (root/'candidate_target.txt').write_text('2026-10-29')
+            (root/'candidate_previous.txt').write_text('2026-10-28')
+            for signal,archive in [('2026-10-29','candidates_2026-10-29_refresh_123_1.csv'),
+                    ('2026-10-27','candidates_2026-10-29_refresh_123_1.csv'),
+                    ('2026-10-28','../../candidates_2026-10-29.csv')]:
+                (root/'candidate_archive.txt').write_text(archive)
+                (data/'candidates.csv').write_text('date,ticker,rs,foreign_5d,institution_5d,volume_ratio,channel_position,signal_date\n2026-10-29,234690,95,10,0,1.2,0.4,'+signal+'\n')
+                result=subprocess.run(['python','-c',self.script('Validate and archive candidates')],cwd=root,capture_output=True)
+                self.assertNotEqual(result.returncode,0)
+                self.assertEqual(old.read_text(),'opening archive')
+                self.assertEqual(len(list(history.iterdir())),1)
+
 if __name__=='__main__':unittest.main()

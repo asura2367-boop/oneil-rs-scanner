@@ -1,4 +1,4 @@
-name: V4-B Save Pre-session Candidates (no orders)
+name: V4-B Refresh Candidates 08/11/14 KST (no orders)
 
 on:
   workflow_dispatch:
@@ -10,6 +10,9 @@ on:
   schedule:
     # 08:00 KST Mon-Fri = 23:00 UTC Sun-Thu
     - cron: '0 23 * * 0-4'
+    # 11:00 and 14:00 KST Mon-Fri. Re-evaluate saved confirmed data.
+    # This does not introduce provisional intraday bars into the strategy.
+    - cron: '0 2,5 * * 1-5'
 
 permissions:
   contents: write
@@ -36,6 +39,9 @@ jobs:
         env:
           REQUESTED_DAY: ${{ inputs.trading_date }}
           EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           python - <<'PY'
           import os
@@ -58,6 +64,17 @@ jobs:
               previous = cal.previous_session(target.isoformat()).date().isoformat()
               Path('candidate_target.txt').write_text(target.isoformat())
               Path('candidate_previous.txt').write_text(previous)
+              # Preserve the opening archive. Later refreshes and manual runs
+              # have their own immutable files, including retry attempts.
+              slot = {'0 23 * * 0-4':'0800', '0 2,5 * * 1-5':'refresh'}.get(os.environ.get('SCHEDULE'), 'manual')
+              if slot == '0800':
+                  archive_name = f'candidates_{target.isoformat()}.csv'
+              else:
+                  run = os.environ['RUN_ID']; attempt = os.environ['RUN_ATTEMPT']
+                  if not run.isdigit() or not attempt.isdigit():
+                      raise SystemExit('Invalid refresh run identity')
+                  archive_name = f'candidates_{target.isoformat()}_{slot}_{run}_{attempt}.csv'
+              Path('candidate_archive.txt').write_text(archive_name)
               print('Target session:', target, 'Previous session:', previous)
           PY
       - name: Validate input files
@@ -90,12 +107,34 @@ jobs:
                   raise SystemExit('Stale, future or wrong-session signal: '+str(r))
               if len(r['ticker'])!=6 or not r['ticker'].isdigit():
                   raise SystemExit('Invalid ticker')
-          archive=Path('data/v4b/history')/f'candidates_{day}.csv'
+          archive_name=Path('candidate_archive.txt').read_text().strip()
+          if Path(archive_name).name != archive_name or not archive_name.startswith(f'candidates_{day}') or not archive_name.endswith('.csv'):
+              raise SystemExit('Invalid candidate archive path')
+          archive=Path('data/v4b/history')/archive_name
           archive.parent.mkdir(parents=True,exist_ok=True)
           if archive.exists() and archive.read_bytes()!=src.read_bytes():
               raise SystemExit('Historical archive differs; refusing overwrite')
           archive.write_bytes(src.read_bytes())
           print('VALID:',len(rows),'candidates for',day,'archived to',archive)
+          PY
+      - name: Record confirmed-data refresh time
+        if: ${{ hashFiles('candidate_target.txt') != '' }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          from pathlib import Path
+          path=Path('data/v4b/diagnostics.json')
+          report=json.loads(path.read_text())
+          report.update(refreshed_at_kst=datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),
+              source_basis='PREVIOUS_CONFIRMED_SESSION',
+              archive=Path('candidate_archive.txt').read_text().strip())
+          path.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as summary:
+              summary.write('Candidate refresh: '+report['refreshed_at_kst']+'\n\n'
+                  +'Signal session: '+report['latest_signal_day']+' (confirmed daily data; no intraday bars)\n\n'
+                  +'Candidates: '+str(report['selected'])+'; orders sent by this workflow: 0\n')
           PY
       - name: Commit only candidate files
         if: ${{ hashFiles('candidate_target.txt') != '' }}
@@ -103,7 +142,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- data/v4b/candidates.csv data/v4b/history/
+          git add -- data/v4b/candidates.csv data/v4b/history/ data/v4b/diagnostics.json
           if git diff --cached --quiet; then
             echo 'No candidate changes'
             exit 0
