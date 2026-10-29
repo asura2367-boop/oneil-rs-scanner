@@ -638,6 +638,31 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
         return result
 
 
+def failure_details(exc):
+    """Public diagnostic metadata only: never exception text, locals or URLs."""
+    from urllib.error import HTTPError, URLError
+    kinds=(('HTTP_ERROR',HTTPError),('NETWORK_ERROR',URLError),
+           ('TIMEOUT',TimeoutError),('INVALID_VALUE',ValueError),
+           ('MISSING_FIELD',KeyError),('RUNTIME_ERROR',RuntimeError))
+    data={'failure_kind':next((name for name,kind in kinds if isinstance(exc,kind)),'UNEXPECTED_ERROR')}
+    sqlstate=getattr(exc,'sqlstate',None)
+    if isinstance(sqlstate,str) and re.fullmatch('[0-9A-Z]{5}',sqlstate):
+        data.update(failure_kind='DATABASE_ERROR',sqlstate=sqlstate)
+    if isinstance(exc,HTTPError) and type(exc.code) is int and 100<=exc.code<=599:
+        data['http_status']=exc.code
+    frames=[];tb=exc.__traceback__
+    allowed={'oneil_v519_live_engine.py','v519_pg_ledger.py','oneil_live_v5_9.py',
+             'oneil_v519_live_runner.py','kis_safety_v3.py','oneil_v519_broker_recovery.py',
+             'oneil_v519_history_observe.py','kis_buying_power_readonly.py'}
+    while tb:
+        code=tb.tb_frame.f_code;file=Path(code.co_filename).name
+        if file in allowed and re.fullmatch('[A-Za-z_][A-Za-z_0-9]{0,80}',code.co_name):
+            frames.append({'file':file,'function':code.co_name,'line':tb.tb_lineno})
+        tb=tb.tb_next
+    data['failure_frames']=frames[-5:]
+    return data
+
+
 def activate_live_account(ledger, broker, candidates, *, now, operator, acknowledged=False):
     if not acknowledged or not isinstance(operator,str) or not re.fullmatch('[A-Za-z0-9-]{1,39}',operator):
         raise TradingBlocked('OPERATOR_ACTIVATION_CONFIRMATION_REQUIRED')
@@ -883,16 +908,17 @@ def runtime_main():
                         if args.dashboard_public_key:
                             snapshot=dashboard_snapshot(ledger,result)
                             encrypt_dashboard(snapshot,args.dashboard_public_key,args.dashboard_output)
-                    except Exception:
+                    except Exception as exc:
                         failed={'status':'BLOCKED','gate':'DENY','order_outcome':'CHECK_LEDGER',
-                                'orders_sent':None if args.execute else 0}
+                                'orders_sent':None if args.execute else 0,**failure_details(exc)}
                         ledger.finish_run(run_id,failed)
                         raise
     except Exception as exc:
         # Never log raw DB/KIS exception strings or credential-bearing URLs.
         reason=str(exc) if isinstance(exc,TradingBlocked) else 'BROKER_OR_DATABASE_FAILURE'
         result={'status':'BLOCKED','gate':'DENY','reason':reason,
-                'orders_sent':None if args.execute and release_is_approved() else 0}
+                'orders_sent':None if args.execute and release_is_approved() else 0,
+                **failure_details(exc)}
         code=2
     Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
     print(json.dumps(result,ensure_ascii=False))

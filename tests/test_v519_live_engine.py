@@ -95,6 +95,36 @@ class BrokerFixture:
     def history(self,day): return self.rows.get(day,[])
 
 class RuntimeRiskTests(unittest.TestCase):
+    def test_failure_diagnostics_hide_http_secrets(self):
+        from urllib.error import HTTPError
+        exc=HTTPError('https://example.test/?token=SECRET',403,'SECRET',{'key':'SECRET'},None)
+        data=failure_details(exc)
+        self.assertEqual(data['failure_kind'],'HTTP_ERROR')
+        self.assertEqual(data['http_status'],403)
+        self.assertNotIn('SECRET',json.dumps(data))
+
+    def test_failure_diagnostics_sqlstate_is_validated(self):
+        class DatabaseFailure(Exception):
+            sqlstate='42501'
+        data=failure_details(DatabaseFailure('postgresql://SECRET'))
+        self.assertEqual(data['sqlstate'],'42501')
+        self.assertEqual(data['failure_kind'],'DATABASE_ERROR')
+        self.assertNotIn('SECRET',json.dumps(data))
+        DatabaseFailure.sqlstate='SECRET'
+        self.assertNotIn('sqlstate',failure_details(DatabaseFailure()))
+
+    def test_failure_diagnostics_trace_has_only_code_location(self):
+        namespace={}
+        exec(compile("def broken():\n raise KeyError('SECRET')",'/private/oneil_v519_live_engine.py','exec'),namespace)
+        try:
+            namespace['broken']()
+        except KeyError as exc:
+            data=failure_details(exc)
+        self.assertEqual(data['failure_kind'],'MISSING_FIELD')
+        self.assertEqual(data['failure_frames'],[{'file':'oneil_v519_live_engine.py','function':'broken','line':2}])
+        self.assertNotIn('SECRET',json.dumps(data))
+        self.assertNotIn('/private',json.dumps(data))
+
     def test_scanner_live_flags_preserve_filtering_and_standalone_lock(self):
         from oneil_live_v5_9 import analyze
         now=dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul'))
