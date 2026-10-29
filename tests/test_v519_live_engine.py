@@ -866,7 +866,7 @@ class PostgresRuntimeTests(unittest.TestCase):
     def prepare_exit(self,average='12000'):
         ident=self.seed();self.ledger.ack(ident,'000122')
         self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
-        self.broker.positions={'144960':{'quantity':10,'sellable':6,'average':average}}
+        self.broker.positions={'144960':{'quantity':10,'sellable':6,'average':average,'cost':int(average)*10,'valuation':100000,'name':'테스트 종목'}}
         self.candidates=[]
 
     def test_sell_off_records_deduplicated_stop_and_profit_alerts_without_intents(self):
