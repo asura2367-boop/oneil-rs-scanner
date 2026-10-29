@@ -122,6 +122,36 @@ class RuntimeRiskTests(unittest.TestCase):
         for invalid in (None,{},[],{**valid,'reserve_pct':True},{**valid,'per_stock_pct':101},{**valid,'revision':-1}):
             self.assertFalse(read(invalid)['enabled'])
 
+    def test_scheduled_dispatch_uses_read_only_flags_outside_krx_hours(self):
+        # Execute the existing workflow shell only against stub date/python
+        # binaries in a temporary directory. No DB, broker or live engine runs.
+        import subprocess,textwrap
+        path=pathlib.Path(__file__).resolve().parents[1]/'.github/workflows/oneil_v519_live_engine_review.yml'
+        source=path.read_text().split('      - name: Run existing integrated engine\n',1)[1]
+        script=textwrap.dedent(source.split('        run: |\n',1)[1].split('      - name:',1)[0])
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);commands=root/'commands';commands.mkdir()
+            date=commands/'date';date.write_text('''#!/bin/sh
+printf '%s\\n' "$TEST_SESSION"
+''');date.chmod(0o755)
+            python=commands/'python';python.write_text('''#!/bin/sh
+printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE_KIS_ORDERS" >> "$TEST_CALLS"
+''');python.chmod(0o755)
+            log=root/'calls'
+            for session,approved,expected in [('4 0859','test',False),('4 0900','test',True),
+                    ('4 1514','test',True),('4 1515','test',False),('4 1910','test',False),
+                    ('6 1000','test',False),('4 1000','',False)]:
+                log.write_text('')
+                environment={**os.environ,'PATH':str(commands)+os.pathsep+os.environ['PATH'],
+                    'OPERATION':'auto','APPROVED_RELEASE':approved,'TEST_SESSION':session,'TEST_CALLS':str(log),
+                    'LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false','I_APPROVE_LIVE_KIS_ORDERS':''}
+                subprocess.run(['bash','-e','-c',script],cwd=root,env=environment,check=True,capture_output=True)
+                calls=log.read_text().splitlines();last=calls[-1].split('|')
+                self.assertEqual('--execute' in last[0],expected,(session,calls))
+                self.assertEqual(last[1:3],['true','true'] if expected else ['false','false'])
+                self.assertEqual(last[3],'YES' if expected else '')
+                self.assertIn('--run',last[0]);self.assertEqual(len(calls),2)
+
     def test_failure_diagnostics_hide_http_secrets(self):
         from urllib.error import HTTPError
         exc=HTTPError('https://example.test/?token=SECRET',403,'SECRET',{'key':'SECRET'},None)
