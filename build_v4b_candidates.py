@@ -1,13 +1,16 @@
-"""Build pre-session V4-B candidates from saved historical daily data. No orders."""
+"""Build opening or intraday RS candidates. Quote collection never sends orders."""
 import argparse
 from pathlib import Path
 import json
+import datetime as dt
+from zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
 
-COLUMNS=['date','ticker','rs','foreign_5d','institution_5d','volume_ratio','channel_position','channel_up','signal_date','name']
+COLUMNS=['date','ticker','rs','foreign_5d','institution_5d','volume_ratio','channel_position','channel_up','signal_date','name',
+         'signal_basis','observed_at_kst','flow_signal_date','reference_close']
 
-def generate(prices_path, flows_path, target, output, diagnostics=None):
+def load_inputs(prices_path, flows_path, target):
     target=pd.Timestamp(target).normalize()
     if not prices_path.exists() or not flows_path.exists():
         raise FileNotFoundError('일봉 또는 수급 CSV 없음: 후보를 생성하지 않습니다')
@@ -30,8 +33,43 @@ def generate(prices_path, flows_path, target, output, diagnostics=None):
     if sessions.empty: raise ValueError('유효한 전일 거래 데이터 없음')
     signal_day=sessions[-1]
     if (target-signal_day).days>5: raise ValueError('일봉 데이터가 오래됨: 후보 생성 중단')
+    return p,f,signal_day,sessions
+
+
+def intraday_universe(prices_path, flows_path, target, previous):
+    p,_,signal_day,_=load_inputs(prices_path,flows_path,target)
+    if signal_day!=pd.Timestamp(previous):raise ValueError('HISTORY_SESSION_MISMATCH')
+    codes=[]
+    for ticker,g in p.groupby('ticker'):
+        h=g.tail(253)
+        if (len(h)==253 and h.date.iloc[-1]==signal_day and
+                np.isfinite(h[['close','volume']].to_numpy(float)).all() and
+                (h.close>0).all() and (h.volume.tail(21)>0).all()):
+            codes.append(ticker)
+    if not codes:raise ValueError('INTRADAY_UNIVERSE_EMPTY')
+    return codes
+
+
+def generate(prices_path, flows_path, target, output, diagnostics=None, *, intraday=None, now=None):
+    target=pd.Timestamp(target).normalize()
+    p,f,signal_day,sessions=load_inputs(prices_path,flows_path,target)
+    now=now or dt.datetime.now(ZoneInfo('Asia/Seoul'))
+    if intraday is not None:
+        from quote_collector_v4a import validate_candidate_quote, candidate_session
+        if not candidate_session(now) or now.astimezone(ZoneInfo('Asia/Seoul')).date()!=target.date():
+            raise ValueError('INTRADAY_SESSION_CLOSED')
+        expected=intraday_universe(prices_path,flows_path,target,signal_day)
+        if set(intraday)!=set(expected):raise ValueError('INTRADAY_COVERAGE_INCOMPLETE')
+        for code,row in intraday.items():
+            if row is not None:validate_candidate_quote(row,code,now)
+        # All returned snapshots must fit one bounded collection window.
+        observed=[dt.datetime.fromisoformat(r['received_at_kst']) for r in intraday.values() if r is not None]
+        if not observed:raise ValueError('INTRADAY_QUOTES_EMPTY')
+        if (max(observed)-min(observed)).total_seconds()>600:raise ValueError('INTRADAY_COLLECTION_EXPIRED')
     flows={c:g.set_index('date') for c,g in f.groupby('ticker')}
     counts={'universe_symbols':int(p.ticker.nunique()),'latest_signal_day':str(signal_day.date()),
+            'latest_history_day':str(signal_day.date()),
+            'source_basis':'INTRADAY_KIS_SNAPSHOT' if intraday is not None else 'PREVIOUS_CONFIRMED_SESSION',
             'target_date':str(target.date()),'valid_history':0,'missing_history':0,
             'stale_price':0,'invalid_price_or_volume':0,
             'rs_85':0,'volume_1x':0,'up_channel':0,'channel_0_75':0,
@@ -39,6 +77,11 @@ def generate(prices_path, flows_path, target, output, diagnostics=None):
             'flow_missing_or_short':0,'flow_stale':0,'flow_invalid':0,
              'foreign_only':0,'institution_only':0,'both_positive':0}
     scores=[]
+    if intraday is not None:
+        counts.update(latest_signal_day=str(target.date()),quote_universe=len(intraday),
+            quotes_observed=sum(r is not None for r in intraday.values()),
+            no_current_trade=sum(r is None for r in intraday.values()),
+            collection_started_at_kst=min(observed).isoformat(),collection_finished_at_kst=max(observed).isoformat())
     for ticker,g in p.groupby('ticker'):
         h=g.set_index('date')
         if len(h)<253:
@@ -46,8 +89,13 @@ def generate(prices_path, flows_path, target, output, diagnostics=None):
         if h.index[-1]!=signal_day:
             counts['stale_price']+=1;continue
         h=h.tail(253)
-        if h[['close','volume']].isna().any().any() or (h.close<=0).any() or (h.volume.tail(21)<=0).any():
+        if not np.isfinite(h[['close','volume']].to_numpy(float)).all() or (h.close<=0).any() or (h.volume.tail(21)<=0).any():
             counts['invalid_price_or_volume']+=1;continue
+        if intraday is not None:
+            live=intraday.get(ticker)
+            if live is None:continue
+            h=pd.concat([h,pd.DataFrame([{'name':str(h.name.iloc[-1]),'close':live['price'],
+                'volume':live['cumulative_volume']}],index=[target])]).tail(253)
         counts['valid_history']+=1
         close=h.close.to_numpy(float);vol=h.volume.to_numpy(float)
         returns=np.array([close[-1]/close[-1-n]-1 for n in (63,126,189,252)])
@@ -58,7 +106,7 @@ def generate(prices_path, flows_path, target, output, diagnostics=None):
         mid=intercept+slope*x
         width=max(2*np.std(y-mid),1e-8)
         channel=float((y[-1]-mid[-1]+width)/(2*width))
-        scores.append(dict(ticker=ticker,name=str(h.name.iloc[-1]),score=score,volume_ratio=ratio,channel_position=channel,channel_up=slope>0))
+        scores.append(dict(ticker=ticker,name=str(h.name.iloc[-1]),score=score,volume_ratio=ratio,channel_position=channel,channel_up=slope>0,reference_close=int(close[-1])))
     if not scores: raise ValueError('RS 계산 가능한 전일 종목 없음')
     df=pd.DataFrame(scores)
     df['rs']=np.ceil(df.score.rank(pct=True)*99).clip(1,99).astype(int)
@@ -90,9 +138,14 @@ def generate(prices_path, flows_path, target, output, diagnostics=None):
         elif foreign_ok: counts['foreign_only']+=1
         elif institution_ok: counts['institution_only']+=1
         if not (foreign_ok or institution_ok): continue
-        result.append(dict(date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=foreign,institution_5d=institution,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),channel_up=bool(r.channel_up),signal_date=signal_day.strftime('%Y-%m-%d'),name=r.name))
+        result.append(dict(date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=foreign,institution_5d=institution,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),channel_up=bool(r.channel_up),
+            signal_date=(target if intraday is not None else signal_day).strftime('%Y-%m-%d'),name=r.name,
+            signal_basis=counts['source_basis'],observed_at_kst=intraday[r.ticker]['received_at_kst'] if intraday is not None else '',
+            flow_signal_date=fh.index[-1].strftime('%Y-%m-%d'),reference_close=r.reference_close))
     output.parent.mkdir(parents=True,exist_ok=True)
-    pd.DataFrame(result,columns=COLUMNS).sort_values(['rs','ticker'],ascending=[False,True]).to_csv(output,index=False,encoding='utf-8-sig')
+    temp=output.with_suffix('.tmp')
+    pd.DataFrame(result,columns=COLUMNS).sort_values(['rs','ticker'],ascending=[False,True]).to_csv(temp,index=False,encoding='utf-8-sig')
+    temp.replace(output)
     counts['selected']=len(result)
     if diagnostics is not None:
         diagnostics.parent.mkdir(parents=True,exist_ok=True)
@@ -100,7 +153,7 @@ def generate(prices_path, flows_path, target, output, diagnostics=None):
         temp.write_text(json.dumps(counts,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
         temp.replace(diagnostics)
     print('V4B_DIAGNOSTICS '+json.dumps(counts,ensure_ascii=False,sort_keys=True),flush=True)
-    print(f'전일 신호일 {signal_day.date()} / 재현 대상일 {target.date()} / 후보 {len(result)}개 / {output}')
+    print(f'신호 기준 {counts["source_basis"]} / 대상일 {target.date()} / 후보 {len(result)}개 / {output}')
     return result
 
 if __name__=='__main__':
@@ -110,5 +163,30 @@ if __name__=='__main__':
     ap.add_argument('--flows',type=Path,default=Path('data/kis_investor_flow.csv'))
     ap.add_argument('--output',type=Path,default=Path('data/v4b/candidates.csv'))
     ap.add_argument('--diagnostics',type=Path,default=Path('data/v4b/diagnostics.json'))
+    ap.add_argument('--intraday',action='store_true',help='KIS 당일 스냅샷으로 RS·거래량·채널 재계산; 주문 없음')
+    ap.add_argument('--previous-session',help='거래소 달력으로 확인한 직전 거래일; 장중 수집에 필수')
     args=ap.parse_args()
-    generate(args.prices,args.flows,args.date,args.output,args.diagnostics)
+    stage='HISTORY_INPUT'
+    try:
+        quotes=None
+        if args.intraday:
+            if not args.previous_session:raise ValueError('PREVIOUS_SESSION_REQUIRED')
+            from quote_collector_v4a import collect_candidate_quotes
+            codes=intraday_universe(args.prices,args.flows,args.date,args.previous_session)
+            stage='KIS_QUOTE_COLLECTION'
+            quotes=collect_candidate_quotes(codes,args.date)
+        stage='CANDIDATE_CALCULATION'
+        generate(args.prices,args.flows,args.date,args.output,args.diagnostics,intraday=quotes)
+    except Exception as exc:
+        # No raw response, URL, credential or token-bearing traceback in Actions.
+        known={'INTRADAY_SESSION_CLOSED','INTRADAY_COLLECTION_EXPIRED','INTRADAY_COVERAGE_INCOMPLETE',
+            'INTRADAY_UNIVERSE_EMPTY','INTRADAY_QUOTES_EMPTY','HISTORY_SESSION_MISMATCH','PREVIOUS_SESSION_REQUIRED',
+            'CANDIDATE_QUOTE_HTTP_FAILURE','CANDIDATE_QUOTE_TRANSPORT_FAILURE','CANDIDATE_QUOTE_REJECTED',
+            'CANDIDATE_QUOTE_RESPONSE_EXPIRED','CANDIDATE_QUOTE_IDENTITY_INVALID','CANDIDATE_QUOTE_DAY_CONFLICT',
+            'CANDIDATE_QUOTE_STALE','CANDIDATE_QUOTE_VALUE_INVALID','CACHE_KEY_INVALID',
+            'CACHE_DECRYPT_OR_FORMAT_FAILURE','CACHE_PERSIST_FAILURE','AUTH_FAILURE','AUTH_TRANSPORT',
+            'AUTH_TOKEN_MISSING','AUTH_TOO_CLOSE_TO_EXPIRY','AUTH_EXPIRY_INVALID','AUTH_EXPIRY_MISSING'}
+        reason=str(exc) if str(exc) in known else 'INPUT_OR_API_VALIDATION_FAILED'
+        print(json.dumps({'status':'CANDIDATE_REFRESH_FAILED','stage':stage,'reason':reason,
+            'prior_published_candidates_preserved':True,'orders_sent':0}))
+        raise SystemExit(2)

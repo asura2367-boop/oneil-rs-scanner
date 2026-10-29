@@ -61,6 +61,23 @@ def analyze_candidates(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
                 stale+=1
                 report['candidate_diagnostics'].append({'ticker':code,'reason_codes':['SIGNAL_DATE_STALE_OR_FUTURE']})
                 continue
+            basis=(row.get('signal_basis') or '').strip()
+            observed=None
+            if basis not in ('','PREVIOUS_CONFIRMED_SESSION','INTRADAY_KIS_SNAPSHOT'):
+                raise ValueError()
+            if basis=='INTRADAY_KIS_SNAPSHOT':
+                # An intraday signal expires at the session boundary. It must
+                # never use the legacy four-day opening-signal grace period.
+                observed=dt.datetime.fromisoformat(row['observed_at_kst'])
+                local=now.astimezone(KST);at=observed.astimezone(KST)
+                if (observed.tzinfo is None or date!=local.date() or at.date()!=local.date()
+                        or dt.date.fromisoformat(row['signal_date'])!=date
+                        or not dt.date.fromisoformat(row['flow_signal_date'])<date
+                        or at.weekday()>=5 or not dt.time(9)<=at.time().replace(tzinfo=None)<dt.time(15,15)
+                        or (now-observed).total_seconds() < -2):
+                    raise ValueError()
+            elif basis=='PREVIOUS_CONFIRMED_SESSION' and not dt.date.fromisoformat(row['signal_date'])<date:
+                raise ValueError()
             rs=float(row['rs']); f=float(row['foreign_5d']); inst=float(row['institution_5d'])
             volume=float(row['volume_ratio']); channel=float(row['channel_position'])
             # Optional historical close must never be treated as executable price.
@@ -84,6 +101,9 @@ def analyze_candidates(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
                       'flag':'REVIEW_ONLY_NOT_LIVE_QUOTE', 'price_verified':False,
                       'foreign_5d':f, 'institution_5d':inst,
                       'flow_category': ('BOTH' if f>0 and inst>0 else 'FOREIGN_ONLY' if f>0 else 'INSTITUTION_ONLY')}
+                item.update(name=(row.get('name') or code).strip(),signal_basis=basis or 'LEGACY_PRE_SESSION',
+                    signal_date=row.get('signal_date'),observed_at_kst=observed.isoformat() if observed else None,
+                    flow_signal_date=row.get('flow_signal_date'),volume_ratio=volume,channel_position=channel)
                 if close is not None: item['reference_close_krw']=close
                 report['review_candidates'].append(item)
         except (ValueError,TypeError,OverflowError,KeyError):

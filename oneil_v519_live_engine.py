@@ -161,6 +161,8 @@ RELEASE_FILES = (
     'oneil_v519_broker_recovery.py','oneil_v519_order_recovery.py',
     'kis_buying_power_readonly.py','kis_safety_v3.py','oneil_live_v5_9.py',
     '.github/workflows/oneil_v519_live_engine_review.yml',
+    'build_v4b_candidates.py','quote_collector_v4a.py','kis_live_v4_5_2.py',
+    '.github/workflows/v4b_candidate_save_auto.yml',
 )
 
 

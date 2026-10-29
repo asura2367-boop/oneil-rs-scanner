@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -100,6 +101,106 @@ def collect(client, tickers):
             print(f'FAIL {ticker}: {type(exc).__name__}: {exc}', flush=True)
         if index < len(tickers) - 1:
             time.sleep(1)
+
+
+def candidate_session(at):
+    if at.tzinfo is None:return False
+    at=at.astimezone(KST)
+    return at.weekday()<5 and (9,0)<=(at.hour,at.minute)<(15,15)
+
+
+def validate_candidate_quote(row,ticker,at):
+    if not isinstance(row,dict) or row.get('ticker')!=ticker or not re.fullmatch('[0-9]{6}',ticker):
+        raise ValueError('CANDIDATE_QUOTE_IDENTITY_INVALID')
+    observed=datetime.fromisoformat(row['received_at_kst'])
+    if (observed.tzinfo is None or observed.astimezone(KST).date()!=at.astimezone(KST).date()
+            or not candidate_session(observed) or not -2<=(at-observed).total_seconds()<=600
+            or row.get('trading_day')!=at.astimezone(KST).date().isoformat()):
+        raise ValueError('CANDIDATE_QUOTE_STALE')
+    for key in ('price','cumulative_volume'):
+        if type(row.get(key)) is not int or row[key]<=0:raise ValueError('CANDIDATE_QUOTE_VALUE_INVALID')
+
+
+class CandidateQuoteClient(QuoteClient):
+    """Fixed KRX quotation GET only; encrypted existing token cache in memory."""
+    def __init__(self):
+        if any(os.getenv(n,'false').lower()!='false' for n in ('LIVE_ENABLED','KIS_ALLOW_ORDER')):
+            raise ValueError('CANDIDATE_COLLECTOR_REQUIRES_READ_ONLY')
+        super().__init__()
+        from kis_live_v4_5_2 import _key,acquire_token,_persist,UTC
+        self.token,refreshed=acquire_token(_key(),datetime.now(UTC))
+        if refreshed:_persist()  # Ciphertext only, before any candidate output.
+
+    def daily_candidate_snapshot(self,ticker,*,clock=now_kst,pause=time.sleep):
+        if not re.fullmatch('[0-9]{6}',ticker):raise ValueError('CANDIDATE_TICKER_INVALID')
+        started=clock()
+        if not candidate_session(started):raise ValueError('INTRADAY_SESSION_CLOSED')
+        day=started.astimezone(KST).strftime('%Y%m%d')
+        # Current bar confirms the trading date. output1 provides the current
+        # price and actual cumulative volume, never a projected closing volume.
+        for attempt in range(2):
+            try:
+                response=self.session.get(BASE+'/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
+                    headers={'authorization':'Bearer '+self.token,'appkey':self.key,'appsecret':self.secret,
+                        'tr_id':'FHKST03010100','custtype':'P'},
+                    params={'FID_COND_MRKT_DIV_CODE':'J','FID_INPUT_ISCD':ticker,
+                        'FID_INPUT_DATE_1':day,'FID_INPUT_DATE_2':day,'FID_PERIOD_DIV_CODE':'D','FID_ORG_ADJ_PRC':'0'},
+                    timeout=12,allow_redirects=False)
+                if response.status_code in (429,500,502,503,504) and not attempt:
+                    pause(.8);continue
+                if response.status_code!=200:raise ValueError('CANDIDATE_QUOTE_HTTP_FAILURE')
+                body=response.json()
+                break
+            except (requests.Timeout,requests.ConnectionError):
+                if attempt:raise ValueError('CANDIDATE_QUOTE_TRANSPORT_FAILURE') from None
+                pause(.8)
+        at=clock()
+        if not candidate_session(at) or at.date()!=started.date() or (at-started).total_seconds()>30:
+            raise ValueError('CANDIDATE_QUOTE_RESPONSE_EXPIRED')
+        if not isinstance(body,dict) or str(body.get('rt_cd'))!='0':raise ValueError('CANDIDATE_QUOTE_REJECTED')
+        current=body.get('output1');bars=body.get('output2')
+        if not isinstance(current,dict) or current.get('stck_shrn_iscd')!=ticker or not isinstance(bars,list):
+            raise ValueError('CANDIDATE_QUOTE_IDENTITY_INVALID')
+        today=[r for r in bars if isinstance(r,dict) and r.get('stck_bsop_date')==day]
+        if not today:return None  # No verified trade today: exclude, never reuse yesterday's price.
+        if len(today)!=1:raise ValueError('CANDIDATE_QUOTE_DAY_CONFLICT')
+        def integer(value):
+            if not isinstance(value,str) or not re.fullmatch('[0-9]+',value):
+                raise ValueError('CANDIDATE_QUOTE_VALUE_INVALID')
+            return int(value)
+        price=integer(current.get('stck_prpr'));volume=integer(current.get('acml_vol'))
+        if volume==0:return None
+        row={'ticker':ticker,'price':price,'cumulative_volume':volume,
+             'received_at_kst':at.isoformat(),'trading_day':at.date().isoformat()}
+        validate_candidate_quote(row,ticker,at)
+        return row
+
+
+def collect_candidate_quotes(tickers,target,*,client=None,clock=now_kst,pause=time.sleep):
+    if any(os.getenv(n,'false').lower()!='false' for n in ('LIVE_ENABLED','KIS_ALLOW_ORDER')):
+        raise ValueError('CANDIDATE_COLLECTOR_REQUIRES_READ_ONLY')
+    tickers=list(tickers);started=clock()
+    if (not tickers or len(tickers)!=len(set(tickers)) or
+            any(not re.fullmatch('[0-9]{6}',c) for c in tickers)):
+        raise ValueError('CANDIDATE_UNIVERSE_INVALID')
+    if not candidate_session(started) or started.date().isoformat()!=target:
+        raise ValueError('INTRADAY_SESSION_CLOSED')
+    owned=client is None;client=client or CandidateQuoteClient();result={}
+    try:
+        for ticker in tickers:
+            at=clock()
+            if not candidate_session(at) or at.date()!=started.date() or (at-started).total_seconds()>600:
+                raise ValueError('INTRADAY_COLLECTION_EXPIRED')
+            row=client.daily_candidate_snapshot(ticker,clock=clock,pause=pause)
+            if row is not None:validate_candidate_quote(row,ticker,clock())
+            result[ticker]=row
+            pause(.2)
+        finished=clock()
+        if not candidate_session(finished) or (finished-started).total_seconds()>600:
+            raise ValueError('INTRADAY_COLLECTION_EXPIRED')
+        return result
+    finally:
+        if owned:client.close()
 
 
 def main():
