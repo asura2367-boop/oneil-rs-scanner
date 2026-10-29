@@ -658,8 +658,8 @@ def activate_live_account(ledger, broker, candidates, *, now, operator, acknowle
 
 def scan_candidates(source, now):
     """Reuse proven RS/volume/channel/flow filtering without stale report files."""
-    from oneil_live_v5_9 import analyze
-    report=analyze(Path(source),now,min_rs=90)
+    from oneil_live_v5_9 import analyze_candidates
+    report=analyze_candidates(Path(source),now,min_rs=90)
     fatal={'SOURCE_FILE_MISSING','REQUIRED_COLUMNS_MISSING','INVALID_ROWS_PRESENT','STALE_SIGNAL_ROWS'}
     if fatal.intersection(report['reason_codes']):
         raise TradingBlocked('CANDIDATE_SOURCE_INVALID_OR_STALE')

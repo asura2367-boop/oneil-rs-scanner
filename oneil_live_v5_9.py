@@ -20,6 +20,14 @@ TICKER=re.compile(r'^\d{6}$')
 def analyze(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
     if any(os.getenv(n,'false').lower()!='false' for n in ('LIVE_ENABLED','KIS_ALLOW_ORDER')):
         raise RuntimeError('LIVE_FLAGS_NOT_DISABLED')
+    return analyze_candidates(path, now, min_rs, min_volume, max_channel)
+
+def analyze_candidates(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
+    """Pure CSV filtering for the integrated runtime; grants no order authority.
+
+    The standalone analyze/CLI entry point retains its flags-off guard. Live
+    authorization, cash checks and order transmission remain in the engine.
+    """
     report={'version':'5.9','status':'DENY','mode':'LIVE_CANDIDATE_REVIEW_ONLY',
             'orders_sent':0,'broker_order_api_calls':0,
             'live_enabled':False,'allow_order':False,

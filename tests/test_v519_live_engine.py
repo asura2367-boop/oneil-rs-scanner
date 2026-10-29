@@ -95,6 +95,25 @@ class BrokerFixture:
     def history(self,day): return self.rows.get(day,[])
 
 class RuntimeRiskTests(unittest.TestCase):
+    def test_scanner_live_flags_preserve_filtering_and_standalone_lock(self):
+        from oneil_live_v5_9 import analyze
+        now=dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul'))
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/'candidates.csv'
+            path.write_text('date,ticker,rs,foreign_5d,institution_5d,volume_ratio,channel_up,channel_position\n'
+                '2026-10-29,144960,95,1,0,2,true,0.3\n'
+                '2026-10-29,005930,89,1,0,2,true,0.3\n')
+            with patch.dict(os.environ,{'LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false'}):
+                expected=scan_candidates(path,now)
+            with patch.dict(os.environ,{'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true'}):
+                self.assertEqual(scan_candidates(path,now),expected)
+                self.assertEqual([x['ticker'] for x in expected],['144960'])
+                with self.assertRaisesRegex(RuntimeError,'LIVE_FLAGS_NOT_DISABLED'):
+                    analyze(path,now)
+                path.write_text('date,ticker,rs\n2026-10-29,144960,95\n')
+                with self.assertRaisesRegex(TradingBlocked,'CANDIDATE_SOURCE_INVALID_OR_STALE'):
+                    scan_candidates(path,now)
+
     def test_multiple_cash_sizes_no_fixed_cap(self):
         for cash in (500_000,2_000_000,5_000_000,50_000_000):
             b=BrokerFixture(); b.cash=cash; b.amount=cash
