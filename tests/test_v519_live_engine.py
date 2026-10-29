@@ -447,13 +447,169 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.now=dt.datetime(2026,10,29,10,0,tzinfo=ZoneInfo('Asia/Seoul'))
         self.candidates=[{'ticker':'144960','rs':98}]
     def cycle(self,execute=True):
-        return integrated_cycle(self.ledger,self.broker,self.candidates,execute=execute,now=self.now)
+        return integrated_cycle(self.ledger,self.broker,self.candidates,execute=execute,now=self.now,clock=lambda:self.now)
     def seed(self,side='BUY',day=None):
         plan=OrderPlan('144960',side,10,10000,'rs','TEST')
         return self.ledger.reserve_plan(plan,day or self.now.date())
     def history_row(self,day,fill=10,remaining=0,side='02',**extra):
         return dict(odno='000123',ord_dt=day,pdno='144960',sll_buy_dvsn_cd=side,
                     ord_qty='10',tot_ccld_qty=str(fill),rmn_qty=str(remaining),cncl_yn='N',**extra)
+    def fill_each_submission(self, *, fill=None, balance=True, debit=True):
+        fixture=self.broker
+        original=fixture.submit
+        def submit(plan):
+            response=original(plan)
+            quantity=plan.quantity if fill is None else min(fill,plan.quantity)
+            row=dict(odno=response['output']['ODNO'],ord_dt=self.now.strftime('%Y%m%d'),
+                pdno=plan.ticker,sll_buy_dvsn_cd='02',ord_qty=str(plan.quantity),
+                tot_ccld_qty=str(quantity),rmn_qty=str(plan.quantity-quantity),cncl_yn='N')
+            fixture.rows.setdefault(row['ord_dt'],[]).append(row)
+            if balance:
+                cost=quantity*plan.price
+                fixture.positions[plan.ticker]={'quantity':quantity,'sellable':quantity,
+                    'average':str(plan.price),'cost':cost,'valuation':cost,'name':plan.ticker}
+                if debit:
+                    fixture.cash-=cost;fixture.invested+=cost
+            if quantity<plan.quantity:fixture.pending.add(plan.ticker)
+            return response
+        fixture.submit=submit
+
+    def two_candidates(self):
+        self.candidates=[{'ticker':'100001','rs':99},{'ticker':'100002','rs':98}]
+
+    def test_batch_two_buys_after_exact_fills_and_fresh_balance(self):
+        self.two_candidates();self.fill_each_submission()
+        reads=[];snapshot=self.broker.snapshot
+        self.broker.snapshot=lambda:(reads.append(len(self.broker.calls)) or snapshot())
+        result=self.cycle()
+        self.assertEqual(result['orders_sent'],2)
+        self.assertEqual([p.ticker for p in self.broker.calls],['100001','100002'])
+        self.assertEqual(reads,[0,1,2])
+        self.assertEqual(self.ledger.pending(),[])
+        self.assertEqual(result['recovery']['unresolved'],0)
+        self.assertLess(self.broker.calls[1].quantity,self.broker.calls[0].quantity)
+        data=dashboard_snapshot(self.ledger,result)
+        self.assertEqual({p['ticker'] for p in data['positions']},{'100001','100002'})
+        self.assertTrue(all(o['status']=='FILLED' for o in data['orders']))
+        self.assertEqual(data['account']['cash'],self.broker.cash)
+
+    def test_batch_kis_history_cache_is_invalidated_after_each_post(self):
+        self.two_candidates();self.fill_each_submission()
+        fixture,live=self.intercepted_live_broker(10000,10000)
+        day=self.now.strftime('%Y%m%d');live.history_cache[day]=[]
+        reads=[]
+        def history(day):
+            if day not in live.history_cache:
+                reads.append(len(fixture.calls))
+                live.history_cache[day]=list(fixture.rows.get(day,[]))
+            return live.history_cache[day]
+        live.history=history
+        result=self.cycle()
+        self.assertEqual(result['orders_sent'],2)
+        self.assertEqual(reads,[1,2])
+        self.assertEqual(self.ledger.pending(),[])
+
+    def test_batch_never_reuses_initial_budget_even_if_cash_has_not_debited(self):
+        self.candidates=[{'ticker':str(100000+i),'rs':99} for i in range(8)]
+        self.fill_each_submission(debit=False)
+        result=self.cycle()
+        charges=[(p.quantity*p.price*1005+999)//1000 for p in self.broker.calls]
+        self.assertGreater(len(charges),1)
+        self.assertLessEqual(sum(charges),3_000_000)
+        self.assertTrue(all(c<=900_000 for c in charges))
+        self.assertEqual(result['orders_sent'],len(charges))
+        self.assertEqual(len({p.ticker for p in self.broker.calls}),len(charges))
+
+    def test_batch_ack_without_fill_stops_followup_and_restart_never_resends(self):
+        self.two_candidates()
+        result=self.cycle()
+        self.assertEqual(result['orders_sent'],1)
+        self.assertEqual(result['batch_stop_reason'],'PENDING_FILL_CONFIRMATION')
+        self.assertEqual(result['recovery']['unresolved'],1)
+        self.assertEqual(self.cycle()['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_batch_partial_fill_stops_without_spending_remaining_budget(self):
+        self.two_candidates();self.fill_each_submission(fill=3)
+        result=self.cycle()
+        self.assertEqual(result['batch_stop_reason'],'PENDING_FILL_CONFIRMATION')
+        self.assertEqual(len(self.broker.calls),1)
+        self.assertEqual(self.ledger.pending()[0]['filled_quantity'],3)
+
+    def test_batch_fill_without_balance_update_stops(self):
+        self.two_candidates();self.fill_each_submission(balance=False)
+        result=self.cycle()
+        self.assertEqual(result['batch_stop_reason'],'BALANCE_UPDATE_PENDING')
+        self.assertEqual(self.ledger.pending(),[])
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_batch_next_buy_obeys_new_broker_power(self):
+        self.two_candidates();self.fill_each_submission()
+        self.broker.power=lambda *args:(5_000_000,10000) if not self.broker.calls else (0,0)
+        result=self.cycle()
+        self.assertEqual(result['orders_sent'],1)
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_batch_buy_off_after_first_fill_stops_next_candidate(self):
+        self.two_candidates();self.fill_each_submission()
+        self.broker.buy_control=lambda:{'enabled':not bool(self.broker.calls),'connected':True,'revision':1}
+        result=self.cycle()
+        self.assertEqual(result['batch_stop_reason'],'BUY_SWITCH_OFF')
+        self.assertEqual(result['orders_sent'],1)
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_batch_second_timeout_preserves_first_ack_and_unknown_second(self):
+        self.two_candidates();self.fill_each_submission()
+        original=self.broker.submit
+        def submit(plan):
+            if self.broker.calls:
+                self.broker.calls.append(plan)
+                raise TimeoutError('not logged')
+            return original(plan)
+        self.broker.submit=submit
+        with self.assertRaisesRegex(TradingBlocked,'UNCERTAIN') as caught:self.cycle()
+        progress=caught.exception.execution_progress
+        self.assertEqual(progress,{'orders_sent':None,'confirmed_orders_sent':1,'order_attempts':2})
+        self.assertTrue(self.ledger.halted())
+        self.assertEqual(len(self.broker.calls),2)
+        self.assertEqual(self.ledger.pending()[0]['status'],'SUBMISSION_UNKNOWN')
+        self.assertEqual(self.cycle()['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(len(self.broker.calls),2)
+
+    def test_batch_post_order_read_failure_reports_known_send_not_zero(self):
+        self.two_candidates();self.fill_each_submission()
+        original=self.broker.snapshot
+        def snapshot():
+            if self.broker.calls:raise TimeoutError('not logged')
+            return original()
+        self.broker.snapshot=snapshot
+        with self.assertRaises(TimeoutError) as caught:self.cycle()
+        self.assertEqual(caught.exception.execution_progress,
+            {'orders_sent':1,'confirmed_orders_sent':1,'order_attempts':1})
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_batch_halt_between_buys_stops_second(self):
+        self.two_candidates();self.fill_each_submission()
+        original=self.broker.snapshot
+        def snapshot():
+            if self.broker.calls:self.ledger.halt()
+            return original()
+        self.broker.snapshot=snapshot
+        with self.assertRaisesRegex(TradingBlocked,'EMERGENCY_HALT'):self.cycle()
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_batch_session_closes_after_first_buy(self):
+        self.two_candidates();self.fill_each_submission()
+        clock=lambda:self.now if not self.broker.calls else self.now.replace(hour=15,minute=15)
+        with self.assertRaisesRegex(TradingBlocked,'OUTSIDE_KRX'):
+            integrated_cycle(self.ledger,self.broker,self.candidates,execute=True,now=self.now,clock=clock)
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_batch_does_not_reuse_preexisting_unresolved_order(self):
+        self.two_candidates();ident=self.seed();self.ledger.ack(ident,'000122')
+        self.assertEqual(self.cycle()['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(self.broker.calls,[])
+
     def test_observe_halted_no_reservation_no_send(self):
         self.ledger.halt(); r=self.cycle(False)
         self.assertEqual(r['planned_buys'],1); self.assertEqual(self.broker.calls,[])
@@ -634,7 +790,7 @@ class PostgresRuntimeTests(unittest.TestCase):
 
     def intercepted_live_broker(self, price, depth):
         fixture=self.broker
-        live=object.__new__(KisBroker);live.execution=True;live.quote_evidence={}
+        live=object.__new__(KisBroker);live.execution=True;live.quote_evidence={};live.history_cache={}
         for name in ('history','snapshot','quote','power','buy_control','submit'):
             setattr(live,name,getattr(fixture,name))
         def fresh(ticker,side):

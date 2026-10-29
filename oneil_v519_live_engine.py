@@ -542,19 +542,32 @@ def recover_pending(ledger, broker):
 
 
 def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
-                     stop_loss_pct=5, take_profit_pct=10):
-    """Same runtime for simulated integration tests and broker observation.
+                     stop_loss_pct=5, take_profit_pct=10, clock=None):
+    """Sequential candidate buys under one account lock and conservative cash caps.
 
-    Ledger holds a distributed account lock for the complete snapshot/submit cycle.
-    Returns counts only: detailed balances/orders stay in the protected database.
-    At most one order per run; never spend expected sell proceeds or retry POST.
+    Each acknowledged buy must be fully reconciled before the next candidate.
+    Pending/unknown orders never gain an exception to the durable ledger guard.
+    Exits retain priority and are processed separately; sell proceeds are not
+    funding for this batch. The initial cash budget can only shrink in this run.
     """
-    now = now or dt.datetime.now(ZoneInfo('Asia/Seoul'))
+    clock = clock or (lambda: dt.datetime.now(ZoneInfo('Asia/Seoul')))
+    now = now or clock()
     if now.tzinfo is None:
         raise TradingBlocked('CLOCK_INVALID')
+    def order_time():
+        current=clock()
+        if current.tzinfo is None:raise TradingBlocked('CLOCK_INVALID')
+        current=current.astimezone(ZoneInfo('Asia/Seoul'))
+        if (current.date()!=now.date() or current.weekday()>=5 or
+                not dt.time(9)<=current.time()<dt.time(15,15)):
+            raise TradingBlocked('OUTSIDE_KRX_CONTINUOUS_SESSION')
+        return current
+    def account_snapshot():
+        snap=broker.snapshot()
+        snap['managed']=ledger.managed()
+        snap['bought_today']=ledger.bought_today(now.date())
+        return snap
     with ledger.lock():
-        # Validate the complete current-day broker history even with no local
-        # intents. A missing history response must never look like no orders.
         today_history=broker.history(now.strftime('%Y%m%d'))
         if not isinstance(today_history,list):
             raise TradingBlocked('BROKER_HISTORY_INCOMPLETE')
@@ -569,9 +582,7 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
         if execute and not ledger.release_authorized(release_fingerprint()):
             raise TradingBlocked('ACCOUNT_RELEASE_NOT_ACTIVATED')
         control=broker.buy_control() if callable(getattr(broker,'buy_control',None)) else {'enabled':False,'connected':False,'revision':None}
-        snapshot=broker.snapshot()
-        snapshot['managed']=ledger.managed()
-        snapshot['bought_today']=ledger.bought_today(now.date())
+        snapshot=account_snapshot()
         plans, allocation = plan_orders(candidates if control['enabled'] else [],snapshot,broker.quote,broker.power,
             stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,max_buys=1 if execute else None)
         ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control}
@@ -579,63 +590,127 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
         result['planned_sells']=sum(p.side=='SELL' for p in plans)
         if not execute:
             return result
-        if ledger.halted():
-            raise TradingBlocked('EMERGENCY_HALT_ACTIVE')
-        if now.weekday()>=5 or not dt.time(9)<=now.timetz().replace(tzinfo=None)<dt.time(15,15):
-            raise TradingBlocked('OUTSIDE_KRX_CONTINUOUS_SESSION')
-        if not plans:
-            result['status']='NO_ORDER'
-            return result
-        plan=plans[0]
-        if plan.side=='BUY':
-            latest=broker.buy_control()
-            if not latest.get('enabled'):
-                ledger.dashboard_state['buy_control']=latest
-                ledger.dashboard_state['plans']=[p for p in plans if p.side=='SELL']
-                result.update(status='BUY_SWITCH_OFF',planned_buys=0)
-                return result
-        if isinstance(broker,KisBroker):
-            fresh=broker.execution_quote(plan.ticker,plan.side)
-            evidence=broker.quote_evidence[(plan.ticker,plan.side)]
-            quantity=min(plan.quantity,evidence['size']);fresh_reason=plan.reason
-            if plan.side=='BUY':
-                amount,broker_qty=broker.power(plan.ticker,fresh)
-                money(amount);money(broker_qty)
-                cap=min(allocation['remaining'],allocation['per_stock'],amount)
-                quantity=min(quantity,broker_qty,cap*1000//(fresh*1005))
-            else:
-                from decimal import Decimal
-                average=Decimal(str(snapshot['positions'][plan.ticker]['average']))
-                still_exit=(fresh*100<=average*(100-stop_loss_pct) or
-                    fresh*100>=average*(100+take_profit_pct))
-                if not still_exit:quantity=0
-                else:fresh_reason='STOP_LOSS' if fresh*100<=average*(100-stop_loss_pct) else 'TAKE_PROFIT'
-            if quantity<1:
-                result.update(status='QUOTE_CHANGED_NO_ORDER',planned_buys=0,planned_sells=0)
-                ledger.dashboard_state['plans']=[]
-                return result  # no intent exists when no POST was attempted
-            plan=OrderPlan(plan.ticker,plan.side,quantity,fresh,plan.signal,fresh_reason)
-            ledger.dashboard_state['plans']=[plan]
-        ident=ledger.reserve_plan(plan,now.date())  # committed BEFORE network send
-        result['order_attempts']=1
+        initial_remaining=allocation['remaining'];initial_stock_cap=allocation['per_stock']
+        spent=0; attempted=set();display_plans=[];uncertain=False
         try:
-            # Recheck halt under a control-row transaction lock across the send.
-            # Halt ordered before this section prevents the send; a halt ordered
-            # after it cannot recall an already dispatched request.
-            with ledger.send_guard():
-                response=broker.submit(plan)
-            out=response.get('output') if isinstance(response,dict) else None
-            order_id=out.get('ODNO') if isinstance(out,dict) else None
-            if str(response.get('rt_cd'))!='0' or not isinstance(order_id,str) or not re.fullmatch('[0-9]{1,20}',order_id):
-                raise TradingBlocked('BROKER_ACK_INVALID')
-            ledger.ack(ident,order_id)
-            result.update(status='ACKNOWLEDGED',gate='ALLOW',orders_sent=1)
-        except Exception:
-            # The committed intent is evidence of a possible send, NOT a fill.
-            # Also covers DB failure after a successful KIS response.
-            ledger.halt()
-            raise TradingBlocked('SUBMISSION_UNCERTAIN_NO_RETRY') from None
-        return result
+            # At most one attempt per candidate; no waits, retries or random IDs.
+            for _ in range(max(1,len(candidates))):
+                order_time()
+                if ledger.halted():raise TradingBlocked('EMERGENCY_HALT_ACTIVE')
+                if not ledger.release_authorized(release_fingerprint()):
+                    raise TradingBlocked('ACCOUNT_RELEASE_NOT_ACTIVATED')
+                if not plans:
+                    if not result['orders_sent']:result['status']='NO_ORDER'
+                    result['batch_stop_reason']='NO_MORE_ELIGIBLE_CANDIDATES_OR_CASH'
+                    return result
+                plan=plans[0]
+                if plan.ticker in attempted:raise TradingBlocked('BATCH_DUPLICATE_CANDIDATE')
+                attempted.add(plan.ticker)
+                fresh=plan.price;quantity=plan.quantity;fresh_reason=plan.reason
+                if isinstance(broker,KisBroker):
+                    fresh=broker.execution_quote(plan.ticker,plan.side)
+                    evidence=broker.quote_evidence[(plan.ticker,plan.side)]
+                    quantity=min(quantity,evidence['size'])
+                if plan.side=='BUY':
+                    amount,broker_qty=broker.power(plan.ticker,fresh)
+                    money(amount);money(broker_qty)
+                    cap=min(initial_remaining-spent,allocation['remaining'],
+                            initial_stock_cap,allocation['per_stock'],amount)
+                    quantity=min(quantity,broker_qty,max(0,cap)*1000//(fresh*1005))
+                elif isinstance(broker,KisBroker):
+                    from decimal import Decimal
+                    average=Decimal(str(snapshot['positions'][plan.ticker]['average']))
+                    if not (fresh*100<=average*(100-stop_loss_pct) or fresh*100>=average*(100+take_profit_pct)):
+                        quantity=0
+                    else:fresh_reason='STOP_LOSS' if fresh*100<=average*(100-stop_loss_pct) else 'TAKE_PROFIT'
+                if quantity<1:
+                    if not result['orders_sent']:result['status']='QUOTE_CHANGED_NO_ORDER'
+                    ledger.dashboard_state['plans']=display_plans
+                    if plan.side=='SELL':return result
+                else:
+                    if plan.side=='BUY':
+                        latest=broker.buy_control()
+                        ledger.dashboard_state['buy_control']=latest
+                        if not latest.get('enabled'):
+                            if not result['orders_sent']:
+                                result.update(status='BUY_SWITCH_OFF',planned_buys=0)
+                            result['batch_stop_reason']='BUY_SWITCH_OFF'
+                            ledger.dashboard_state['plans']=display_plans
+                            return result
+                    plan=OrderPlan(plan.ticker,plan.side,quantity,fresh,plan.signal,fresh_reason)
+                    ledger.dashboard_state['plans']=display_plans+[plan]
+                    order_time()
+                    ident=ledger.reserve_plan(plan,now.date())  # commit BEFORE POST
+                    result['order_attempts']+=1
+                    try:
+                        with ledger.send_guard():
+                            order_time()  # stop a batch that crosses the session boundary
+                            uncertain=True
+                            response=broker.submit(plan)
+                        out=response.get('output') if isinstance(response,dict) else None
+                        order_id=out.get('ODNO') if isinstance(out,dict) else None
+                        if str(response.get('rt_cd'))!='0' or not isinstance(order_id,str) or not re.fullmatch('[0-9]{1,20}',order_id):
+                            raise TradingBlocked('BROKER_ACK_INVALID')
+                        ledger.ack(ident,order_id)
+                        uncertain=False
+                        result['orders_sent']+=1
+                        result.update(status='ACKNOWLEDGED',gate='ALLOW')
+                        display_plans.append(plan)
+                    except Exception:
+                        ledger.halt()
+                        raise TradingBlocked('SUBMISSION_UNCERTAIN_NO_RETRY') from None
+                    if plan.side=='BUY':
+                        spent+=(plan.quantity*plan.price*1005+999)//1000
+                    # Read after submission even for a single order, so the private
+                    # dashboard no longer always publishes the pre-order balance.
+                    if isinstance(broker,KisBroker):
+                        # The initial history read predates this POST. Never use
+                        # its cached rows as evidence about the new order.
+                        broker.history_cache.pop(now.strftime('%Y%m%d'),None)
+                    checked=recover_pending(ledger,broker)
+                    result['recovery']['matched']+=checked['matched']
+                    result['recovery']['unresolved']=checked['unresolved']
+                    snapshot=account_snapshot()
+                    from v519_cash_policy import limits
+                    refreshed=limits(snapshot['cash'],snapshot['invested'],snapshot['cash'])
+                    ledger.dashboard_state.update(snapshot=snapshot,allocation=refreshed,at=clock())
+                    if checked['unresolved'] or snapshot['pending']:
+                        result['batch_stop_reason']='PENDING_FILL_CONFIRMATION'
+                        return result
+                    # The broker must expose the confirmed filled quantity in the
+                    # refreshed balance before that balance can fund another buy.
+                    if plan.side=='BUY' and snapshot['positions'].get(plan.ticker,{}).get('quantity',0)<plan.quantity:
+                        result['batch_stop_reason']='BALANCE_UPDATE_PENDING'
+                        return result
+                    if plan.side=='SELL':
+                        result['batch_stop_reason']='EXIT_PRIORITY'
+                        return result
+                remaining_candidates=[c for c in candidates if c['ticker'] not in attempted]
+                if not remaining_candidates:
+                    result['batch_stop_reason']='CANDIDATES_EVALUATED'
+                    return result
+                # Refresh user control, held exposure, quote and buying power for
+                # each successive buy; never reuse expected proceeds or budget.
+                control=broker.buy_control()
+                ledger.dashboard_state['buy_control']=control
+                if not control.get('enabled'):
+                    result['batch_stop_reason']='BUY_SWITCH_OFF'
+                    return result
+                plans,allocation=plan_orders(remaining_candidates,snapshot,broker.quote,broker.power,
+                    stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,max_buys=1)
+                # A new exit appearing mid-batch stops buys; it cannot finance them.
+                if plans and plans[0].side=='SELL':
+                    result['batch_stop_reason']='EXIT_DETECTED'
+                    return result
+                result['planned_buys']+=sum(p.side=='BUY' for p in plans)
+                ledger.dashboard_state.update(allocation=allocation,plans=display_plans+plans)
+            return result
+        except Exception as exc:
+            # Keep known acknowledgements when a later batch step fails. A lost
+            # acknowledgement leaves total sends unknown, never reported as zero.
+            exc.execution_progress={'orders_sent':None if uncertain else result['orders_sent'],
+                'confirmed_orders_sent':result['orders_sent'],'order_attempts':result['order_attempts']}
+            raise
 
 
 def failure_details(exc):
@@ -910,7 +985,8 @@ def runtime_main():
                             encrypt_dashboard(snapshot,args.dashboard_public_key,args.dashboard_output)
                     except Exception as exc:
                         failed={'status':'BLOCKED','gate':'DENY','order_outcome':'CHECK_LEDGER',
-                                'orders_sent':None if args.execute else 0,**failure_details(exc)}
+                                'orders_sent':None if args.execute else 0,**failure_details(exc),
+                                **getattr(exc,'execution_progress',{})}
                         ledger.finish_run(run_id,failed)
                         raise
     except Exception as exc:
@@ -918,7 +994,7 @@ def runtime_main():
         reason=str(exc) if isinstance(exc,TradingBlocked) else 'BROKER_OR_DATABASE_FAILURE'
         result={'status':'BLOCKED','gate':'DENY','reason':reason,
                 'orders_sent':None if args.execute and release_is_approved() else 0,
-                **failure_details(exc)}
+                **failure_details(exc),**getattr(exc,'execution_progress',{})}
         code=2
     Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
     print(json.dumps(result,ensure_ascii=False))
