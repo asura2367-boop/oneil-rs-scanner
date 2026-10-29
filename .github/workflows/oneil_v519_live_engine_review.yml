@@ -119,7 +119,10 @@ jobs:
           case "$OPERATION" in
             observe) python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem ;;
             auto)
-              if [ -n "$APPROVED_RELEASE" ]; then
+              # Schedule delays may start this job after trading closes.
+              # Keep monitoring until 20:00 without enabling order transport.
+              read -r weekday session_hhmm <<< "$(TZ=Asia/Seoul date '+%u %H%M')"
+              if [ -n "$APPROVED_RELEASE" ] && [ "$weekday" -le 5 ] && [ "$session_hhmm" -ge 900 ] && [ "$session_hhmm" -lt 1515 ]; then
                 LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --run --execute --dashboard-public-key data/live/dashboard_public_key.pem
               else
                 python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem
