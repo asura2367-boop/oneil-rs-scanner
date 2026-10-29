@@ -199,7 +199,8 @@ class OrderPlan:
     reason: str
 
 
-def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_profit_pct=10, max_buys=None):
+def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_profit_pct=10, max_buys=None,
+                reserve_pct=40, per_stock_pct=30):
     """One broker snapshot, exits first, conservative whole-account exposure.
 
     Thresholds are configurable defaults requiring review before activation.
@@ -233,7 +234,7 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
                   'TAKE_PROFIT' if price * 100 >= avg * (100+take_profit_pct) else None)
         if reason:
             plans.append(OrderPlan(ticker, 'SELL', qty, price, 'exit', reason))
-    b = limits(cash, invested, cash)
+    b = limits(cash, invested, cash,reserve_pct=reserve_pct,per_stock_pct=per_stock_pct)
     if max_buys is not None and (type(max_buys) is not int or max_buys<1):
         raise TradingBlocked('BUY_BATCH_INVALID')
     if max_buys is not None and plans:
@@ -541,6 +542,21 @@ def recover_pending(ledger, broker):
     return {'matched':matched,'unresolved':len(ledger.pending())}
 
 
+def risk_policy(control):
+    """Missing/invalid risk settings disable new buys without stopping exits."""
+    default={'connected':False,'reserve_pct':40,'per_stock_pct':30,'revision':None,'updated_at':None}
+    risk=control.get('risk')
+    if (not isinstance(risk,dict) or risk.get('connected') is not True or
+            any(type(risk.get(k)) is not int or not 0<=risk[k]<=100 for k in ('reserve_pct','per_stock_pct')) or
+            type(risk.get('revision')) is not int or not 0<=risk['revision']<2**53-1):
+        return default
+    return {k:risk.get(k) for k in default}
+
+
+def same_risk(left,right):
+    return right['connected'] and all(left[k]==right[k] for k in ('revision','reserve_pct','per_stock_pct'))
+
+
 def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                      stop_loss_pct=5, take_profit_pct=10, clock=None):
     """Sequential candidate buys under one account lock and conservative cash caps.
@@ -582,10 +598,13 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
         if execute and not ledger.release_authorized(release_fingerprint()):
             raise TradingBlocked('ACCOUNT_RELEASE_NOT_ACTIVATED')
         control=broker.buy_control() if callable(getattr(broker,'buy_control',None)) else {'enabled':False,'connected':False,'revision':None}
+        risk=risk_policy(control)
+        if not risk['connected']:control={**control,'enabled':False,'reason':'RISK_CONTROL_INVALID'}
         snapshot=account_snapshot()
         plans, allocation = plan_orders(candidates if control['enabled'] else [],snapshot,broker.quote,broker.power,
-            stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,max_buys=1 if execute else None)
-        ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control}
+            stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,max_buys=1 if execute else None,
+            reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
+        ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control,'risk_control':risk}
         result['planned_buys']=sum(p.side=='BUY' for p in plans)
         result['planned_sells']=sum(p.side=='SELL' for p in plans)
         if not execute:
@@ -631,6 +650,11 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     if plan.side=='BUY':
                         latest=broker.buy_control()
                         ledger.dashboard_state['buy_control']=latest
+                        if not same_risk(risk,risk_policy(latest)):
+                            if not result['orders_sent']:result['status']='RISK_SETTINGS_CHANGED'
+                            result['batch_stop_reason']='RISK_SETTINGS_CHANGED'
+                            ledger.dashboard_state['plans']=display_plans
+                            return result
                         if not latest.get('enabled'):
                             if not result['orders_sent']:
                                 result.update(status='BUY_SWITCH_OFF',planned_buys=0)
@@ -672,7 +696,8 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     result['recovery']['unresolved']=checked['unresolved']
                     snapshot=account_snapshot()
                     from v519_cash_policy import limits
-                    refreshed=limits(snapshot['cash'],snapshot['invested'],snapshot['cash'])
+                    refreshed=limits(snapshot['cash'],snapshot['invested'],snapshot['cash'],
+                        reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
                     ledger.dashboard_state.update(snapshot=snapshot,allocation=refreshed,at=clock())
                     if checked['unresolved'] or snapshot['pending']:
                         result['batch_stop_reason']='PENDING_FILL_CONFIRMATION'
@@ -693,11 +718,15 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                 # each successive buy; never reuse expected proceeds or budget.
                 control=broker.buy_control()
                 ledger.dashboard_state['buy_control']=control
+                if not same_risk(risk,risk_policy(control)):
+                    result['batch_stop_reason']='RISK_SETTINGS_CHANGED'
+                    return result
                 if not control.get('enabled'):
                     result['batch_stop_reason']='BUY_SWITCH_OFF'
                     return result
                 plans,allocation=plan_orders(remaining_candidates,snapshot,broker.quote,broker.power,
-                    stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,max_buys=1)
+                    stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,max_buys=1,
+                    reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
                 # A new exit appearing mid-batch stops buys; it cannot finance them.
                 if plans and plans[0].side=='SELL':
                     result['batch_stop_reason']='EXIT_DETECTED'
@@ -790,7 +819,9 @@ def read_buy_control(*, opener=None, now=None, access_token=None):
                 type(body.get('revision')) is not int or body['revision']<0 or
                 at.tzinfo is None or not -2<=(checked_at-at).total_seconds()<=15):
             raise TradingBlocked('CONTROL_RESPONSE_INVALID')
-        return {'enabled':body['enabled'],'connected':True,'revision':body['revision'],
+        risk=risk_policy({'risk':{**body.get('risk',{}),'connected':True}})
+        if not risk['connected']:raise TradingBlocked('RISK_CONTROL_INVALID')
+        return {'enabled':body['enabled'],'connected':True,'revision':body['revision'],'risk':risk,
                 'updated_at':body.get('updated_at'),'reason':'OWNER_SETTING'}
     except Exception:
         return {**denied,'reason':'CONTROL_READ_FAILED'}
@@ -837,7 +868,7 @@ def dashboard_snapshot(ledger,result):
             'broker_fill_recovery_observed':any(o['filled_quantity']>0 for o in orders),
             'restart_failure_drill_verified':False},
         'monitoring_open':monitoring_open(state['at']) and result.get('status')!='DAILY_CLOSED',
-        'buy_control':state['buy_control'],
+        'buy_control':state['buy_control'],'risk_control':state.get('risk_control'),
         'monitor_hours':'09:00–20:00 KST','poll_minutes':20,'venue':'KRX',
         'result':result,'allocation':state['allocation'],
         'account':{'cash':snap['cash'],'equity':snap.get('equity'),
