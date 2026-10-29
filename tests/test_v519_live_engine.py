@@ -83,7 +83,7 @@ class BrokerFixture:
         self.calls=[]; self.rows={}; self.failure=None
         self.cash=5_000_000; self.invested=0; self.positions={}; self.pending=set()
         self.prices={}; self.amount=5_000_000; self.broker_qty=10000
-    def buy_control(self): return {'enabled':True,'connected':True,'revision':1,'risk':{'connected':True,'reserve_pct':40,'per_stock_pct':30,'revision':0,'updated_at':None}}
+    def buy_control(self): return {'enabled':True,'connected':True,'revision':1,'sell':{'enabled':True,'connected':True,'revision':0},'risk':{'connected':True,'reserve_pct':40,'per_stock_pct':30,'revision':0,'updated_at':None}}
     def snapshot(self):
         return dict(cash=self.cash,invested=self.invested,positions=self.positions,pending=self.pending)
     def quote(self,ticker,side): return self.prices.get((ticker,side),10000)
@@ -95,6 +95,28 @@ class BrokerFixture:
     def history(self,day): return self.rows.get(day,[])
 
 class RuntimeRiskTests(unittest.TestCase):
+    def test_sell_control_is_independent_and_invalid_values_deny_sale(self):
+        import io
+        now=dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul'))
+        body={'schema_version':1,'enabled':True,'revision':3,'observed_at':now.isoformat(),
+            'risk':{'reserve_pct':40,'per_stock_pct':30,'revision':0}}
+        for value in (None,{}, {'enabled':True,'revision':True},{'enabled':'true','revision':0}):
+            result=read_buy_control(access_token='fixture',now=now,opener=lambda *a,**k:io.StringIO(json.dumps({**body,'sell':value})))
+            self.assertTrue(result['enabled']);self.assertFalse(sell_policy(result)['enabled'])
+        for enabled in (True,False):
+            value={**body,'sell':{'enabled':enabled,'revision':2}}
+            result=read_buy_control(access_token='fixture',now=now,opener=lambda *a,**k:io.StringIO(json.dumps(value)))
+            self.assertEqual(sell_policy(result)['enabled'],enabled)
+            self.assertTrue(sell_policy(result)['connected'])
+
+    def test_sell_off_blocks_actual_wire_adapter_before_network(self):
+        broker=object.__new__(KisBroker)
+        broker.buy_control=lambda:{'sell':{'enabled':False,'connected':True,'revision':1}}
+        flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES'}
+        with patch('oneil_v519_live_engine.RELEASE_LIVE_APPROVED',True),patch.dict(os.environ,flags),patch('urllib.request.urlopen') as wire:
+            with self.assertRaises(SellDisabledBeforeSend):broker._send_verified(OrderPlan('144960','SELL',1,10000,'exit','STOP_LOSS'))
+            wire.assert_not_called()
+
     def test_owner_risk_percentages_set_cash_and_stock_limits(self):
         from v519_cash_policy import limits
         for cash in (499,500_000,5_000_000):
@@ -331,6 +353,7 @@ printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE
         broker=object.__new__(KisBroker)
         broker.execution=True;broker.account='12345678';broker.product='01'
         broker.access='fixture';broker.key='fixture';broker.secret='fixture'
+        broker.buy_control=BrokerFixture().buy_control
         broker.quote_evidence={}
         for side,tr in (('BUY','TTTC0012U'),('SELL','TTTC0011U')):
             broker.quote_evidence[('144960',side)]={'price':10000,'size':10,'at':now}
@@ -496,7 +519,7 @@ class PostgresRuntimeTests(unittest.TestCase):
         cls.conn.execute('DROP SCHEMA '+cls.schema+' CASCADE'); cls.conn.close()
     def setUp(self):
         from v519_pg_ledger import PgRuntimeLedger
-        self.conn.execute('TRUNCATE v519_order_intents,v519_runs,v519_live_activation')
+        self.conn.execute('TRUNCATE v519_order_intents,v519_runs,v519_live_activation,v519_sell_alerts')
         self.conn.execute('UPDATE v519_control SET halted=false')
         self.ledger=PgRuntimeLedger(self.conn,'b'*64)
         self.ledger.activate_release(release_fingerprint(),'fixture')
@@ -554,7 +577,7 @@ class PostgresRuntimeTests(unittest.TestCase):
         ident=self.seed();self.ledger.ack(ident,'000122')
         self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
         self.broker.positions={'144960':{'quantity':10,'sellable':10,'average':'12000'}}
-        self.broker.buy_control=lambda:{'enabled':True,'connected':True,'revision':1}
+        self.broker.buy_control=lambda:{'enabled':True,'connected':True,'revision':1,'sell':{'enabled':True,'connected':True,'revision':0}}
         result=self.cycle()
         self.assertEqual(result['planned_buys'],0)
         self.assertEqual([p.side for p in self.broker.calls],['SELL'])
@@ -839,6 +862,69 @@ class PostgresRuntimeTests(unittest.TestCase):
         r=self.cycle()
         self.assertEqual(r['orders_sent'],1)
         self.assertEqual((self.broker.calls[0].side,self.broker.calls[0].quantity),('SELL',6))
+
+    def prepare_exit(self,average='12000'):
+        ident=self.seed();self.ledger.ack(ident,'000122')
+        self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
+        self.broker.positions={'144960':{'quantity':10,'sellable':6,'average':average}}
+        self.candidates=[]
+
+    def test_sell_off_records_deduplicated_stop_and_profit_alerts_without_intents(self):
+        self.prepare_exit()
+        control=self.broker.buy_control();self.broker.buy_control=lambda:{**control,'sell':{'enabled':False,'connected':True,'revision':1}}
+        for price in (10000,9000):
+            self.broker.prices[('144960','SELL')]=price
+            result=self.cycle();self.assertEqual(result['status'],'SELL_ALERT_ONLY')
+            self.assertEqual(result['orders_sent'],0);self.assertEqual(self.ledger.pending(),[])
+        alerts=self.ledger.sell_alerts();self.assertEqual(len(alerts),1)
+        self.assertEqual((alerts[0]['reason'],alerts[0]['quantity'],alerts[0]['reference_price']),('STOP_LOSS',6,9000))
+        self.broker.prices[('144960','SELL')]=14000
+        self.cycle();self.assertEqual({a['reason'] for a in self.ledger.sell_alerts()},{'STOP_LOSS','TAKE_PROFIT'})
+        self.assertEqual(self.broker.calls,[])
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM v519_order_intents').fetchone()[0],1)
+        self.assertEqual(dashboard_snapshot(self.ledger,result)['sell_control']['enabled'],False)
+
+    def test_missing_sell_control_blocks_sale_and_preserves_buy_setting(self):
+        self.prepare_exit();control=self.broker.buy_control();self.broker.buy_control=lambda:{**control,'sell':None}
+        result=self.cycle();self.assertEqual(result['status'],'SELL_CONTROL_UNAVAILABLE')
+        self.assertEqual(self.broker.calls,[]);self.assertTrue(self.ledger.dashboard_state['buy_control']['enabled'])
+        self.assertEqual(len(self.ledger.sell_alerts()),1)
+
+    def test_sell_off_before_reserve_creates_no_order_intent(self):
+        self.prepare_exit();on=self.broker.buy_control();off={**on,'sell':{'enabled':False,'connected':True,'revision':1}}
+        controls=iter([on,off]);self.broker.buy_control=lambda:next(controls)
+        result=self.cycle();self.assertEqual(result['status'],'SELL_ALERT_ONLY')
+        self.assertEqual(result['order_attempts'],0);self.assertEqual(self.ledger.pending(),[])
+        self.assertFalse(self.ledger.halted());self.assertEqual(self.broker.calls,[])
+
+    def test_sell_off_at_wire_boundary_voids_only_verified_unsent_and_can_resume(self):
+        self.prepare_exit();on=self.broker.buy_control();off={**on,'sell':{'enabled':False,'connected':True,'revision':1}}
+        controls=iter([on,on,off,off]);self.broker.buy_control=lambda:next(controls)
+        result=self.cycle();self.assertTrue(result['pre_send_cancelled'])
+        self.assertEqual(result['orders_sent'],0);self.assertEqual(self.broker.calls,[])
+        self.assertEqual(self.ledger.pending(),[]);self.assertFalse(self.ledger.halted())
+        row=self.conn.execute("SELECT status,verified_not_sent,broker_order_id FROM v519_order_intents WHERE side='SELL'").fetchone()
+        self.assertEqual(row,('REJECTED',True,None))
+        self.broker.buy_control=lambda:on
+        result=self.cycle();self.assertEqual(result['orders_sent'],1)
+        self.assertEqual(len(self.broker.calls),1)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM v519_order_intents WHERE side='SELL'").fetchone()[0],2)
+
+    def test_sell_network_timeout_never_becomes_verified_unsent_or_retransmitted(self):
+        self.prepare_exit();self.broker.failure=TimeoutError('no acknowledgement')
+        with self.assertRaises(TradingBlocked):self.cycle()
+        row=self.ledger.pending()[0];self.assertFalse(row['verified_not_sent'])
+        self.assertEqual(row['status'],'SUBMISSION_UNKNOWN');self.assertTrue(self.ledger.halted())
+        result=self.cycle();self.assertEqual(result['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_sell_off_does_not_require_executable_book_for_notification(self):
+        self.prepare_exit();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'sell':{'enabled':False,'connected':True,'revision':1}}
+        fixture,live=self.intercepted_live_broker(10000,10)
+        live.reference_quote=lambda code:10000
+        live.execution_quote=lambda *args:(_ for _ in ()).throw(AssertionError('off must not request executable book'))
+        result=self.cycle();self.assertEqual(result['status'],'SELL_ALERT_ONLY');self.assertEqual(fixture.calls,[])
     def test_private_dashboard_uses_real_observation_and_no_credentials(self):
         self.cycle(False)
         data=dashboard_snapshot(self.ledger,{'status':'OBSERVED','orders_sent':0})
@@ -852,7 +938,7 @@ class PostgresRuntimeTests(unittest.TestCase):
         ident=self.seed();self.ledger.ack(ident,'000122')
         self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
         self.broker.positions={'144960':{'quantity':10,'sellable':6,'average':'12000'}}
-        self.broker.buy_control=lambda:{'enabled':False,'connected':True,'revision':2}
+        self.broker.buy_control=lambda:{'enabled':False,'connected':True,'revision':2,'sell':{'enabled':True,'connected':True,'revision':0}}
         r=self.cycle()
         self.assertEqual(r['planned_buys'],0)
         self.assertEqual(self.broker.calls[0].side,'SELL')
