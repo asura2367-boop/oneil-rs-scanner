@@ -7,11 +7,15 @@ on:
         description: 'Target session YYYY-MM-DD; blank means today in Korea'
         required: false
         default: ''
+      mode:
+        type: choice
+        options: [pre-session, intraday]
+        default: pre-session
+        description: 'intraday=당일 KIS 가격·누적 거래량 재조회; 주문 없음'
   schedule:
     # 08:00 KST Mon-Fri = 23:00 UTC Sun-Thu
     - cron: '0 23 * * 0-4'
-    # 11:00 and 14:00 KST Mon-Fri. Re-evaluate saved confirmed data.
-    # This does not introduce provisional intraday bars into the strategy.
+    # 11:00 and 14:00 KST Mon-Fri: fresh KIS snapshots + confirmed history/flow.
     - cron: '0 2,5 * * 1-5'
 
 permissions:
@@ -24,7 +28,10 @@ concurrency:
 jobs:
   save-candidates:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    concurrency:
+      group: kis-collectors
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,7 +41,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install candidate builder and exchange calendar
-        run: python -m pip install pandas numpy exchange-calendars
+        run: python -m pip install 'pandas>=2,<3' 'numpy>=1.24,<3' exchange-calendars 'requests>=2.31,<3' 'cryptography>=42,<47'
       - name: Determine target date and confirm market session
         env:
           REQUESTED_DAY: ${{ inputs.trading_date }}
@@ -42,14 +49,16 @@ jobs:
           SCHEDULE: ${{ github.event.schedule }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          REQUESTED_MODE: ${{ inputs.mode }}
         run: |
           python - <<'PY'
-          import os
+          import os,json
           from datetime import datetime, date
           from zoneinfo import ZoneInfo
           from pathlib import Path
           import exchange_calendars as xcals
-          today = datetime.now(ZoneInfo('Asia/Seoul')).date()
+          now = datetime.now(ZoneInfo('Asia/Seoul'))
+          today = now.date()
           raw = os.environ.get('REQUESTED_DAY', '').strip()
           target = date.fromisoformat(raw) if raw else today
           if target > today:
@@ -57,13 +66,25 @@ jobs:
           if os.environ.get('EVENT_NAME') == 'schedule' and target != today:
               raise SystemExit('Scheduled run target mismatch')
           cal = xcals.get_calendar('XKRX')
-          if not cal.is_session(target.isoformat()):
+          mode = 'intraday' if os.environ.get('SCHEDULE')=='0 2,5 * * 1-5' else (os.environ.get('REQUESTED_MODE') or 'pre-session')
+          if mode not in ('pre-session','intraday'):raise SystemExit('Invalid candidate mode')
+          if mode=='intraday' and target!=today:raise SystemExit('Intraday collection requires today')
+          diagnostic=Path('data/v4b/diagnostics.json')
+          prior=json.loads(diagnostic.read_text()) if diagnostic.exists() else {}
+          if mode=='pre-session' and prior.get('target_date')==target.isoformat() and prior.get('source_basis')=='INTRADAY_KIS_SNAPSHOT':
+              print('SKIP: preserve newer intraday candidate basis')
+              Path('candidate_skip.txt').write_text('newer intraday basis exists')
+          elif mode=='intraday' and not (9,0)<=(now.hour,now.minute)<(15,15):
+              print('SKIP: delayed intraday refresh outside KRX collection hours')
+              Path('candidate_skip.txt').write_text('outside session')
+          elif not cal.is_session(target.isoformat()):
               print('SKIP: XKRX closed on', target)
               Path('candidate_skip.txt').write_text('closed')
           else:
               previous = cal.previous_session(target.isoformat()).date().isoformat()
               Path('candidate_target.txt').write_text(target.isoformat())
               Path('candidate_previous.txt').write_text(previous)
+              Path('candidate_mode.txt').write_text(mode)
               # Preserve the opening archive. Later refreshes and manual runs
               # have their own immutable files, including retry attempts.
               slot = {'0 23 * * 0-4':'0800', '0 2,5 * * 1-5':'refresh'}.get(os.environ.get('SCHEDULE'), 'manual')
@@ -83,18 +104,36 @@ jobs:
           for f in build_v4b_candidates.py data/kis_daily_universe.csv data/kis_investor_flow.csv; do
             test -f "$f" || { echo "Missing $f"; exit 1; }
           done
-      - name: Generate pre-session candidates
+      - name: Generate candidates from the selected data basis
         if: ${{ hashFiles('candidate_target.txt') != '' }}
+        env:
+          LIVE_ENABLED: 'false'
+          KIS_ALLOW_ORDER: 'false'
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+          KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+          KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
         run: |
-          python build_v4b_candidates.py --date "$(cat candidate_target.txt)" --output data/v4b/candidates.csv
+          args=()
+          if [ "$(cat candidate_mode.txt)" = 'intraday' ]; then
+            args+=(--intraday --previous-session "$(cat candidate_previous.txt)")
+          fi
+          python build_v4b_candidates.py --date "$(cat candidate_target.txt)" --output data/v4b/candidates.csv "${args[@]}"
       - name: Validate and archive candidates
         if: ${{ hashFiles('candidate_target.txt') != '' }}
         run: |
           python - <<'PY'
-          import csv
+          import csv,json
           from pathlib import Path
           day=Path('candidate_target.txt').read_text().strip()
           previous=Path('candidate_previous.txt').read_text().strip()
+          mode=Path('candidate_mode.txt').read_text().strip()
+          report=json.loads(Path('data/v4b/diagnostics.json').read_text())
+          if report.get('latest_history_day')!=previous or report.get('target_date')!=day:
+              raise SystemExit('Candidate history session mismatch')
+          expected_basis='INTRADAY_KIS_SNAPSHOT' if mode=='intraday' else 'PREVIOUS_CONFIRMED_SESSION'
+          if report.get('source_basis')!=expected_basis:raise SystemExit('Candidate basis mismatch')
           src=Path('data/v4b/candidates.csv')
           if not src.exists(): raise SystemExit('Missing candidates.csv')
           with src.open(encoding='utf-8-sig', newline='') as f:
@@ -103,7 +142,7 @@ jobs:
               if not required.issubset(reader.fieldnames or []): raise SystemExit('Candidate columns missing')
               rows=list(reader)
           for r in rows:
-              if r['date'] != day or r['signal_date'] != previous:
+              if r['date'] != day or r['signal_date'] != (day if mode=='intraday' else previous) or r.get('signal_basis')!=expected_basis:
                   raise SystemExit('Stale, future or wrong-session signal: '+str(r))
               if len(r['ticker'])!=6 or not r['ticker'].isdigit():
                   raise SystemExit('Invalid ticker')
@@ -117,7 +156,7 @@ jobs:
           archive.write_bytes(src.read_bytes())
           print('VALID:',len(rows),'candidates for',day,'archived to',archive)
           PY
-      - name: Record confirmed-data refresh time
+      - name: Record candidate refresh time and data basis
         if: ${{ hashFiles('candidate_target.txt') != '' }}
         run: |
           python - <<'PY'
@@ -128,12 +167,11 @@ jobs:
           path=Path('data/v4b/diagnostics.json')
           report=json.loads(path.read_text())
           report.update(refreshed_at_kst=datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),
-              source_basis='PREVIOUS_CONFIRMED_SESSION',
               archive=Path('candidate_archive.txt').read_text().strip())
           path.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as summary:
               summary.write('Candidate refresh: '+report['refreshed_at_kst']+'\n\n'
-                  +'Signal session: '+report['latest_signal_day']+' (confirmed daily data; no intraday bars)\n\n'
+                  +'Signal session: '+report['latest_signal_day']+'; basis: '+report['source_basis']+'\n\n'
                   +'Candidates: '+str(report['selected'])+'; orders sent by this workflow: 0\n')
           PY
       - name: Commit only candidate files
@@ -147,6 +185,14 @@ jobs:
             echo 'No candidate changes'
             exit 0
           fi
-          git commit -m 'Archive pre-session V4-B candidates'
+          git commit -m 'Refresh V4-B candidates with validated data basis'
           git pull --rebase origin main
           git push origin HEAD:main
+      - name: Record skipped or failed refresh
+        if: always()
+        run: |
+          if [ -f candidate_skip.txt ]; then
+            echo "Candidate refresh skipped: $(cat candidate_skip.txt). Prior published list retained." >> "$GITHUB_STEP_SUMMARY"
+          elif [ '${{ job.status }}' != 'success' ]; then
+            echo 'Candidate refresh failed. No new candidate result was published. Check this run; prior list is not a new detection.' >> "$GITHUB_STEP_SUMMARY"
+          fi

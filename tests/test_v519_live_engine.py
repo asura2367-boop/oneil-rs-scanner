@@ -974,6 +974,36 @@ class CandidateRefreshScheduleTests(unittest.TestCase):
             self.assertEqual(sorted(t.hour for t in scheduled if t.day==day),[8,11,14])
         self.assertTrue(all(t.weekday()<5 for t in scheduled))
 
+    def test_workflow_selects_live_snapshots_only_in_intraday_session(self):
+        import subprocess
+        # Execute the real workflow date/mode step against a fixed clock and
+        # a stub exchange calendar; no KIS, credentials or trading engine.
+        bootstrap='''import datetime,sys,types,os
+real=datetime
+class Clock(real.datetime):
+ @classmethod
+ def now(cls,tz=None):return real.datetime.fromisoformat(os.environ['TEST_NOW'])
+shim=types.ModuleType('datetime');shim.__dict__.update(vars(real));shim.datetime=Clock
+sys.modules['datetime']=shim
+class Calendar:
+ def is_session(self,day):return real.date.fromisoformat(day).weekday()<5
+ def previous_session(self,day):return real.datetime(2026,10,28)
+calendar=types.ModuleType('exchange_calendars');calendar.get_calendar=lambda name:Calendar()
+sys.modules['exchange_calendars']=calendar
+'''
+        for stamp,schedule,expected in [('08:00','0 23 * * 0-4','pre-session'),
+                ('11:00','0 2,5 * * 1-5','intraday'),('14:00','0 2,5 * * 1-5','intraday'),
+                ('15:15','0 2,5 * * 1-5',None)]:
+            with tempfile.TemporaryDirectory() as directory:
+                root=pathlib.Path(directory)
+                result=subprocess.run(['python','-c',bootstrap+'\n'+self.script('Determine target date and confirm market session')],
+                    cwd=root,env={**os.environ,'TEST_NOW':'2026-10-29T'+stamp+':00+09:00',
+                    'SCHEDULE':schedule,'EVENT_NAME':'schedule','REQUESTED_DAY':'','REQUESTED_MODE':'',
+                    'RUN_ID':'123','RUN_ATTEMPT':'1'},capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                if expected:self.assertEqual((root/'candidate_mode.txt').read_text(),expected)
+                else:self.assertFalse((root/'candidate_target.txt').exists())
+
     def test_refresh_keeps_morning_archive_and_records_source_time(self):
         import subprocess
         with tempfile.TemporaryDirectory() as directory:
@@ -981,11 +1011,12 @@ class CandidateRefreshScheduleTests(unittest.TestCase):
             morning=history/'candidates_2026-10-29.csv';morning.write_text('opening archive')
             (root/'candidate_target.txt').write_text('2026-10-29')
             (root/'candidate_previous.txt').write_text('2026-10-28')
+            (root/'candidate_mode.txt').write_text('pre-session')
             (root/'candidate_archive.txt').write_text('candidates_2026-10-29_refresh_123_1.csv')
-            (data/'candidates.csv').write_text('date,ticker,rs,foreign_5d,institution_5d,volume_ratio,channel_position,signal_date\n2026-10-29,234690,95,10,0,1.2,0.4,2026-10-28\n')
-            (data/'diagnostics.json').write_text(json.dumps({'latest_signal_day':'2026-10-28','selected':1}))
+            (data/'candidates.csv').write_text('date,ticker,rs,foreign_5d,institution_5d,volume_ratio,channel_position,signal_date,signal_basis\n2026-10-29,234690,95,10,0,1.2,0.4,2026-10-28,PREVIOUS_CONFIRMED_SESSION\n')
+            (data/'diagnostics.json').write_text(json.dumps({'latest_signal_day':'2026-10-28','latest_history_day':'2026-10-28','target_date':'2026-10-29','source_basis':'PREVIOUS_CONFIRMED_SESSION','selected':1}))
             subprocess.run(['python','-c',self.script('Validate and archive candidates')],cwd=root,check=True,capture_output=True)
-            subprocess.run(['python','-c',self.script('Record confirmed-data refresh time')],cwd=root,
+            subprocess.run(['python','-c',self.script('Record candidate refresh time and data basis')],cwd=root,
                 env={**os.environ,'GITHUB_STEP_SUMMARY':str(root/'summary')},check=True,capture_output=True)
             self.assertEqual(morning.read_text(),'opening archive')
             self.assertEqual((history/'candidates_2026-10-29_refresh_123_1.csv').read_bytes(),(data/'candidates.csv').read_bytes())
@@ -1001,6 +1032,8 @@ class CandidateRefreshScheduleTests(unittest.TestCase):
             old=history/'candidates_2026-10-29.csv';old.write_text('opening archive')
             (root/'candidate_target.txt').write_text('2026-10-29')
             (root/'candidate_previous.txt').write_text('2026-10-28')
+            (root/'candidate_mode.txt').write_text('pre-session')
+            (data/'diagnostics.json').write_text(json.dumps({'latest_history_day':'2026-10-28','target_date':'2026-10-29','source_basis':'PREVIOUS_CONFIRMED_SESSION'}))
             for signal,archive in [('2026-10-29','candidates_2026-10-29_refresh_123_1.csv'),
                     ('2026-10-27','candidates_2026-10-29_refresh_123_1.csv'),
                     ('2026-10-28','../../candidates_2026-10-29.csv')]:
@@ -1010,5 +1043,157 @@ class CandidateRefreshScheduleTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode,0)
                 self.assertEqual(old.read_text(),'opening archive')
                 self.assertEqual(len(list(history.iterdir())),1)
+
+class IntradayCandidateTests(unittest.TestCase):
+    def setUp(self):
+        self.now=dt.datetime(2026,10,29,11,5,tzinfo=ZoneInfo('Asia/Seoul'))
+
+    def quote(self,code='234690',**overrides):
+        return {'ticker':code,'price':12760,'cumulative_volume':2000,'trading_day':'2026-10-29',
+            'received_at_kst':self.now.isoformat(),**overrides}
+
+    def history(self,root):
+        import pandas as pd,numpy as np
+        days=pd.bdate_range(end='2026-10-28',periods=253)
+        prices=pd.DataFrame({'date':days,'ticker':'234690','name':'녹십자웰빙',
+            'close':10000*np.exp(.001*np.arange(253))*(1+.02*np.sin(np.arange(253)*2*np.pi/20)),
+            'volume':[1000]*252+[500]})
+        flows=pd.DataFrame({'date':days[-5:],'ticker':'234690','foreign_net_qty':10,'institution_net_qty':0})
+        p=root/'prices.csv';f=root/'flows.csv'
+        prices.to_csv(p,index=False);flows.to_csv(f,index=False)
+        return p,f
+
+    def test_live_price_and_volume_create_candidate_absent_at_open(self):
+        from build_v4b_candidates import generate
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);p,f=self.history(root);out=root/'candidates.csv'
+            self.assertEqual(generate(p,f,'2026-10-29',out),[])
+            # Same confirmed history and flow; only current price/volume change.
+            rows=generate(p,f,'2026-10-29',out,intraday={'234690':self.quote()},now=self.now)
+            self.assertEqual([r['ticker'] for r in rows],['234690'])
+            self.assertEqual(rows[0]['signal_date'],'2026-10-29')
+            self.assertEqual(rows[0]['flow_signal_date'],'2026-10-28')
+            self.assertEqual(rows[0]['signal_basis'],'INTRADAY_KIS_SNAPSHOT')
+            candidates=scan_candidates(out,self.now)
+            self.assertEqual(candidates[0]['name'],'녹십자웰빙')
+            self.assertEqual(candidates[0]['observed_at_kst'],self.now.isoformat())
+            with self.assertRaises(TradingBlocked):scan_candidates(out,self.now+dt.timedelta(days=1))
+
+    def test_invalid_or_partial_quotes_preserve_previous_candidate_output(self):
+        from build_v4b_candidates import generate
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);p,f=self.history(root);out=root/'candidates.csv';out.write_text('previous list')
+            for quotes in ({},{'234690':self.quote(price=0)},{'234690':self.quote(cumulative_volume=-1)},
+                    {'234690':self.quote(received_at_kst=(self.now-dt.timedelta(minutes=11)).isoformat())},
+                    {'234690':self.quote(received_at_kst=(self.now+dt.timedelta(minutes=1)).isoformat())},
+                    {'234690':self.quote(trading_day='2026-10-28')}):
+                with self.assertRaises(ValueError):generate(p,f,'2026-10-29',out,intraday=quotes,now=self.now)
+                self.assertEqual(out.read_text(),'previous list')
+
+    def test_current_intraday_bar_never_pollutes_opening_history(self):
+        import pandas as pd
+        from build_v4b_candidates import generate,intraday_universe
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);p,f=self.history(root);out=root/'candidates.csv'
+            data=pd.read_csv(p,dtype={'ticker':str});data.loc[len(data)]=['2026-10-29','234690','녹십자웰빙',999999,999999]
+            data.to_csv(p,index=False)
+            self.assertEqual(generate(p,f,'2026-10-29',out),[])
+            self.assertEqual(intraday_universe(p,f,'2026-10-29','2026-10-28'),['234690'])
+            with self.assertRaises(ValueError):intraday_universe(p,f,'2026-10-29','2026-10-27')
+
+    def client(self,body,status=200):
+        from quote_collector_v4a import CandidateQuoteClient
+        class Response:
+            status_code=status
+            def json(self):return body
+        class Session:
+            def __init__(self):self.calls=[]
+            def get(self,url,**kwargs):self.calls.append((url,kwargs));return Response()
+        client=object.__new__(CandidateQuoteClient)
+        client.key='test';client.secret='test';client.token='test';client.session=Session()
+        return client
+
+    def body(self):
+        return {'rt_cd':'0','output1':{'stck_shrn_iscd':'234690','stck_prpr':'12760','acml_vol':'2000'},
+            'output2':[{'stck_bsop_date':'20261029','stck_clpr':'12760','acml_vol':'2000'}]}
+
+    def test_kis_collector_uses_only_fixed_krx_quote_get(self):
+        client=self.client(self.body());row=client.daily_candidate_snapshot('234690',clock=lambda:self.now)
+        self.assertEqual(row,self.quote())
+        url,kwargs=client.session.calls[0]
+        self.assertTrue(url.endswith('/quotations/inquire-daily-itemchartprice'))
+        self.assertEqual(kwargs['params']['FID_COND_MRKT_DIV_CODE'],'J')
+        self.assertEqual(kwargs['params']['FID_INPUT_DATE_1'],'20261029')
+        self.assertFalse(kwargs['allow_redirects'])
+        self.assertNotIn('account',row)
+
+    def test_kis_collector_excludes_unverified_day_and_zero_volume(self):
+        body=self.body();body['output2'][0]['stck_bsop_date']='20261028'
+        self.assertIsNone(self.client(body).daily_candidate_snapshot('234690',clock=lambda:self.now))
+        body=self.body();body['output1']['acml_vol']='0'
+        self.assertIsNone(self.client(body).daily_candidate_snapshot('234690',clock=lambda:self.now))
+        body=self.body();body['output1']['stck_shrn_iscd']='005930'
+        with self.assertRaises(ValueError):self.client(body).daily_candidate_snapshot('234690',clock=lambda:self.now)
+        with self.assertRaises(ValueError):self.client(self.body(),302).daily_candidate_snapshot('234690',clock=lambda:self.now)
+
+    def test_collector_failure_or_market_close_never_returns_partial_batch(self):
+        from quote_collector_v4a import collect_candidate_quotes
+        class Client:
+            calls=[]
+            def daily_candidate_snapshot(inner,code,**kwargs):
+                inner.calls.append(code)
+                if code=='005930':raise ValueError('failed GET')
+                return self.quote(code)
+        client=Client()
+        with self.assertRaises(ValueError):collect_candidate_quotes(['234690','005930'],'2026-10-29',
+            client=client,clock=lambda:self.now,pause=lambda n:None)
+        closed=self.now.replace(hour=15,minute=15)
+        client.calls=[]
+        with self.assertRaises(ValueError):collect_candidate_quotes(['234690'],'2026-10-29',
+            client=client,clock=lambda:closed,pause=lambda n:None)
+        self.assertEqual(client.calls,[])
+        expired=iter([self.now,self.now+dt.timedelta(minutes=11)])
+        with self.assertRaises(ValueError):collect_candidate_quotes(['234690'],'2026-10-29',
+            client=client,clock=lambda:next(expired),pause=lambda n:None)
+        with patch.dict(os.environ,{'LIVE_ENABLED':'true'}):
+            with self.assertRaises(ValueError):collect_candidate_quotes(['234690'],'2026-10-29',
+                client=client,clock=lambda:self.now,pause=lambda n:None)
+        self.assertEqual(client.calls,[])
+
+    def test_collector_reuses_encrypted_cache_without_extra_token_request(self):
+        from quote_collector_v4a import CandidateQuoteClient
+        with patch.dict(os.environ,{'KIS_APP_KEY':'test','KIS_APP_SECRET':'test','LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false'}),\
+                patch('kis_live_v4_5_2._key',return_value=b'0'*32),\
+                patch('kis_live_v4_5_2.acquire_token',return_value=('test',False)) as acquire,\
+                patch('kis_live_v4_5_2._persist') as persist:
+            client=CandidateQuoteClient()
+            self.assertEqual(client.token,'test');acquire.assert_called_once();persist.assert_not_called()
+            client.close()
+
+    def test_transient_quote_get_retries_once_without_order_api(self):
+        client=self.client(self.body());first=client.session.get;calls=[]
+        class Unavailable:
+            status_code=500
+        def get(url,**kwargs):
+            calls.append(url)
+            return Unavailable() if len(calls)==1 else first(url,**kwargs)
+        client.session.get=get
+        pauses=[]
+        self.assertEqual(client.daily_candidate_snapshot('234690',clock=lambda:self.now,pause=pauses.append),self.quote())
+        self.assertEqual(len(calls),2);self.assertEqual(pauses,[.8])
+        self.assertTrue(all('/quotations/' in url for url in calls))
+
+    def test_intraday_source_and_money_guards_remain_separate(self):
+        from build_v4b_candidates import generate
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);p,f=self.history(root);out=root/'candidates.csv'
+            generate(p,f,'2026-10-29',out,intraday={'234690':self.quote()},now=self.now)
+            candidates=scan_candidates(out,self.now)
+            snapshot={'cash':500000,'invested':0,'pending':set(),'positions':{},'managed':{}}
+            quote=lambda t,s:12760;power=lambda t,p:(500000,100)
+            plans,allocation=plan_orders(candidates,snapshot,quote,power,reserve_pct=40,per_stock_pct=30)
+            self.assertTrue(plans);self.assertLessEqual(plans[0].quantity*plans[0].price,90000)
+            snapshot['bought_today']={'234690'}
+            self.assertEqual(plan_orders(candidates,snapshot,quote,power)[0],[])
 
 if __name__=='__main__':unittest.main()
