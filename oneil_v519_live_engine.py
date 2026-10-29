@@ -14,6 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 class TradingBlocked(ValueError): pass
+class SellDisabledBeforeSend(TradingBlocked): pass
 CODE=re.compile(r"^[0-9]{6}$")
 
 def money(n):
@@ -415,6 +416,10 @@ class KisBroker:
     def buy_control(self):
         return read_buy_control()
 
+    def reference_quote(self,ticker):
+        from oneil_v519_live_runner import price_reference
+        return price_reference(self.access,self.key,self.secret,ticker)
+
     def submit(self, plan):
         require_live_release()
         # Price evidence is obtained by the broker reader; no CLI attestation.
@@ -430,6 +435,8 @@ class KisBroker:
     def _send_verified(self, plan):
         """Actual wire mapping; private and release-locked even when called directly."""
         require_live_release()
+        if plan.side=='SELL' and not sell_policy(self.buy_control())['enabled']:
+            raise SellDisabledBeforeSend('SELL_CONTROL_OFF_OR_UNAVAILABLE')
         ev=self.quote_evidence.get((plan.ticker,plan.side))
         if (not self.execution or not ev or ev['price']!=plan.price or
                 not 0<=(dt.datetime.now(ev['at'].tzinfo)-ev['at']).total_seconds()<=3 or
@@ -559,6 +566,14 @@ def same_risk(left,right):
     return right['connected'] and all(left[k]==right[k] for k in ('revision','reserve_pct','per_stock_pct'))
 
 
+def sell_policy(control):
+    value=control.get('sell') if isinstance(control,dict) else None
+    if (not isinstance(value,dict) or value.get('connected') is not True or type(value.get('enabled')) is not bool
+            or type(value.get('revision')) is not int or not 0<=value['revision']<2**53-1):
+        return {'enabled':False,'connected':False,'revision':None,'reason':'SELL_CONTROL_UNAVAILABLE'}
+    return {**value,'reason':'OWNER_SETTING'}
+
+
 def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                      stop_loss_pct=5, take_profit_pct=10, clock=None):
     """Sequential candidate buys under one account lock and conservative cash caps.
@@ -601,14 +616,30 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
             raise TradingBlocked('ACCOUNT_RELEASE_NOT_ACTIVATED')
         control=broker.buy_control() if callable(getattr(broker,'buy_control',None)) else {'enabled':False,'connected':False,'revision':None}
         risk=risk_policy(control)
+        sell=sell_policy(control)
         if not risk['connected']:control={**control,'enabled':False,'reason':'RISK_CONTROL_INVALID'}
         snapshot=account_snapshot()
-        plans, allocation = plan_orders(candidates if control['enabled'] else [],snapshot,broker.quote,broker.power,
+        # OFF still observes exit signals; these reference prices cannot submit.
+        def planning_quote(ticker,side):
+            if side=='SELL' and not sell['enabled'] and isinstance(broker,KisBroker):
+                return broker.reference_quote(ticker)
+            return broker.quote(ticker,side)
+        plans, allocation = plan_orders(candidates if control['enabled'] else [],snapshot,planning_quote,broker.power,
             stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,max_buys=1 if execute else None,
             reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
-        ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control,'risk_control':risk}
+        ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control,'risk_control':risk,'sell_control':sell}
         result['planned_buys']=sum(p.side=='BUY' for p in plans)
         result['planned_sells']=sum(p.side=='SELL' for p in plans)
+        def alert_only(exit_plans,latest):
+            exits=[p for p in exit_plans if p.side=='SELL']
+            ledger.record_sell_alerts(exits,now.date())
+            ledger.dashboard_state['sell_control']=latest
+            ledger.dashboard_state['plans']=[]
+            result.update(status='SELL_ALERT_ONLY' if latest['connected'] else 'SELL_CONTROL_UNAVAILABLE',
+                sell_alert_count=len(exits),planned_buys=0,planned_sells=0)
+            return result
+        if result['planned_sells'] and not sell['enabled']:
+            return alert_only(plans,sell)  # Preserve exit priority; no buys finance or replace this exit.
         if not execute:
             return result
         initial_remaining=allocation['remaining'];initial_stock_cap=allocation['per_stock']
@@ -625,6 +656,10 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     result['batch_stop_reason']='NO_MORE_ELIGIBLE_CANDIDATES_OR_CASH'
                     return result
                 plan=plans[0]
+                if plan.side=='SELL':
+                    latest_sell=sell_policy(broker.buy_control())
+                    ledger.dashboard_state['sell_control']=latest_sell
+                    if not latest_sell['enabled']:return alert_only(plans,latest_sell)
                 if plan.ticker in attempted:raise TradingBlocked('BATCH_DUPLICATE_CANDIDATE')
                 attempted.add(plan.ticker)
                 fresh=plan.price;quantity=plan.quantity;fresh_reason=plan.reason
@@ -669,10 +704,23 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     ident=ledger.reserve_plan(plan,now.date())  # commit BEFORE POST
                     result['order_attempts']+=1
                     try:
+                        cancelled=False
                         with ledger.send_guard():
                             order_time()  # stop a batch that crosses the session boundary
-                            uncertain=True
-                            response=broker.submit(plan)
+                            # Real KIS does its final read inside the wire adapter;
+                            # fixtures/other adapters are checked at the same boundary.
+                            try:
+                                if plan.side=='SELL' and not isinstance(broker,KisBroker) and not sell_policy(broker.buy_control())['enabled']:
+                                    raise SellDisabledBeforeSend('SELL_CONTROL_OFF_OR_UNAVAILABLE')
+                                uncertain=True
+                                response=broker.submit(plan)
+                            except SellDisabledBeforeSend:
+                                uncertain=False
+                                ledger.void_unsent_sell(ident)
+                                cancelled=True
+                        if cancelled:
+                            result['pre_send_cancelled']=True
+                            return alert_only([plan],sell_policy(broker.buy_control()))
                         out=response.get('output') if isinstance(response,dict) else None
                         order_id=out.get('ODNO') if isinstance(out,dict) else None
                         if str(response.get('rt_cd'))!='0' or not isinstance(order_id,str) or not re.fullmatch('[0-9]{1,20}',order_id):
@@ -731,6 +779,8 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
                 # A new exit appearing mid-batch stops buys; it cannot finance them.
                 if plans and plans[0].side=='SELL':
+                    latest_sell=sell_policy(control)
+                    if not latest_sell['enabled']:return alert_only(plans,latest_sell)
                     result['batch_stop_reason']='EXIT_DETECTED'
                     return result
                 result['planned_buys']+=sum(p.side=='BUY' for p in plans)
@@ -823,7 +873,9 @@ def read_buy_control(*, opener=None, now=None, access_token=None):
             raise TradingBlocked('CONTROL_RESPONSE_INVALID')
         risk=risk_policy({'risk':{**body.get('risk',{}),'connected':True}})
         if not risk['connected']:raise TradingBlocked('RISK_CONTROL_INVALID')
-        return {'enabled':body['enabled'],'connected':True,'revision':body['revision'],'risk':risk,
+        raw_sell=body.get('sell')
+        sell=sell_policy({'sell':{**raw_sell,'connected':True} if isinstance(raw_sell,dict) else None})
+        return {'enabled':body['enabled'],'connected':True,'revision':body['revision'],'risk':risk,'sell':sell,
                 'updated_at':body.get('updated_at'),'reason':'OWNER_SETTING'}
     except Exception:
         return {**denied,'reason':'CONTROL_READ_FAILED'}
@@ -849,7 +901,7 @@ def dashboard_snapshot(ledger,result):
             'return_pct':(value-cost)/cost*100 if cost else None,
             'strategy_quantity':snap['managed'].get(ticker,0)})
     orders=ledger.rows("""SELECT ticker,side,venue,quantity,filled_quantity,status,
-        broker_order_id,trading_day,limit_price,created_at,updated_at
+        broker_order_id,trading_day,limit_price,verified_not_sent,created_at,updated_at
         FROM v519_order_intents WHERE account_fingerprint=%s ORDER BY created_at DESC LIMIT 100""",
         (ledger.fingerprint,))
     runs=ledger.rows("""SELECT started_at,finished_at,result FROM v519_runs
@@ -871,6 +923,7 @@ def dashboard_snapshot(ledger,result):
             'restart_failure_drill_verified':False},
         'monitoring_open':monitoring_open(state['at']) and result.get('status')!='DAILY_CLOSED',
         'buy_control':state['buy_control'],'risk_control':state.get('risk_control'),
+        'sell_control':state.get('sell_control'),'sell_alerts':ledger.sell_alerts(),
         'monitor_hours':'09:00–20:00 KST','poll_minutes':20,'venue':'KRX',
         'result':result,'allocation':state['allocation'],
         'account':{'cash':snap['cash'],'equity':snap.get('equity'),

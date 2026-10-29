@@ -120,6 +120,15 @@ CREATE TABLE IF NOT EXISTS v519_live_activation (
  activated_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE v519_live_activation ENABLE ROW LEVEL SECURITY;
+ALTER TABLE v519_order_intents ADD COLUMN IF NOT EXISTS verified_not_sent boolean NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS v519_sell_alerts (
+ alert_id text PRIMARY KEY, account_fingerprint text NOT NULL,
+ trading_day date NOT NULL, ticker text NOT NULL, reason text NOT NULL,
+ quantity integer NOT NULL CHECK (quantity>0), reference_price bigint NOT NULL CHECK(reference_price>0),
+ created_at timestamptz NOT NULL DEFAULT now(), last_observed_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(account_fingerprint,trading_day,ticker,reason)
+);
+ALTER TABLE v519_sell_alerts ENABLE ROW LEVEL SECURITY;
 '''
 
 
@@ -227,6 +236,10 @@ class PgRuntimeLedger:
             rows=self.rows('''SELECT coalesce(sum(filled_quantity),0) AS filled FROM v519_order_intents
                 WHERE account_fingerprint=%s AND ticker=%s AND side='SELL' ''',(self.fingerprint,plan.ticker))
             progress='|'+str(rows[0]['filled'])
+            rows=self.rows('''SELECT count(*) AS voided FROM v519_order_intents
+                WHERE account_fingerprint=%s AND ticker=%s AND side='SELL' AND trading_day=%s AND verified_not_sent''',
+                (self.fingerprint,plan.ticker,day))
+            if rows[0]['voided']:progress+='|not-sent:'+str(rows[0]['voided'])
         ident=hashlib.sha256(f'v519|{self.fingerprint}|{day}|{plan.ticker}|{plan.side}{progress}'.encode()).hexdigest()
         # Own transaction commits the UNKNOWN record before any broker send.
         with self.conn.transaction():
@@ -245,6 +258,29 @@ class PgRuntimeLedger:
                 if not cur.fetchone():
                     raise LedgerBlocked('DUPLICATE_INTENT_NO_RETRY')
         return ident
+
+    def void_unsent_sell(self,ident):
+        # Only the synchronous permission check BEFORE the broker POST may call
+        # this. Unknown network outcomes never use this path or gain a retry.
+        rows=self.rows('''UPDATE v519_order_intents SET status='REJECTED',verified_not_sent=true,updated_at=now()
+            WHERE intent_id=%s AND account_fingerprint=%s AND side='SELL'
+            AND status='SUBMISSION_UNKNOWN' AND broker_order_id IS NULL AND filled_quantity=0
+            RETURNING intent_id''',(ident,self.fingerprint))
+        if len(rows)!=1:raise LedgerBlocked('UNSENT_SELL_STATE_CONFLICT')
+
+    def record_sell_alerts(self,plans,day):
+        import hashlib
+        for plan in plans:
+            if plan.side!='SELL':continue
+            ident=hashlib.sha256(f'sell-alert-v1|{self.fingerprint}|{day}|{plan.ticker}|{plan.reason}'.encode()).hexdigest()
+            self.conn.execute('''INSERT INTO v519_sell_alerts(alert_id,account_fingerprint,trading_day,ticker,reason,quantity,reference_price)
+                VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(account_fingerprint,trading_day,ticker,reason)
+                DO UPDATE SET quantity=excluded.quantity,reference_price=excluded.reference_price,last_observed_at=now()''',
+                (ident,self.fingerprint,day,plan.ticker,plan.reason,plan.quantity,plan.price))
+
+    def sell_alerts(self):
+        return self.rows('''SELECT alert_id,trading_day,ticker,reason,quantity,reference_price,created_at,last_observed_at
+            FROM v519_sell_alerts WHERE account_fingerprint=%s ORDER BY created_at DESC LIMIT 100''',(self.fingerprint,))
 
     def ack(self, ident, order_id):
         if not isinstance(order_id,str) or not re.fullmatch('[0-9]{1,20}',order_id):
