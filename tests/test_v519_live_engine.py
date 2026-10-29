@@ -83,7 +83,7 @@ class BrokerFixture:
         self.calls=[]; self.rows={}; self.failure=None
         self.cash=5_000_000; self.invested=0; self.positions={}; self.pending=set()
         self.prices={}; self.amount=5_000_000; self.broker_qty=10000
-    def buy_control(self): return {'enabled':True,'connected':True,'revision':1}
+    def buy_control(self): return {'enabled':True,'connected':True,'revision':1,'risk':{'connected':True,'reserve_pct':40,'per_stock_pct':30,'revision':0,'updated_at':None}}
     def snapshot(self):
         return dict(cash=self.cash,invested=self.invested,positions=self.positions,pending=self.pending)
     def quote(self,ticker,side): return self.prices.get((ticker,side),10000)
@@ -95,6 +95,33 @@ class BrokerFixture:
     def history(self,day): return self.rows.get(day,[])
 
 class RuntimeRiskTests(unittest.TestCase):
+    def test_owner_risk_percentages_set_cash_and_stock_limits(self):
+        from v519_cash_policy import limits
+        for cash in (499,500_000,5_000_000):
+            for reserve in (0,20,40,75,100):
+                for stock in (0,10,30,100):
+                    b=limits(cash,0,cash,reserve_pct=reserve,per_stock_pct=stock)
+                    self.assertEqual(b['trading'],cash*(100-reserve)//100)
+                    self.assertEqual(b['per_stock'],b['trading']*stock//100)
+                    self.assertEqual(b['reserve']+b['trading'],cash)
+                    self.assertEqual((b['reserve_pct'],b['per_stock_pct']),(reserve,stock))
+        for bad in (-1,101,True,'40',40.5,None):
+            with self.assertRaises(ValueError):limits(500,0,500,reserve_pct=bad)
+            with self.assertRaises(ValueError):limits(500,0,500,per_stock_pct=bad)
+
+    def test_risk_response_missing_or_invalid_never_enables_buy(self):
+        import io
+        now=dt.datetime(2026,10,29,0,0,tzinfo=dt.timezone.utc)
+        body={'schema_version':1,'enabled':True,'revision':1,'observed_at':now.isoformat()}
+        def read(risk):
+            return read_buy_control(access_token='test',now=now,
+                opener=lambda *a,**k:io.StringIO(json.dumps({**body,'risk':risk})))
+        valid={'reserve_pct':60,'per_stock_pct':20,'revision':3}
+        result=read(valid);self.assertTrue(result['enabled'])
+        self.assertEqual(result['risk']['reserve_pct'],60)
+        for invalid in (None,{},[],{**valid,'reserve_pct':True},{**valid,'per_stock_pct':101},{**valid,'revision':-1}):
+            self.assertFalse(read(invalid)['enabled'])
+
     def test_failure_diagnostics_hide_http_secrets(self):
         from urllib.error import HTTPError
         exc=HTTPError('https://example.test/?token=SECRET',403,'SECRET',{'key':'SECRET'},None)
@@ -243,7 +270,7 @@ class RuntimeRiskTests(unittest.TestCase):
     def test_buy_control_requires_valid_fresh_response(self):
         import io
         now=dt.datetime(2026,10,29,0,0,tzinfo=dt.timezone.utc)
-        valid={'schema_version':1,'enabled':True,'revision':2,'observed_at':now.isoformat()}
+        valid={'schema_version':1,'enabled':True,'revision':2,'observed_at':now.isoformat(),'risk':{'reserve_pct':40,'per_stock_pct':30,'revision':0}}
         read=lambda body:read_buy_control(access_token='test',now=now,opener=lambda *a,**k:io.StringIO(json.dumps(body)))
         self.assertTrue(read(valid)['enabled'])
         self.assertFalse(read({**valid,'enabled':'true'})['enabled'])
@@ -454,6 +481,62 @@ class PostgresRuntimeTests(unittest.TestCase):
     def history_row(self,day,fill=10,remaining=0,side='02',**extra):
         return dict(odno='000123',ord_dt=day,pdno='144960',sll_buy_dvsn_cd=side,
                     ord_qty='10',tot_ccld_qty=str(fill),rmn_qty=str(remaining),cncl_yn='N',**extra)
+    def with_risk(self,reserve,stock,revision=1):
+        control=self.broker.buy_control()
+        risk={'connected':True,'reserve_pct':reserve,'per_stock_pct':stock,'revision':revision}
+        self.broker.buy_control=lambda:{**control,'risk':risk}
+        return control,risk
+
+    def test_saved_owner_risk_controls_actual_quantity_and_snapshot(self):
+        self.with_risk(60,10)
+        result=self.cycle()
+        self.assertEqual(self.broker.calls[0].quantity,19)
+        data=dashboard_snapshot(self.ledger,result)
+        self.assertEqual(data['allocation']['reserve'],3_000_000)
+        self.assertEqual(data['allocation']['trading'],2_000_000)
+        self.assertEqual(data['allocation']['per_stock'],200_000)
+        self.assertEqual(data['risk_control']['revision'],1)
+        self.assertEqual(data['risk_control']['reserve_pct'],60)
+
+    def test_risk_change_just_before_buy_creates_no_intent(self):
+        control=self.broker.buy_control();changed={**control,'risk':{**control['risk'],'revision':1,'reserve_pct':80}}
+        states=iter([control,changed]);self.broker.buy_control=lambda:next(states)
+        result=self.cycle()
+        self.assertEqual(result['status'],'RISK_SETTINGS_CHANGED')
+        self.assertEqual(self.broker.calls,[]);self.assertEqual(self.ledger.pending(),[])
+
+    def test_risk_change_between_batch_buys_stops_remaining_candidates(self):
+        self.two_candidates();self.fill_each_submission()
+        control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'risk':{**control['risk'],'revision':int(bool(self.broker.calls))}}
+        result=self.cycle()
+        self.assertEqual(result['batch_stop_reason'],'RISK_SETTINGS_CHANGED')
+        self.assertEqual(result['orders_sent'],1)
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_zero_buy_allocation_sends_no_order(self):
+        for reserve,stock in ((100,30),(40,0)):
+            self.with_risk(reserve,stock)
+            self.assertEqual(self.cycle()['orders_sent'],0)
+        self.assertEqual(self.broker.calls,[])
+
+    def test_risk_missing_blocks_buys_but_does_not_disable_exit(self):
+        ident=self.seed();self.ledger.ack(ident,'000122')
+        self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
+        self.broker.positions={'144960':{'quantity':10,'sellable':10,'average':'12000'}}
+        self.broker.buy_control=lambda:{'enabled':True,'connected':True,'revision':1}
+        result=self.cycle()
+        self.assertEqual(result['planned_buys'],0)
+        self.assertEqual([p.side for p in self.broker.calls],['SELL'])
+
+    def test_reducing_risk_budget_never_forces_sale(self):
+        ident=self.seed();self.ledger.ack(ident,'000122')
+        self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
+        self.broker.positions={'144960':{'quantity':10,'sellable':10,'average':'10000'}}
+        self.with_risk(100,0)
+        self.assertEqual(self.cycle()['orders_sent'],0)
+        self.assertEqual(self.broker.calls,[])
+
     def fill_each_submission(self, *, fill=None, balance=True, debit=True):
         fixture=self.broker
         original=fixture.submit
@@ -552,7 +635,8 @@ class PostgresRuntimeTests(unittest.TestCase):
 
     def test_batch_buy_off_after_first_fill_stops_next_candidate(self):
         self.two_candidates();self.fill_each_submission()
-        self.broker.buy_control=lambda:{'enabled':not bool(self.broker.calls),'connected':True,'revision':1}
+        control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'enabled':not bool(self.broker.calls)}
         result=self.cycle()
         self.assertEqual(result['batch_stop_reason'],'BUY_SWITCH_OFF')
         self.assertEqual(result['orders_sent'],1)
@@ -744,7 +828,8 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertEqual(self.broker.calls[0].side,'SELL')
 
     def test_buy_off_rechecked_before_reservation(self):
-        states=iter([{'enabled':True,'connected':True,'revision':1},{'enabled':False,'connected':True,'revision':2}])
+        control=self.broker.buy_control()
+        states=iter([{**control,'enabled':True,'revision':1},{**control,'enabled':False,'revision':2}])
         self.broker.buy_control=lambda:next(states)
         r=self.cycle()
         self.assertEqual(r['status'],'BUY_SWITCH_OFF')
