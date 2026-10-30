@@ -176,9 +176,10 @@ class CandidateQuoteClient(QuoteClient):
         return row
 
 
-def collect_candidate_quotes(tickers,target,*,client=None,clock=now_kst,pause=time.sleep):
+def collect_candidate_quotes(tickers,target,*,client=None,clock=now_kst,pause=time.sleep,workers=1):
     if any(os.getenv(n,'false').lower()!='false' for n in ('LIVE_ENABLED','KIS_ALLOW_ORDER')):
         raise ValueError('CANDIDATE_COLLECTOR_REQUIRES_READ_ONLY')
+    if type(workers) is not int or not 1<=workers<=8:raise ValueError('CANDIDATE_WORKERS_INVALID')
     tickers=list(tickers);started=clock()
     if (not tickers or len(tickers)!=len(set(tickers)) or
             any(not re.fullmatch('[0-9]{6}',c) for c in tickers)):
@@ -186,20 +187,54 @@ def collect_candidate_quotes(tickers,target,*,client=None,clock=now_kst,pause=ti
     if not candidate_session(started) or started.date().isoformat()!=target:
         raise ValueError('INTRADAY_SESSION_CLOSED')
     owned=client is None;client=client or CandidateQuoteClient();result={}
-    try:
-        for ticker in tickers:
-            at=clock()
-            if not candidate_session(at) or at.date()!=started.date() or (at-started).total_seconds()>600:
-                raise ValueError('INTRADAY_COLLECTION_EXPIRED')
-            row=client.daily_candidate_snapshot(ticker,clock=clock,pause=pause)
-            if row is not None:validate_candidate_quote(row,ticker,clock())
-            result[ticker]=row
-            pause(.2)
-        finished=clock()
-        if not candidate_session(finished) or (finished-started).total_seconds()>600:
+    sessions=[]
+    def check_clock():
+        at=clock()
+        if not candidate_session(at) or at.date()!=started.date() or (at-started).total_seconds()>600:
             raise ValueError('INTRADAY_COLLECTION_EXPIRED')
-        return result
+    try:
+        if workers==1:
+            for ticker in tickers:
+                check_clock()
+                row=client.daily_candidate_snapshot(ticker,clock=clock,pause=pause)
+                if row is not None:validate_candidate_quote(row,ticker,clock())
+                result[ticker]=row
+                pause(.2)
+        else:
+            import copy,threading
+            from concurrent.futures import ThreadPoolExecutor,as_completed
+            local=threading.local();gate=threading.Lock();last=[None]
+            def query(ticker):
+                check_clock()
+                # One globally paced start per 200ms; concurrency hides network
+                # latency without a burst of one request per worker.
+                with gate:
+                    current=time.monotonic()
+                    if last[0] is not None:
+                        delay=max(0,.2-(current-last[0]))
+                        if delay:pause(delay)
+                    last[0]=time.monotonic()
+                check_clock()
+                if not hasattr(local,'client'):
+                    local.client=copy.copy(client)
+                    if isinstance(client,CandidateQuoteClient):
+                        local.client.session=requests.Session()
+                        sessions.append(local.client.session)
+                row=local.client.daily_candidate_snapshot(ticker,clock=clock,pause=pause)
+                if row is not None:validate_candidate_quote(row,ticker,clock())
+                return row
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                pending={pool.submit(query,ticker):ticker for ticker in tickers}
+                try:
+                    for future in as_completed(pending):
+                        result[pending[future]]=future.result()
+                except BaseException:
+                    for future in pending:future.cancel()
+                    raise
+        check_clock()
+        return {ticker:result[ticker] for ticker in tickers}
     finally:
+        for session in sessions:session.close()
         if owned:client.close()
 
 

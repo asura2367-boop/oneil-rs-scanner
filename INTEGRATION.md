@@ -60,3 +60,12 @@ KIS 자격, `SUPABASE_DB_URL`, `DASHBOARD_SITE_ACCESS_TOKEN`은 GitHub Secrets�
 기존 예약 워크플로의 auto 분기만 이 요청을 읽는다. 정확히 일치하는 승인 버전만 해당 실행의 환경에 적용하며 저장소 V519_APPROVED_RELEASE 변수는 변경하지 않는다. 새 계좌 활성화가 필요하면 기존 조회·체결 복구를 먼저 확인하고 활성화만 기록한다(이 실행은 주문하지 않음). 이후 거래 시간의 예약 실행이 매수·매도 스위치와 자금 한도에 따라 판단한다. 새 승인 경로는 비상정지를 해제하지 않으며 미체결·접수 불명·승인 변경은 차단한다. 기존 수동 소유자 activate 절차는 유지한다.
 
 승인 요청 저장과 엔진의 활성화 완료는 별도 상태다. GitHub 예약은 지연될 수 있고, 거래 시간 이후 승인은 다음 거래 시간에 반영될 수 있다. 코드 수정은 계속 새 버전 승인이 필요하지만 긴 확인값·수동 워크플로 조작은 필요 없다. 공개 release_review.json에는 코드 SHA·테스트 실행 ID·소스 파일 blob SHA만 포함한다.
+# RS coverage refresh
+
+RS compares real, aligned 253-session histories ending on the same confirmed KRX session. Registered, uncollected, stale, misaligned and invalid histories are reported separately. The weighted 63/126/189/252-session formula and entry thresholds are preserved. Partial coverage is never labelled the entire market.
+
+Collectors refresh every stale existing symbol within a 30-minute read budget, alongside up to 100 new histories per run. Incremental bars overlap old data; adjusted close changes or absent overlap require full-window refetch. Live daily candles before 16:00 are excluded using the KRX calendar. Short IPO histories are stored without padding. Unfinished work resumes oldest-first. Status distinguishes latest-session coverage from ever-collected counts.
+
+V9/V10 share one encrypted token cache with order flags false. Current-session high-RS histories get flow refresh first (up to 250 symbols). Intraday collection uses at most eight independent HTTP sessions with globally spaced 200ms starts; token acquisition happens once. The existing complete-universe, same-session and 10-minute freshness gates remain. Any failure preserves the previous candidate output. Cumulative volume still uses confirmed 20-day daily volume as its benchmark, without projected closing volume.
+
+Collector/workflow/dependency files are covered by the owner-reviewed source fingerprint. Approval, activation, switches, risk ratios and halt state are unchanged. Full coverage and actual KIS latency require a successful real read-only collection; fixture tests do not prove this.
