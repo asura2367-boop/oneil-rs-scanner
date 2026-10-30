@@ -117,6 +117,21 @@ class RuntimeRiskTests(unittest.TestCase):
             with self.assertRaises(SellDisabledBeforeSend):broker._send_verified(OrderPlan('144960','SELL',1,10000,'exit','STOP_LOSS'))
             wire.assert_not_called()
 
+    def test_take_profit_wire_ignores_stop_lock_but_requires_release_and_book(self):
+        broker=object.__new__(KisBroker);broker.execution=True;broker.account='12345678';broker.product='01'
+        broker.buy_control=lambda:{'sell':{'enabled':False,'connected':True,'revision':1}}
+        now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
+        broker.quote_evidence={('144960','SELL'):{'price':10000,'size':1,'at':now}}
+        calls=[];broker.request=lambda *a,**k:(calls.append((a,k)) or ({},{'rt_cd':'0','output':{'ODNO':'000123'}}))
+        plan=OrderPlan('144960','SELL',1,10000,'exit','TAKE_PROFIT')
+        flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES'}
+        with patch('oneil_v519_live_engine.RELEASE_LIVE_APPROVED',True),patch.dict(os.environ,flags):
+            self.assertEqual(broker._send_verified(plan)['output']['ODNO'],'000123')
+            self.assertEqual(len(calls),1)
+            broker.quote_evidence={}
+            with self.assertRaisesRegex(TradingBlocked,'EXECUTABLE_BOOK_REQUIRED'):broker._send_verified(plan)
+            self.assertEqual(len(calls),1)
+
     def test_owner_risk_percentages_set_cash_and_stock_limits(self):
         from v519_cash_policy import limits
         for cash in (499,500_000,5_000_000):
@@ -913,7 +928,7 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.broker.positions={'144960':{'quantity':10,'sellable':6,'average':average,'cost':int(average)*10,'valuation':100000,'name':'테스트 종목'}}
         self.candidates=[]
 
-    def test_sell_off_records_deduplicated_stop_and_profit_alerts_without_intents(self):
+    def test_stop_lock_records_deduplicated_stop_alerts_without_intents(self):
         self.prepare_exit()
         control=self.broker.buy_control();self.broker.buy_control=lambda:{**control,'sell':{'enabled':False,'connected':True,'revision':1}}
         for price in (10000,9000):
@@ -922,8 +937,6 @@ class PostgresRuntimeTests(unittest.TestCase):
             self.assertEqual(result['orders_sent'],0);self.assertEqual(self.ledger.pending(),[])
         alerts=self.ledger.sell_alerts();self.assertEqual(len(alerts),1)
         self.assertEqual((alerts[0]['reason'],alerts[0]['quantity'],alerts[0]['reference_price']),('STOP_LOSS',6,9000))
-        self.broker.prices[('144960','SELL')]=14000
-        self.cycle();self.assertEqual({a['reason'] for a in self.ledger.sell_alerts()},{'STOP_LOSS','TAKE_PROFIT'})
         self.assertEqual(self.broker.calls,[])
         self.assertEqual(self.conn.execute('SELECT count(*) FROM v519_order_intents').fetchone()[0],1)
         self.assertEqual(dashboard_snapshot(self.ledger,result)['sell_control']['enabled'],False)
@@ -948,13 +961,40 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertTrue(all(x<=900000 for x in charges));self.assertLessEqual(sum(charges),2880000)
         self.assertEqual(dashboard_snapshot(self.ledger,result)['sell_control']['enabled'],False)
 
-    def test_sell_off_profit_alert_does_not_block_affordable_buy(self):
+    def test_stop_lock_keeps_take_profit_automatic_and_exit_priority(self):
         self.sell_off_with_new_candidates();self.broker.prices[('144960','SELL')]=14000
         self.candidates=self.candidates[:1]
         result=self.cycle()
         self.assertEqual(result['orders_sent'],1)
-        self.assertEqual(self.broker.calls[0].side,'BUY')
-        self.assertEqual(self.ledger.sell_alerts()[0]['reason'],'TAKE_PROFIT')
+        self.assertEqual((self.broker.calls[0].side,self.broker.calls[0].reason),('SELL','TAKE_PROFIT'))
+        self.assertEqual(self.ledger.sell_alerts(),[])
+
+    def test_stop_lock_keeps_profit_sell_when_buy_is_off(self):
+        self.sell_off_with_new_candidates();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'enabled':False}
+        self.broker.prices[('144960','SELL')]=14000
+        result=self.cycle();self.assertEqual(result['orders_sent'],1)
+        self.assertEqual(self.broker.calls[0].reason,'TAKE_PROFIT')
+
+    def test_stop_lock_records_stop_and_sells_other_profit_in_same_cycle(self):
+        self.prepare_exit();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'sell':{'enabled':False,'connected':True,'revision':1}}
+        plan=OrderPlan('100001','BUY',2,10000,'rs','TEST')
+        ident=self.ledger.reserve_plan(plan,self.now.date());self.ledger.ack(ident,'000121')
+        self.ledger.reconcile(self.ledger.pending()[0],'FILLED',2)
+        self.broker.positions['100001']={'quantity':2,'sellable':2,'average':'8000'}
+        result=self.cycle();self.assertEqual(result['orders_sent'],1)
+        self.assertEqual((self.broker.calls[0].ticker,self.broker.calls[0].reason),('100001','TAKE_PROFIT'))
+        self.assertEqual([(a['ticker'],a['reason']) for a in self.ledger.sell_alerts()],[('144960','STOP_LOSS')])
+
+    def test_take_profit_still_blocks_on_unknown_control_and_halt(self):
+        self.prepare_exit(average='8000');control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'sell':None}
+        self.assertEqual(self.cycle()['status'],'SELL_CONTROL_UNAVAILABLE');self.assertEqual(self.broker.calls,[])
+        self.broker.buy_control=lambda:{**control,'sell':{'enabled':False,'connected':True,'revision':1}}
+        self.ledger.halt()
+        with self.assertRaises(TradingBlocked):self.cycle()
+        self.assertEqual(self.broker.calls,[])
 
     def test_sell_off_alert_does_not_bypass_buy_off_or_broker_power(self):
         self.sell_off_with_new_candidates();control=self.broker.buy_control()
