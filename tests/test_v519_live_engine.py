@@ -884,6 +884,76 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT count(*) FROM v519_order_intents').fetchone()[0],1)
         self.assertEqual(dashboard_snapshot(self.ledger,result)['sell_control']['enabled'],False)
 
+    def sell_off_with_new_candidates(self):
+        self.prepare_exit();self.two_candidates()
+        control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'sell':{'enabled':False,'connected':True,'revision':1}}
+        self.broker.invested=120000
+
+    def test_sell_off_alerts_allow_independent_batch_buys_with_cash_caps(self):
+        self.sell_off_with_new_candidates();self.fill_each_submission()
+        result=self.cycle()
+        self.assertEqual([p.ticker for p in self.broker.calls],['100001','100002'])
+        self.assertTrue(all(p.side=='BUY' for p in self.broker.calls))
+        self.assertEqual(result['orders_sent'],2);self.assertEqual(result['sell_alert_count'],1)
+        self.assertEqual(result['status'],'ACKNOWLEDGED')
+        self.assertEqual(len(self.ledger.sell_alerts()),1)
+        self.assertEqual(self.ledger.managed()['144960'],10)
+        self.assertEqual(self.ledger.pending(),[])
+        charges=[(p.quantity*p.price*1005+999)//1000 for p in self.broker.calls]
+        self.assertTrue(all(x<=900000 for x in charges));self.assertLessEqual(sum(charges),2880000)
+        self.assertEqual(dashboard_snapshot(self.ledger,result)['sell_control']['enabled'],False)
+
+    def test_sell_off_profit_alert_does_not_block_affordable_buy(self):
+        self.sell_off_with_new_candidates();self.broker.prices[('144960','SELL')]=14000
+        self.candidates=self.candidates[:1]
+        result=self.cycle()
+        self.assertEqual(result['orders_sent'],1)
+        self.assertEqual(self.broker.calls[0].side,'BUY')
+        self.assertEqual(self.ledger.sell_alerts()[0]['reason'],'TAKE_PROFIT')
+
+    def test_sell_off_alert_does_not_bypass_buy_off_or_broker_power(self):
+        self.sell_off_with_new_candidates();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'enabled':False}
+        self.assertEqual(self.cycle()['orders_sent'],0)
+        self.broker.buy_control=lambda:control
+        self.broker.power=lambda *args:(0,0)
+        self.assertEqual(self.cycle()['orders_sent'],0)
+        self.assertEqual(self.broker.calls,[])
+
+    def test_sell_off_retains_held_exposure_and_saved_reserve_limit(self):
+        self.sell_off_with_new_candidates();self.with_risk(80,10)
+        self.broker.cash=100000;self.broker.invested=120000
+        result=self.cycle()
+        self.assertEqual(result['orders_sent'],0);self.assertEqual(self.broker.calls,[])
+        self.assertEqual(self.ledger.dashboard_state['allocation']['remaining'],0)
+        self.assertEqual(len(self.ledger.sell_alerts()),1)
+
+    def test_sell_off_pending_buy_still_blocks_remaining_candidates(self):
+        self.sell_off_with_new_candidates()
+        first=self.cycle();self.assertEqual(first['orders_sent'],1)
+        self.assertEqual(first['batch_stop_reason'],'PENDING_FILL_CONFIRMATION')
+        self.assertEqual(self.cycle()['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_sell_off_observe_plans_buys_but_never_submits(self):
+        self.sell_off_with_new_candidates()
+        result=self.cycle(False)
+        self.assertEqual(result['planned_buys'],2);self.assertEqual(result['planned_sells'],0)
+        self.assertEqual(self.broker.calls,[]);self.assertEqual(self.ledger.pending(),[])
+        self.assertEqual(len(self.ledger.sell_alerts()),1)
+
+    def test_sell_unavailable_with_exit_and_candidates_keeps_safety_block(self):
+        self.sell_off_with_new_candidates();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'sell':None}
+        result=self.cycle();self.assertEqual(result['status'],'SELL_CONTROL_UNAVAILABLE')
+        self.assertEqual(self.broker.calls,[])
+
+    def test_sell_on_keeps_exit_priority_over_new_buys(self):
+        self.prepare_exit();self.two_candidates()
+        result=self.cycle();self.assertEqual(result['orders_sent'],1)
+        self.assertEqual([p.side for p in self.broker.calls],['SELL'])
+
     def test_missing_sell_control_blocks_sale_and_preserves_buy_setting(self):
         self.prepare_exit();control=self.broker.buy_control();self.broker.buy_control=lambda:{**control,'sell':None}
         result=self.cycle();self.assertEqual(result['status'],'SELL_CONTROL_UNAVAILABLE')
