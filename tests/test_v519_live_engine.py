@@ -172,7 +172,7 @@ printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE
                 self.assertEqual('--execute' in last[0],expected,(session,calls))
                 self.assertEqual(last[1:3],['true','true'] if expected else ['false','false'])
                 self.assertEqual(last[3],'YES' if expected else '')
-                self.assertIn('--run',last[0]);self.assertEqual(len(calls),2)
+                self.assertIn('--run',last[0]);self.assertEqual(len(calls),3)
 
     def test_failure_diagnostics_hide_http_secrets(self):
         from urllib.error import HTTPError
@@ -478,6 +478,50 @@ printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE
             before=release_fingerprint(root)
             (root/RELEASE_FILES[0]).write_text('changed')
             self.assertNotEqual(before,release_fingerprint(root))
+
+    def owner_review(self):
+        return dict(schema_version=1,operator='asura2367-boop',approved_release=release_fingerprint(),
+                    source_commit='a'*40,review_run_id=123,revision=1,approved_at='2026-10-30T01:00:00+00:00')
+
+    def test_dashboard_review_requires_exact_owner_schema_and_source(self):
+        review=self.owner_review()
+        self.assertEqual(release_review_policy(review),review)
+        for field,value in [('operator','other'),('approved_release','bad\nvalue'),('source_commit','bad'),
+                            ('revision',True),('revision',0),('review_run_id',False),('approved_at','2026-10-30')]:
+            self.assertIsNone(release_review_policy({**review,field:value}),field)
+        flags={'GITHUB_ACTIONS':'true','GITHUB_REF':'refs/heads/main',
+               'GITHUB_REPOSITORY':'asura2367-boop/oneil-rs-scanner','OPERATION':'auto'}
+        with patch.dict(os.environ,flags):
+            self.assertEqual(dashboard_release_env({'release':review}),review)
+            self.assertIsNone(dashboard_release_env({'release':{**review,'approved_release':'b'*64}}))
+            for field,value in [('GITHUB_REF','refs/pull/1/merge'),('OPERATION','observe'),('GITHUB_ACTIONS','false'),('GITHUB_REPOSITORY','other/repo')]:
+                with patch.dict(os.environ,{field:value}):self.assertIsNone(dashboard_release_env({'release':review}))
+
+    def test_public_review_contains_only_source_and_ci_metadata(self):
+        import subprocess
+        sha='a'*40
+        def git(args,**kwargs):
+            if args[1:3]==['show','-s']:return 'Tested code change'
+            if args[-1]=='HEAD':return sha
+            return 'b'*40
+        with patch.dict(os.environ,{'GITHUB_SHA':sha,'GITHUB_RUN_ID':'123'}),patch.object(subprocess,'check_output',side_effect=git):
+            review=public_release_review()
+        self.assertEqual(set(review['source_files']),set(RELEASE_FILES))
+        self.assertEqual(review['expected_release'],release_fingerprint())
+        self.assertEqual(set(review),{'schema_version','expected_release','source_commit','review_run_id','summary','source_files'})
+
+    def test_dashboard_review_env_resolver_writes_only_approved_current_digest(self):
+        import sys,io
+        review=self.owner_review()
+        with tempfile.TemporaryDirectory() as directory:
+            target=pathlib.Path(directory)/'github-env'
+            flags={'GITHUB_ACTIONS':'true','GITHUB_REF':'refs/heads/main','GITHUB_REPOSITORY':'asura2367-boop/oneil-rs-scanner','OPERATION':'auto','GITHUB_ENV':str(target)}
+            with patch.dict(os.environ,flags),patch.object(sys,'argv',['engine','--dashboard-release-env']),patch('oneil_v519_live_engine.read_buy_control',return_value={'release':review}),patch('sys.stdout',new_callable=io.StringIO):
+                runtime_main()
+            self.assertEqual(target.read_text(),'APPROVED_RELEASE='+release_fingerprint()+'\nV519_APPROVED_RELEASE='+release_fingerprint()+'\nV519_DASHBOARD_REVIEW_REVISION=1\n')
+            target.unlink()
+            with patch.dict(os.environ,flags),patch.object(sys,'argv',['engine','--dashboard-release-env']),patch('oneil_v519_live_engine.read_buy_control',return_value={'release':None}),patch('sys.stdout',new_callable=io.StringIO):runtime_main()
+            self.assertFalse(target.exists())
 
     def test_rs_priority_and_bounded_execution_plan(self):
         b=BrokerFixture();snap=b.snapshot();snap['managed']={}
@@ -1030,6 +1074,55 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.ledger.activate_release('a'*64,'fixture')
         with self.assertRaisesRegex(TradingBlocked,'ACCOUNT_RELEASE_NOT_ACTIVATED'):self.cycle()
         self.assertEqual(self.broker.calls,[])
+
+    def dashboard_owner_review(self):
+        return dict(schema_version=1,operator='asura2367-boop',approved_release=release_fingerprint(),
+                    source_commit='a'*40,review_run_id=123,revision=1,approved_at='2026-10-30T01:00:00+00:00')
+
+    def test_dashboard_owner_activation_is_readonly_and_preserves_switches(self):
+        review=self.dashboard_owner_review();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'release':review}
+        self.conn.execute('TRUNCATE v519_live_activation')
+        flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES','V519_APPROVED_RELEASE':release_fingerprint(),'GITHUB_REPOSITORY_OWNER':'asura2367-boop'}
+        with patch.dict(os.environ,flags):
+            result=activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,
+                operator='asura2367-boop',acknowledged=True,dashboard_review=review)
+        self.assertEqual(result['status'],'LIVE_ACCOUNT_ACTIVATED')
+        self.assertEqual(result['owner_review_revision'],1)
+        self.assertEqual(result['orders_sent'],0);self.assertEqual(self.broker.calls,[])
+        self.assertTrue(self.ledger.release_authorized(release_fingerprint()))
+        self.assertEqual(self.broker.buy_control()['enabled'],control['enabled'])
+
+    def test_dashboard_owner_approval_cannot_clear_emergency_halt(self):
+        review=self.dashboard_owner_review();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'release':review}
+        self.conn.execute('TRUNCATE v519_live_activation');self.ledger.halt()
+        flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES','V519_APPROVED_RELEASE':release_fingerprint(),'GITHUB_REPOSITORY_OWNER':'asura2367-boop'}
+        with patch.dict(os.environ,flags),self.assertRaisesRegex(Exception,'EMERGENCY_HALT_ACTIVE'):
+            activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,
+                operator='asura2367-boop',acknowledged=True,dashboard_review=review)
+        self.assertTrue(self.ledger.halted());self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+        self.assertEqual(self.broker.calls,[])
+
+    def test_dashboard_review_changed_during_check_cannot_activate(self):
+        review=self.dashboard_owner_review();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'release':{**review,'revision':2}}
+        self.conn.execute('TRUNCATE v519_live_activation')
+        flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES','V519_APPROVED_RELEASE':release_fingerprint(),'GITHUB_REPOSITORY_OWNER':'asura2367-boop'}
+        with patch.dict(os.environ,flags),self.assertRaisesRegex(TradingBlocked,'OWNER_RELEASE_REVIEW_CHANGED'):
+            activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,
+                operator='asura2367-boop',acknowledged=True,dashboard_review=review)
+        self.assertFalse(self.ledger.release_authorized(release_fingerprint()));self.assertEqual(self.broker.calls,[])
+
+    def test_dashboard_review_cannot_activate_unresolved_order(self):
+        review=self.dashboard_owner_review();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'release':review}
+        self.seed();self.conn.execute('TRUNCATE v519_live_activation')
+        flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES','V519_APPROVED_RELEASE':release_fingerprint(),'GITHUB_REPOSITORY_OWNER':'asura2367-boop'}
+        with patch.dict(os.environ,flags),self.assertRaisesRegex(TradingBlocked,'ACTIVATION_REQUIRES_RECONCILED_ORDERS'):
+            activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,
+                operator='asura2367-boop',acknowledged=True,dashboard_review=review)
+        self.assertFalse(self.ledger.release_authorized(release_fingerprint()));self.assertEqual(self.broker.calls,[])
 
     def test_operator_activation_requires_confirmation_and_sends_nothing(self):
         flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES'}

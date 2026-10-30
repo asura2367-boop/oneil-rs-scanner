@@ -195,17 +195,20 @@ class PgRuntimeLedger:
             (self.fingerprint,))
         return len(rows)==1 and rows[0]['release_fingerprint']==release
 
-    def activate_release(self, release, operator):
+    def activate_release(self, release, operator, *, preserve_halt=False):
         if not re.fullmatch('[0-9a-f]{64}',release) or not re.fullmatch('[A-Za-z0-9-]{1,39}',operator):
             raise LedgerBlocked('ACTIVATION_IDENTITY_INVALID')
         with self.conn.transaction():
             rows=self.rows('SELECT halted FROM v519_control WHERE singleton=true FOR UPDATE')
             if len(rows)!=1 or self.pending():raise LedgerBlocked('ACTIVATION_NOT_RECONCILED')
+            if preserve_halt and rows[0]['halted'] is not False:
+                raise LedgerBlocked('EMERGENCY_HALT_ACTIVE')
             self.conn.execute('''INSERT INTO v519_live_activation(account_fingerprint,release_fingerprint,operator_login)
                 VALUES(%s,%s,%s) ON CONFLICT(account_fingerprint) DO UPDATE SET
                 release_fingerprint=excluded.release_fingerprint,operator_login=excluded.operator_login,activated_at=now()''',
                 (self.fingerprint,release,operator))
-            self.conn.execute('UPDATE v519_control SET halted=false,updated_at=now() WHERE singleton=true')
+            if not preserve_halt:
+                self.conn.execute('UPDATE v519_control SET halted=false,updated_at=now() WHERE singleton=true')
 
     def pending(self):
         return self.rows('''SELECT * FROM v519_order_intents WHERE account_fingerprint=%s

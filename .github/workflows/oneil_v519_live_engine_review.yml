@@ -104,7 +104,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Clear prior generated results
-        run: rm -f v5_19_report.json data/live/dashboard.enc.json
+        run: rm -f v5_19_report.json data/live/dashboard.enc.json data/live/release_review.json
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -112,9 +112,14 @@ jobs:
       - name: Deploy idempotent ledger migration on main update
         if: github.event_name == 'push'
         run: python oneil_v519_live_engine.py --migrate
+      - name: Resolve dashboard owner review without changing repository variables
+        if: env.OPERATION == 'auto'
+        run: python oneil_v519_live_engine.py --dashboard-release-env
       - name: Run existing integrated engine
         run: |
           rm -f data/live/dashboard.enc.json
+          mkdir -p data/live
+          python oneil_v519_live_engine.py --release-review > data/live/release_review.json
           python oneil_v519_live_engine.py --release-info
           case "$OPERATION" in
             observe) python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem ;;
@@ -160,6 +165,10 @@ jobs:
               const raw=fs.readFileSync(path,'utf8'); const envelope=JSON.parse(raw);
               if(envelope.algorithm!=='RSA-OAEP-256+A256GCM'||!envelope.ciphertext||!envelope.wrapped_key)throw new Error('Invalid encrypted snapshot');
               await publish(path,raw,'Update encrypted V5.19 dashboard snapshot [skip ci]');
+            }
+            const reviewPath='data/live/release_review.json';
+            if(fs.existsSync(reviewPath)) {
+              await publish(reviewPath,fs.readFileSync(reviewPath,'utf8'),'Publish tested V5.19 source review [skip ci]');
             }
             let result={status:'NO_RESULT'};
             if(fs.existsSync('v5_19_report.json'))result=JSON.parse(fs.readFileSync('v5_19_report.json','utf8'));
