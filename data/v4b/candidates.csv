@@ -1,2 +1,1 @@
 ﻿date,ticker,rs,foreign_5d,institution_5d,volume_ratio,channel_position,channel_up,signal_date,name,signal_basis,observed_at_kst,flow_signal_date,reference_close
-2026-10-30,295310,96,-13394.0,96900.0,1.451925,0.468326,True,2026-10-29,에이치브이엠,PREVIOUS_CONFIRMED_SESSION,,2026-10-29,66700
