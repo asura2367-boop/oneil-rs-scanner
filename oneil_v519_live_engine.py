@@ -203,7 +203,7 @@ class OrderPlan:
 
 
 def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_profit_pct=10, max_buys=None,
-                reserve_pct=40, per_stock_pct=30):
+                reserve_pct=40, per_stock_pct=30, include_exits=True):
     """One broker snapshot, exits first, conservative whole-account exposure.
 
     Thresholds are configurable defaults requiring review before activation.
@@ -221,7 +221,7 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
         if type(pct) is not int or not 1 <= pct <= 50:
             raise TradingBlocked('EXIT_PARAMETER_INVALID')
     plans = []
-    for ticker, pos in sorted(snapshot['positions'].items()):
+    for ticker, pos in sorted(snapshot['positions'].items()) if include_exits else []:
         owned = money(snapshot['managed'].get(ticker, 0))
         qty = min(money(pos['sellable']), owned, money(pos['quantity']))
         if not qty:
@@ -580,7 +580,8 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
 
     Each acknowledged buy must be fully reconciled before the next candidate.
     Pending/unknown orders never gain an exception to the durable ledger guard.
-    Exits retain priority and are processed separately; sell proceeds are not
+    Enabled exits retain priority; explicit sell OFF records alerts and lets
+    independently enabled buys continue. Sell proceeds are not
     funding for this batch. The initial cash budget can only shrink in this run.
     """
     clock = clock or (lambda: dt.datetime.now(ZoneInfo('Asia/Seoul')))
@@ -619,14 +620,29 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
         sell=sell_policy(control)
         if not risk['connected']:control={**control,'enabled':False,'reason':'RISK_CONTROL_INVALID'}
         snapshot=account_snapshot()
-        # OFF still observes exit signals; these reference prices cannot submit.
-        def planning_quote(ticker,side):
-            if side=='SELL' and not sell['enabled'] and isinstance(broker,KisBroker):
-                return broker.reference_quote(ticker)
-            return broker.quote(ticker,side)
-        plans, allocation = plan_orders(candidates if control['enabled'] else [],snapshot,planning_quote,broker.power,
-            stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,max_buys=1 if execute else None,
-            reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
+        observed_exits=set()
+        def select_plans(rows,snap,current_control,max_buys):
+            current_sell=sell_policy(current_control)
+            # OFF still observes exits using a reference quote, never order evidence.
+            def planning_quote(ticker,side):
+                if side=='SELL' and not current_sell['enabled'] and isinstance(broker,KisBroker):
+                    return broker.reference_quote(ticker)
+                return broker.quote(ticker,side)
+            kwargs=dict(stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,
+                max_buys=max_buys,reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
+            eligible=rows if current_control.get('enabled') else []
+            selected,budget=plan_orders(eligible,snap,planning_quote,broker.power,**kwargs)
+            exits=[p for p in selected if p.side=='SELL']
+            if exits and current_sell['connected'] and not current_sell['enabled']:
+                ledger.record_sell_alerts(exits,now.date())
+                observed_exits.update((p.ticker,p.reason) for p in exits)
+                result['sell_alert_count']=len(observed_exits)
+                # Keep EVERY holding in exposure and duplicate checks. Only skip
+                # creating sell plans; no hypothetical proceeds increase the budget.
+                selected,budget=plan_orders(eligible,snap,broker.quote,broker.power,include_exits=False,**kwargs)
+                if not result['orders_sent']:result['status']='SELL_ALERT_ONLY'
+            return selected,budget
+        plans, allocation = select_plans(candidates,snapshot,control,1 if execute else None)
         ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control,'risk_control':risk,'sell_control':sell}
         result['planned_buys']=sum(p.side=='BUY' for p in plans)
         result['planned_sells']=sum(p.side=='SELL' for p in plans)
@@ -639,7 +655,7 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                 sell_alert_count=len(exits),planned_buys=0,planned_sells=0)
             return result
         if result['planned_sells'] and not sell['enabled']:
-            return alert_only(plans,sell)  # Preserve exit priority; no buys finance or replace this exit.
+            return alert_only(plans,sell)  # Unknown control retains the safety block.
         if not execute:
             return result
         initial_remaining=allocation['remaining'];initial_stock_cap=allocation['per_stock']
@@ -652,14 +668,23 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                 if not ledger.release_authorized(release_fingerprint()):
                     raise TradingBlocked('ACCOUNT_RELEASE_NOT_ACTIVATED')
                 if not plans:
-                    if not result['orders_sent']:result['status']='NO_ORDER'
+                    if not result['orders_sent'] and not result.get('sell_alert_count'):result['status']='NO_ORDER'
                     result['batch_stop_reason']='NO_MORE_ELIGIBLE_CANDIDATES_OR_CASH'
                     return result
                 plan=plans[0]
                 if plan.side=='SELL':
-                    latest_sell=sell_policy(broker.buy_control())
+                    latest_control=broker.buy_control()
+                    latest_sell=sell_policy(latest_control)
                     ledger.dashboard_state['sell_control']=latest_sell
-                    if not latest_sell['enabled']:return alert_only(plans,latest_sell)
+                    if not latest_sell['enabled']:
+                        if not latest_sell['connected']:return alert_only(plans,latest_sell)
+                        plans,allocation=select_plans(
+                            [c for c in candidates if c['ticker'] not in attempted],snapshot,latest_control,1)
+                        ledger.dashboard_state.update(plans=display_plans+plans,allocation=allocation)
+                        result['planned_sells']=0
+                        result['planned_buys']=sum(p.side=='BUY' for p in plans)
+                        if not plans:return result
+                        plan=plans[0]
                 if plan.ticker in attempted:raise TradingBlocked('BATCH_DUPLICATE_CANDIDATE')
                 attempted.add(plan.ticker)
                 fresh=plan.price;quantity=plan.quantity;fresh_reason=plan.reason
@@ -774,10 +799,9 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                 if not control.get('enabled'):
                     result['batch_stop_reason']='BUY_SWITCH_OFF'
                     return result
-                plans,allocation=plan_orders(remaining_candidates,snapshot,broker.quote,broker.power,
-                    stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,max_buys=1,
-                    reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
-                # A new exit appearing mid-batch stops buys; it cannot finance them.
+                ledger.dashboard_state['sell_control']=sell_policy(control)
+                plans,allocation=select_plans(remaining_candidates,snapshot,control,1)
+                # Enabled/unknown exits stop buys; explicit OFF alerts do not.
                 if plans and plans[0].side=='SELL':
                     latest_sell=sell_policy(control)
                     if not latest_sell['enabled']:return alert_only(plans,latest_sell)
