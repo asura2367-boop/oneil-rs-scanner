@@ -843,7 +843,7 @@ def failure_details(exc):
     return data
 
 
-def activate_live_account(ledger, broker, candidates, *, now, operator, acknowledged=False):
+def activate_live_account(ledger, broker, candidates, *, now, operator, acknowledged=False, dashboard_review=None):
     if not acknowledged or not isinstance(operator,str) or not re.fullmatch('[A-Za-z0-9-]{1,39}',operator):
         raise TradingBlocked('OPERATOR_ACTIVATION_CONFIRMATION_REQUIRED')
     if os.getenv('GITHUB_ACTIONS')=='true' and operator!=os.getenv('GITHUB_REPOSITORY_OWNER'):
@@ -854,11 +854,56 @@ def activate_live_account(ledger, broker, candidates, *, now, operator, acknowle
     result=integrated_cycle(ledger,broker,candidates,execute=False,now=now)
     if result['recovery']['unresolved'] or ledger.dashboard_state['snapshot']['pending']:
         raise TradingBlocked('ACTIVATION_REQUIRES_RECONCILED_ORDERS')
+    if dashboard_review is not None:
+        fresh=release_review_policy(broker.buy_control().get('release'))
+        if fresh!=dashboard_review or fresh['approved_release']!=release_fingerprint():
+            raise TradingBlocked('OWNER_RELEASE_REVIEW_CHANGED')
     with ledger.lock():
-        ledger.activate_release(release_fingerprint(),operator)
+        ledger.activate_release(release_fingerprint(),operator,preserve_halt=dashboard_review is not None)
     result.update(status='LIVE_ACCOUNT_ACTIVATED',execution_requested=False,orders_sent=0,
         live_release_approved=True)
+    if dashboard_review is not None:result['owner_review_revision']=dashboard_review['revision']
     return result
+
+
+def release_review_policy(value):
+    """Only an authenticated owner's exact, immutable release review can arm code."""
+    if not isinstance(value,dict):return None
+    if (value.get('schema_version')!=1 or value.get('operator')!='asura2367-boop'
+            or not isinstance(value.get('approved_release'),str) or not re.fullmatch('[0-9a-f]{64}',value['approved_release'])
+            or not isinstance(value.get('source_commit'),str) or not re.fullmatch('[0-9a-f]{40}',value['source_commit'])
+            or type(value.get('revision')) is not int or not 1<=value['revision']<2**53-1
+            or type(value.get('review_run_id')) is not int or value['review_run_id']<1):return None
+    try:
+        at=dt.datetime.fromisoformat(value['approved_at'])
+        if at.tzinfo is None:return None
+    except (ValueError,TypeError,KeyError):return None
+    return {k:value[k] for k in ('schema_version','operator','approved_release','source_commit','revision','review_run_id','approved_at')}
+
+
+def dashboard_release_env(control=None):
+    """Resolve a human review for this schedule; never change GitHub variables."""
+    if not (os.getenv('GITHUB_ACTIONS')=='true' and os.getenv('GITHUB_REF')=='refs/heads/main'
+            and os.getenv('GITHUB_REPOSITORY')=='asura2367-boop/oneil-rs-scanner' and os.getenv('OPERATION')=='auto'):
+        return None
+    review=release_review_policy((read_buy_control() if control is None else control).get('release'))
+    if review and review['approved_release']==release_fingerprint():return review
+    return None
+
+
+def public_release_review():
+    """Public source/test pointers only. No broker/account/credential fields."""
+    import subprocess
+    root=Path(__file__).resolve().parent
+    sha=os.getenv('GITHUB_SHA','')
+    run=os.getenv('GITHUB_RUN_ID','')
+    if not re.fullmatch('[0-9a-f]{40}',sha) or not re.fullmatch('[0-9]{1,18}',run):
+        raise TradingBlocked('RELEASE_REVIEW_CONTEXT_INVALID')
+    def git(*args):return subprocess.check_output(['git',*args],cwd=root,text=True).strip()
+    if git('rev-parse','HEAD')!=sha:raise TradingBlocked('RELEASE_REVIEW_SOURCE_CHANGED')
+    return {'schema_version':1,'expected_release':release_fingerprint(),'source_commit':sha,
+        'review_run_id':int(run),'summary':git('show','-s','--format=%s',sha)[:1000],
+        'source_files':{name:git('rev-parse',sha+':'+name) for name in RELEASE_FILES}}
 
 
 def scan_candidates(source, now):
@@ -900,6 +945,7 @@ def read_buy_control(*, opener=None, now=None, access_token=None):
         raw_sell=body.get('sell')
         sell=sell_policy({'sell':{**raw_sell,'connected':True} if isinstance(raw_sell,dict) else None})
         return {'enabled':body['enabled'],'connected':True,'revision':body['revision'],'risk':risk,'sell':sell,
+                'release':release_review_policy(body.get('release')),
                 'updated_at':body.get('updated_at'),'reason':'OWNER_SETTING'}
     except Exception:
         return {**denied,'reason':'CONTROL_READ_FAILED'}
@@ -998,6 +1044,8 @@ def runtime_main():
     modes.add_argument('--broker-audit',action='store_true')
     modes.add_argument('--activate',action='store_true')
     modes.add_argument('--release-info',action='store_true')
+    modes.add_argument('--release-review',action='store_true')
+    modes.add_argument('--dashboard-release-env',action='store_true')
     p.add_argument('--operator')
     p.add_argument('--acknowledge-live-risk',action='store_true')
     p.add_argument('--execute',action='store_true')
@@ -1010,6 +1058,16 @@ def runtime_main():
     args=p.parse_args()
     result=readiness(); code=0; ledger=None; run_id=uuid.uuid4().hex
     try:
+        if args.release_review:
+            print(json.dumps(public_release_review(),ensure_ascii=False));return
+        if args.dashboard_release_env:
+            review=dashboard_release_env()
+            if review:
+                path=os.getenv('GITHUB_ENV')
+                if not path:raise TradingBlocked('GITHUB_ENV_MISSING')
+                with open(path,'a') as stream:
+                    stream.write('APPROVED_RELEASE='+review['approved_release']+'\nV519_APPROVED_RELEASE='+review['approved_release']+'\nV519_DASHBOARD_REVIEW_REVISION='+str(review['revision'])+'\n')
+            print(json.dumps({'owner_review_available':bool(review),'orders_sent':0}));return
         if args.release_info:
             print(json.dumps({'expected_release':release_fingerprint(),'release_configured':release_is_approved(),'orders_sent':0}))
             return
@@ -1050,8 +1108,15 @@ def runtime_main():
                     # Daily close is a time boundary, not an emergency halt.
                     # Emergency stops persist until an operator explicitly activates again.
                     try:
-                        broker=KisBroker(execution=args.execute,operator_activation=args.activate)
-                        if args.activate:
+                        review=dashboard_release_env() if args.run and args.execute and os.getenv('V519_DASHBOARD_REVIEW_REVISION') else None
+                        pending_review=review and not ledger.release_authorized(release_fingerprint())
+                        broker=KisBroker(execution=args.execute and not pending_review,operator_activation=bool(args.activate or pending_review))
+                        if pending_review:
+                            now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
+                            candidates=scan_candidates(args.source,now)
+                            result=activate_live_account(ledger,broker,candidates,now=now,
+                                operator=review['operator'],acknowledged=True,dashboard_review=review)
+                        elif args.activate:
                             now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
                             candidates=scan_candidates(args.source,now)
                             result=activate_live_account(ledger,broker,candidates,now=now,
