@@ -1,17 +1,60 @@
 {
-  "report_generated_at_kst": "2026-10-29T21:30:11.099599+09:00",
-  "last_processed": "2026-10-29",
+  "report_generated_at_kst": "2026-10-30T19:51:19.054653+09:00",
+  "last_processed": "2026-10-30",
   "initial_cash": 10000000.0,
   "cash": 6013510.2062135,
-  "equity": 9995420.21,
-  "total_return_pct": -0.046,
+  "equity": 10127210.21,
+  "total_return_pct": 1.272,
   "positions": 2,
-  "pending_orders": 0,
+  "pending_orders": 3,
   "closed_lots": 0,
   "wins": 0,
   "win_rate_pct": null,
   "realized_pnl": 0.0,
   "max_drawdown_pct": -0.046,
   "estimate_warning": "Pending prices/quantities are indicative only, not live quotes or actual fills.",
-  "pending": []
+  "pending": [
+    {
+      "signal_date": "2026-10-30",
+      "side": "SELL",
+      "ticker": "052460",
+      "name": "아이크래프트",
+      "reason": "1차 익절 신호 +8%",
+      "reference_date": "2026-10-30",
+      "reference_close": 6460.0,
+      "indicative_price": 6453.54,
+      "estimated_qty": 170,
+      "estimated_gross": 1097101.8,
+      "estimated_fee": "",
+      "note": "SELL: estimated; actual close can differ"
+    },
+    {
+      "signal_date": "2026-10-30",
+      "side": "BUY",
+      "ticker": "069540",
+      "name": "빛과전자",
+      "reason": "RS 98 + 수급/거래량/채널",
+      "reference_date": "2026-10-30",
+      "reference_close": 3880.0,
+      "indicative_price": 3883.88,
+      "estimated_qty": 521,
+      "estimated_gross": 2023501.48,
+      "estimated_fee": 303.53,
+      "note": "ESTIMATE ONLY; execution depends on next session close and available cash"
+    },
+    {
+      "signal_date": "2026-10-30",
+      "side": "BUY",
+      "ticker": "042510",
+      "name": "라온시큐어",
+      "reason": "RS 98 + 수급/거래량/채널",
+      "reference_date": "2026-10-30",
+      "reference_close": 19450.0,
+      "indicative_price": 19469.45,
+      "estimated_qty": 104,
+      "estimated_gross": 2024822.8,
+      "estimated_fee": 303.72,
+      "note": "ESTIMATE ONLY; execution depends on next session close and available cash"
+    }
+  ]
 }

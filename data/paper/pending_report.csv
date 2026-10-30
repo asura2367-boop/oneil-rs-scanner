@@ -1,1 +1,4 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
+2026-10-30,SELL,052460,아이크래프트,1차 익절 신호 +8%,2026-10-30,6460.0,6453.54,170,1097101.8,,SELL: estimated; actual close can differ
+2026-10-30,BUY,069540,빛과전자,RS 98 + 수급/거래량/채널,2026-10-30,3880.0,3883.88,521,2023501.48,303.53,ESTIMATE ONLY; execution depends on next session close and available cash
+2026-10-30,BUY,042510,라온시큐어,RS 98 + 수급/거래량/채널,2026-10-30,19450.0,19469.45,104,2024822.8,303.72,ESTIMATE ONLY; execution depends on next session close and available cash
