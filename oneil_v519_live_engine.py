@@ -435,7 +435,7 @@ class KisBroker:
     def _send_verified(self, plan):
         """Actual wire mapping; private and release-locked even when called directly."""
         require_live_release()
-        if plan.side=='SELL' and not sell_policy(self.buy_control())['enabled']:
+        if plan.side=='SELL' and not sell_plan_allowed(plan,self.buy_control()):
             raise SellDisabledBeforeSend('SELL_CONTROL_OFF_OR_UNAVAILABLE')
         ev=self.quote_evidence.get((plan.ticker,plan.side))
         if (not self.execution or not ev or ev['price']!=plan.price or
@@ -571,7 +571,17 @@ def sell_policy(control):
     if (not isinstance(value,dict) or value.get('connected') is not True or type(value.get('enabled')) is not bool
             or type(value.get('revision')) is not int or not 0<=value['revision']<2**53-1):
         return {'enabled':False,'connected':False,'revision':None,'reason':'SELL_CONTROL_UNAVAILABLE'}
-    return {**value,'reason':'OWNER_SETTING'}
+    return {**value,'reason':'OWNER_SETTING','scope':'STOP_LOSS_ONLY','take_profit_enabled':True}
+
+
+def sell_plan_allowed(plan,control):
+    """The owner switch locks stop-loss only; take-profit remains automatic.
+
+    Unknown control still fails closed. Session, halt, release and reconciliation
+    checks remain independent prerequisites for every sell.
+    """
+    policy=sell_policy(control)
+    return policy['connected'] and (policy['enabled'] or plan.reason=='TAKE_PROFIT')
 
 
 def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
@@ -633,14 +643,17 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
             eligible=rows if current_control.get('enabled') else []
             selected,budget=plan_orders(eligible,snap,planning_quote,broker.power,**kwargs)
             exits=[p for p in selected if p.side=='SELL']
-            if exits and current_sell['connected'] and not current_sell['enabled']:
-                ledger.record_sell_alerts(exits,now.date())
-                observed_exits.update((p.ticker,p.reason) for p in exits)
+            blocked=[p for p in exits if not sell_plan_allowed(p,current_control)]
+            if blocked and current_sell['connected']:
+                ledger.record_sell_alerts(blocked,now.date())
+                observed_exits.update((p.ticker,p.reason) for p in blocked)
                 result['sell_alert_count']=len(observed_exits)
                 # Keep EVERY holding in exposure and duplicate checks. Only skip
                 # creating sell plans; no hypothetical proceeds increase the budget.
-                selected,budget=plan_orders(eligible,snap,broker.quote,broker.power,include_exits=False,**kwargs)
-                if not result['orders_sent']:result['status']='SELL_ALERT_ONLY'
+                enabled_exits=[p for p in exits if sell_plan_allowed(p,current_control)]
+                if enabled_exits:selected=enabled_exits
+                else:selected,budget=plan_orders(eligible,snap,broker.quote,broker.power,include_exits=False,**kwargs)
+                if not result['orders_sent'] and not any(p.side=='SELL' for p in selected):result['status']='SELL_ALERT_ONLY'
             return selected,budget
         plans, allocation = select_plans(candidates,snapshot,control,1 if execute else None)
         ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control,'risk_control':risk,'sell_control':sell}
@@ -654,7 +667,7 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
             result.update(status='SELL_ALERT_ONLY' if latest['connected'] else 'SELL_CONTROL_UNAVAILABLE',
                 sell_alert_count=len(exits),planned_buys=0,planned_sells=0)
             return result
-        if result['planned_sells'] and not sell['enabled']:
+        if result['planned_sells'] and not sell['connected']:
             return alert_only(plans,sell)  # Unknown control retains the safety block.
         if not execute:
             return result
@@ -676,7 +689,7 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     latest_control=broker.buy_control()
                     latest_sell=sell_policy(latest_control)
                     ledger.dashboard_state['sell_control']=latest_sell
-                    if not latest_sell['enabled']:
+                    if not sell_plan_allowed(plan,latest_control):
                         if not latest_sell['connected']:return alert_only(plans,latest_sell)
                         plans,allocation=select_plans(
                             [c for c in candidates if c['ticker'] not in attempted],snapshot,latest_control,1)
@@ -735,7 +748,7 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                             # Real KIS does its final read inside the wire adapter;
                             # fixtures/other adapters are checked at the same boundary.
                             try:
-                                if plan.side=='SELL' and not isinstance(broker,KisBroker) and not sell_policy(broker.buy_control())['enabled']:
+                                if plan.side=='SELL' and not isinstance(broker,KisBroker) and not sell_plan_allowed(plan,broker.buy_control()):
                                     raise SellDisabledBeforeSend('SELL_CONTROL_OFF_OR_UNAVAILABLE')
                                 uncertain=True
                                 response=broker.submit(plan)
@@ -804,7 +817,7 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                 # Enabled/unknown exits stop buys; explicit OFF alerts do not.
                 if plans and plans[0].side=='SELL':
                     latest_sell=sell_policy(control)
-                    if not latest_sell['enabled']:return alert_only(plans,latest_sell)
+                    if not sell_plan_allowed(plans[0],control):return alert_only(plans,latest_sell)
                     result['batch_stop_reason']='EXIT_DETECTED'
                     return result
                 result['planned_buys']+=sum(p.side=='BUY' for p in plans)
