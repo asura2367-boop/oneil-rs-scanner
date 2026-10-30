@@ -69,3 +69,10 @@ Collectors refresh every stale existing symbol within a 30-minute read budget, a
 V9/V10 share one encrypted token cache with order flags false. Current-session high-RS histories get flow refresh first (up to 250 symbols). Intraday collection uses at most eight independent HTTP sessions with globally spaced 200ms starts; token acquisition happens once. The existing complete-universe, same-session and 10-minute freshness gates remain. Any failure preserves the previous candidate output. Cumulative volume still uses confirmed 20-day daily volume as its benchmark, without projected closing volume.
 
 Collector/workflow/dependency files are covered by the owner-reviewed source fingerprint. Approval, activation, switches, risk ratios and halt state are unchanged. Full coverage and actual KIS latency require a successful real read-only collection; fixture tests do not prove this.
+# Bounded KIS read resilience
+
+The integrated broker retries only the exact balance, daily-price and order-book GET endpoint/TR pairs. HTTP 429/500/502/503/504, transport timeouts and the explicit EGW00201 rate-limit response get at most three total attempts with 0.5s/1s waits. Pagination retries keep the same cursor and continuation header. Invalid JSON, authentication/permanent HTTP failures and business rejections remain blocking.
+
+Cash-order POSTs and unknown endpoint/TR pairs never retry. An HTTP 500 or lost response on an order still follows existing uncertain-submission recovery; no automatic resend is added. Exhausted reads return no cached balance and retain the existing safety block. This is bounded read resilience, not proof that the upstream HTTP 500 cause is fixed.
+
+Public diagnostics contain only a fixed API label, attempt count, HTTP status and recognized KIS error-code formats. Broker message text, response payloads, account data, credentials and URLs are excluded. Source approval, account activation, monetary limits, switches, stop-loss/target policy and emergency halt are unchanged.

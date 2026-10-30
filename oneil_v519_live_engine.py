@@ -274,6 +274,19 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
     return plans, b
 
 
+KIS_READ_APIS = {
+    ('/uapi/domestic-stock/v1/trading/inquire-balance','TTTC8434R'):'BALANCE',
+    ('/uapi/domestic-stock/v1/quotations/inquire-daily-price','FHKST01010400'):'DAILY_PRICE',
+    ('/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn','FHKST01010200'):'ORDER_BOOK',
+}
+
+
+def safe_kis_error_code(body):
+    # Fixed broker code formats only. Never expose msg1, URL, headers or output.
+    code=body.get('msg_cd') if isinstance(body,dict) else None
+    return code if isinstance(code,str) and re.fullmatch(r'(?:EGW[0-9]{5}|APBK[0-9]{4}|OPSQ[0-9]{4})',code) else None
+
+
 class KisBroker:
     """Existing KIS auth/power APIs plus complete balance/history adapters.
 
@@ -294,8 +307,10 @@ class KisBroker:
 
     def request(self, path, tr, params, *, continuing=False, post=False):
         import urllib.request
+        from urllib.error import HTTPError,URLError
         from urllib.parse import urlencode
         from oneil_v519_live_runner import HOST
+        import time
         headers = {'authorization':'Bearer '+self.access, 'appkey':self.key,
                    'appsecret':self.secret, 'tr_id':tr, 'custtype':'P',
                    'Content-Type':'application/json'}
@@ -306,13 +321,58 @@ class KisBroker:
             url += '?' + urlencode(params)
         request = urllib.request.Request(url, headers=headers,
             data=json.dumps(params).encode() if post else None, method='POST' if post else 'GET')
-        # No automatic retry, especially for POST. No raw payloads in logs.
-        with urllib.request.urlopen(request, timeout=15) as response:
-            body = json.load(response)
-            continuation = response.headers.get('tr_cont')
-        if not isinstance(body, dict) or str(body.get('rt_cd')) != '0':
-            raise TradingBlocked('BROKER_RESPONSE_REJECTED')
-        return continuation, body
+        # Only these exact read-only endpoint/TR pairs may retry. An order POST
+        # (including an HTTP 500 or lost response) is always sent at most once.
+        api=KIS_READ_APIS.get((path,tr))
+        can_retry=not post and api is not None
+        api=api or ('CASH_ORDER' if post and path=='/uapi/domestic-stock/v1/trading/order-cash' else 'OTHER')
+        attempts=3 if can_retry else 1
+        def annotate(exc,attempt,broker_code=None):
+            exc.broker_api=api;exc.broker_attempts=attempt
+            if broker_code:exc.broker_code=broker_code
+        def wait(attempt,status=None,code=None):
+            delay=.5*2**(attempt-1)
+            event={'event':'KIS_READ_RETRY','broker_api':api,'attempt':attempt,'delay_seconds':delay}
+            if status is not None:event['http_status']=status
+            if code:event['broker_code']=code
+            print(json.dumps(event),flush=True)
+            time.sleep(delay)
+        for attempt in range(1,attempts+1):
+            try:
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    body=json.load(response)
+                    continuation=response.headers.get('tr_cont')
+            except HTTPError as exc:
+                broker_code=None
+                try:
+                    raw=exc.read(8193)
+                    if len(raw)<=8192:broker_code=safe_kis_error_code(json.loads(raw))
+                except Exception:
+                    pass
+                finally:
+                    exc.close()
+                annotate(exc,attempt,broker_code)
+                if can_retry and exc.code in (429,500,502,503,504) and attempt<attempts:
+                    wait(attempt,exc.code,broker_code);continue
+                raise
+            except (URLError,TimeoutError,ConnectionError) as exc:
+                annotate(exc,attempt)
+                if can_retry and attempt<attempts:
+                    wait(attempt);continue
+                raise
+            except Exception as exc:
+                annotate(exc,attempt)
+                raise
+            if not isinstance(body,dict) or str(body.get('rt_cd'))!='0':
+                broker_code=safe_kis_error_code(body)
+                if can_retry and broker_code=='EGW00201' and attempt<attempts:
+                    wait(attempt,code=broker_code);continue
+                exc=TradingBlocked('BROKER_RESPONSE_REJECTED')
+                annotate(exc,attempt,broker_code)
+                raise exc
+            if attempt>1:
+                print(json.dumps({'event':'KIS_READ_RECOVERED','broker_api':api,'attempts':attempt}),flush=True)
+            return continuation,body
 
     def snapshot(self):
         from decimal import Decimal, ROUND_CEILING
@@ -845,6 +905,12 @@ def failure_details(exc):
         data.update(failure_kind='DATABASE_ERROR',sqlstate=sqlstate)
     if isinstance(exc,HTTPError) and type(exc.code) is int and 100<=exc.code<=599:
         data['http_status']=exc.code
+    if getattr(exc,'broker_api',None) in {*KIS_READ_APIS.values(),'CASH_ORDER','OTHER'}:
+        data['broker_api']=exc.broker_api
+    if type(getattr(exc,'broker_attempts',None)) is int and 1<=exc.broker_attempts<=3:
+        data['broker_attempts']=exc.broker_attempts
+    broker_code=safe_kis_error_code({'msg_cd':getattr(exc,'broker_code',None)})
+    if broker_code:data['broker_code']=broker_code
     frames=[];tb=exc.__traceback__
     allowed={'oneil_v519_live_engine.py','v519_pg_ledger.py','oneil_live_v5_9.py',
              'oneil_v519_live_runner.py','kis_safety_v3.py','oneil_v519_broker_recovery.py',
