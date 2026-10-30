@@ -1,11 +1,18 @@
 {
   "as_of": "2026-10-30",
+  "confirmed_session": "2026-10-30",
   "universe_total": 2675,
-  "collected_symbols": 1428,
-  "remaining_symbols": 1247,
-  "progress_pct": 53.38,
-  "daily_rows": 387820,
-  "last_run_success": 45,
-  "last_run_failures": 5,
-  "note": "수집 완료 수는 일봉이 1개 이상인 종목 기준이며 RS 계산 적격 종목 수와 다릅니다."
+  "collected_symbols": 1528,
+  "remaining_symbols": 1147,
+  "progress_pct": 57.12,
+  "current_session_symbols": 808,
+  "current_history_253_symbols": 800,
+  "current_session_coverage_pct": 30.21,
+  "daily_rows": 417505,
+  "last_run_success": 853,
+  "last_run_failures": 0,
+  "last_run_attempted": 853,
+  "remaining_planned_symbols": 675,
+  "full_history_requests": 469,
+  "note": "최신 확정 거래일·253개 이력 확보 수를 별도 표시합니다. RS 최종 적격 수는 가격·거래량·정렬 검증 후 결정됩니다."
 }
