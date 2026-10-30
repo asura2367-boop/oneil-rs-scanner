@@ -1658,4 +1658,112 @@ class RsCoverageCollectionTests(unittest.TestCase):
         for path in ['build_data.py','build_investor.py','collect_shared_token.py','.github/workflows/update.yml','.github/workflows/v10_collect_auto.yml','requirements.txt']:
             self.assertIn(path,RELEASE_FILES)
 
+class KisReadRetryTests(unittest.TestCase):
+    path='/uapi/domestic-stock/v1/trading/inquire-balance'
+    def broker(self):
+        broker=object.__new__(KisBroker)
+        broker.access=broker.key=broker.secret='PRIVATE_FIXTURE'
+        return broker
+
+    def response(self,body=None,raw=None):
+        import io
+        response=io.BytesIO(raw if raw is not None else json.dumps(body or {'rt_cd':'0','output1':[]}).encode())
+        response.headers={'tr_cont':'F'}
+        return response
+
+    def error(self,status=500,body=None):
+        import io
+        from urllib.error import HTTPError
+        return HTTPError('https://broker.test/?account=PRIVATE_FIXTURE',status,'PRIVATE_FIXTURE',
+            {'authorization':'PRIVATE_FIXTURE'},io.BytesIO(json.dumps(body or {'msg_cd':'EGW00201','msg1':'PRIVATE_FIXTURE'}).encode()))
+
+    def test_balance_500_then_success_has_bounded_read_retry(self):
+        import io
+        out=io.StringIO()
+        with patch('urllib.request.urlopen',side_effect=[self.error(),self.response()]) as wire,patch('time.sleep') as pause,patch('sys.stdout',new=out):
+            continuation,body=self.broker().request(self.path,'TTTC8434R',{})
+        self.assertEqual(wire.call_count,2);pause.assert_called_once_with(.5)
+        self.assertEqual(continuation,'F');self.assertEqual(body['rt_cd'],'0')
+        self.assertIn('KIS_READ_RECOVERED',out.getvalue());self.assertNotIn('PRIVATE_FIXTURE',out.getvalue())
+        self.assertTrue(all(c.args[0].get_method()=='GET' for c in wire.call_args_list))
+
+    def test_exhausted_reads_still_raise_and_report_only_safe_metadata(self):
+        import io
+        from urllib.error import HTTPError
+        out=io.StringIO()
+        with patch('urllib.request.urlopen',side_effect=[self.error(503) for _ in range(3)]) as wire,patch('time.sleep') as pause,patch('sys.stdout',new=out):
+            with self.assertRaises(HTTPError) as caught:self.broker().request(self.path,'TTTC8434R',{})
+        self.assertEqual(wire.call_count,3);self.assertEqual(pause.call_args_list,[unittest.mock.call(.5),unittest.mock.call(1.)])
+        details=failure_details(caught.exception)
+        self.assertEqual(details['http_status'],503);self.assertEqual(details['broker_attempts'],3)
+        self.assertEqual(details['broker_api'],'BALANCE');self.assertEqual(details['broker_code'],'EGW00201')
+        self.assertNotIn('PRIVATE_FIXTURE',json.dumps(details)+out.getvalue())
+
+    def test_auth_or_permanent_http_failure_is_not_retried(self):
+        from urllib.error import HTTPError
+        for status in (400,401,403,404):
+            with patch('urllib.request.urlopen',side_effect=self.error(status,{'msg_cd':'EGW00123','msg1':'PRIVATE_FIXTURE'})) as wire,patch('time.sleep') as pause:
+                with self.assertRaises(HTTPError):self.broker().request(self.path,'TTTC8434R',{})
+            self.assertEqual(wire.call_count,1);pause.assert_not_called()
+
+    def test_timeout_can_recover_only_on_allowlisted_read(self):
+        import io
+        with patch('urllib.request.urlopen',side_effect=[TimeoutError('PRIVATE_FIXTURE'),self.response()]) as wire,patch('time.sleep'),patch('sys.stdout',new=io.StringIO()):
+            self.assertEqual(self.broker().request(self.path,'TTTC8434R',{})[1]['rt_cd'],'0')
+        self.assertEqual(wire.call_count,2)
+
+    def test_exhausted_read_timeout_returns_no_cached_account(self):
+        import io
+        with patch('urllib.request.urlopen',side_effect=TimeoutError('PRIVATE_FIXTURE')) as wire,patch('time.sleep'),patch('sys.stdout',new=io.StringIO()):
+            with self.assertRaises(TimeoutError) as caught:self.broker().request(self.path,'TTTC8434R',{})
+        self.assertEqual(wire.call_count,3);self.assertEqual(failure_details(caught.exception)['broker_attempts'],3)
+
+    def test_cash_order_500_is_sent_once_and_remains_uncertain(self):
+        from urllib.error import HTTPError
+        with patch('urllib.request.urlopen',side_effect=self.error()) as wire,patch('time.sleep') as pause:
+            with self.assertRaises(HTTPError) as caught:self.broker().request('/uapi/domestic-stock/v1/trading/order-cash','TTTC0012U',{},post=True)
+        self.assertEqual(wire.call_count,1);pause.assert_not_called()
+        self.assertEqual(wire.call_args.args[0].get_method(),'POST')
+        self.assertEqual(failure_details(caught.exception)['broker_api'],'CASH_ORDER')
+        self.assertEqual(failure_details(caught.exception)['broker_attempts'],1)
+
+    def test_unknown_get_or_wrong_transaction_id_has_no_retry(self):
+        from urllib.error import HTTPError
+        for path,tr in [(self.path,'UNKNOWN'),('/uapi/domestic-stock/v1/trading/order-cash','TTTC0012U')]:
+            with patch('urllib.request.urlopen',side_effect=self.error()) as wire,patch('time.sleep') as pause:
+                with self.assertRaises(HTTPError):self.broker().request(path,tr,{})
+            self.assertEqual(wire.call_count,1);pause.assert_not_called()
+
+    def test_success_status_with_explicit_rate_limit_code_can_retry_read(self):
+        import io
+        with patch('urllib.request.urlopen',side_effect=[self.response({'rt_cd':'1','msg_cd':'EGW00201','msg1':'PRIVATE_FIXTURE'}),self.response()]) as wire,patch('time.sleep'),patch('sys.stdout',new=io.StringIO()):
+            self.assertEqual(self.broker().request(self.path,'TTTC8434R',{})[1]['rt_cd'],'0')
+        self.assertEqual(wire.call_count,2)
+
+    def test_business_rejection_does_not_retry_or_expose_broker_message(self):
+        with patch('urllib.request.urlopen',return_value=self.response({'rt_cd':'1','msg_cd':'APBK1234','msg1':'PRIVATE_FIXTURE'})) as wire,patch('time.sleep') as pause:
+            with self.assertRaises(TradingBlocked) as caught:self.broker().request(self.path,'TTTC8434R',{})
+        self.assertEqual(wire.call_count,1);pause.assert_not_called()
+        self.assertEqual(str(caught.exception),'BROKER_RESPONSE_REJECTED')
+        self.assertEqual(failure_details(caught.exception)['broker_code'],'APBK1234')
+        self.assertNotIn('PRIVATE_FIXTURE',json.dumps(failure_details(caught.exception)))
+
+    def test_invalid_success_json_is_not_retried(self):
+        with patch('urllib.request.urlopen',return_value=self.response(raw=b'PRIVATE_FIXTURE')) as wire,patch('time.sleep') as pause:
+            with self.assertRaises(ValueError):self.broker().request(self.path,'TTTC8434R',{})
+        self.assertEqual(wire.call_count,1);pause.assert_not_called()
+
+    def test_pagination_retry_reuses_identical_get_context_and_continuation(self):
+        import io
+        with patch('urllib.request.urlopen',side_effect=[self.error(),self.response()]) as wire,patch('time.sleep'),patch('sys.stdout',new=io.StringIO()):
+            self.broker().request(self.path,'TTTC8434R',{'CTX_AREA_FK100':'cursor','CTX_AREA_NK100':'next'},continuing=True)
+        first,second=[c.args[0] for c in wire.call_args_list]
+        self.assertEqual(first.full_url,second.full_url);self.assertEqual(second.get_header('Tr_cont'),'N')
+
+    def test_failure_metadata_rejects_unvalidated_codes_and_values(self):
+        exc=ValueError('PRIVATE_FIXTURE');exc.broker_api='PRIVATE_FIXTURE';exc.broker_attempts=True;exc.broker_code='12345678'
+        d=failure_details(exc)
+        for key in ['broker_api','broker_attempts','broker_code']:self.assertNotIn(key,d)
+        self.assertNotIn('PRIVATE_FIXTURE',json.dumps(d))
+
 if __name__=='__main__':unittest.main()
