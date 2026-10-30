@@ -24,8 +24,10 @@ jobs:
       KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
       LIVE_ENABLED: 'false'
       KIS_ALLOW_ORDER: 'false'
-      KIS_BATCH_SIZE: '50'
-      KIS_FLOW_BATCH_SIZE: '20'
+      KIS_BATCH_SIZE: '100'
+      KIS_DAILY_REFRESH_LIMIT: '3000'
+      KIS_COLLECTION_SECONDS: '1800'
+      KIS_FLOW_BATCH_SIZE: '250'
       KIS_REQUEST_PAUSE: '0.8'
       KIS_FLOW_PAUSE: '0.8'
     steps:
@@ -43,7 +45,8 @@ jobs:
           pip install 'cryptography>=42,<47'
       - name: Collect prices and investor flow with single encrypted-cache token
         run: python collect_shared_token.py
-      - name: Commit collected data only after both succeed
+      - name: Commit collected read-only data
+        if: always()
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'

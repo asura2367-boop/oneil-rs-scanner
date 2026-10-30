@@ -36,16 +36,24 @@ def load_inputs(prices_path, flows_path, target):
     return p,f,signal_day,sessions
 
 
+def history_quality(h,signal_day,sessions):
+    if len(h)<253:return 'missing_history'
+    if h.index[-1]!=signal_day:return 'stale_price'
+    h=h.tail(253)
+    if not h.index.equals(sessions[-253:]):return 'misaligned_history'
+    if (not np.isfinite(h[['close','volume']].to_numpy(float)).all() or
+            (h.close<=0).any() or (h.volume.tail(21)<=0).any()):
+        return 'invalid_price_or_volume'
+    return None
+
+
 def intraday_universe(prices_path, flows_path, target, previous):
-    p,_,signal_day,_=load_inputs(prices_path,flows_path,target)
+    p,_,signal_day,sessions=load_inputs(prices_path,flows_path,target)
     if signal_day!=pd.Timestamp(previous):raise ValueError('HISTORY_SESSION_MISMATCH')
     codes=[]
     for ticker,g in p.groupby('ticker'):
-        h=g.tail(253)
-        if (len(h)==253 and h.date.iloc[-1]==signal_day and
-                np.isfinite(h[['close','volume']].to_numpy(float)).all() and
-                (h.close>0).all() and (h.volume.tail(21)>0).all()):
-            codes.append(ticker)
+        h=g.set_index('date')
+        if history_quality(h,signal_day,sessions) is None:codes.append(ticker)
     if not codes:raise ValueError('INTRADAY_UNIVERSE_EMPTY')
     return codes
 
@@ -71,7 +79,7 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
             'latest_history_day':str(signal_day.date()),
             'source_basis':'INTRADAY_KIS_SNAPSHOT' if intraday is not None else 'PREVIOUS_CONFIRMED_SESSION',
             'target_date':str(target.date()),'valid_history':0,'missing_history':0,
-            'stale_price':0,'invalid_price_or_volume':0,
+            'stale_price':0,'invalid_price_or_volume':0,'misaligned_history':0,
             'rs_85':0,'volume_1x':0,'up_channel':0,'channel_0_75':0,
             'flow_five_valid':0,'foreign_positive':0,'institution_positive':0,'selected':0,
             'flow_missing_or_short':0,'flow_stale':0,'flow_invalid':0,
@@ -84,13 +92,10 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
             collection_started_at_kst=min(observed).isoformat(),collection_finished_at_kst=max(observed).isoformat())
     for ticker,g in p.groupby('ticker'):
         h=g.set_index('date')
-        if len(h)<253:
-            counts['missing_history']+=1;continue
-        if h.index[-1]!=signal_day:
-            counts['stale_price']+=1;continue
+        reason=history_quality(h,signal_day,sessions)
+        if reason:
+            counts[reason]+=1;continue
         h=h.tail(253)
-        if not np.isfinite(h[['close','volume']].to_numpy(float)).all() or (h.close<=0).any() or (h.volume.tail(21)<=0).any():
-            counts['invalid_price_or_volume']+=1;continue
         if intraday is not None:
             live=intraday.get(ticker)
             if live is None:continue
@@ -108,8 +113,22 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
         channel=float((y[-1]-mid[-1]+width)/(2*width))
         scores.append(dict(ticker=ticker,name=str(h.name.iloc[-1]),score=score,volume_ratio=ratio,channel_position=channel,channel_up=slope>0,reference_close=int(close[-1])))
     if not scores: raise ValueError('RS 계산 가능한 전일 종목 없음')
+    registry=prices_path.parent/'universe_test.csv'
+    registered=set(p.ticker.unique())
+    if registry.exists():
+        listed=pd.read_csv(registry,dtype=str,encoding='utf-8-sig')
+        if 'ticker' not in listed:raise ValueError('RS_REGISTRY_INVALID')
+        registered.update(str(t).zfill(6) for t in listed.ticker if str(t).isdigit() and len(str(t))<=6)
+    counts.update(registered_universe_symbols=len(registered),
+        uncollected_symbols=len(registered-set(p.ticker.unique())),
+        rs_cohort=len(scores),rs_scope='AVAILABLE_SAME_SESSION_253_BARS',
+        rs_history_session=str(signal_day.date()),
+        rs_coverage_pct=round(100*len(scores)/len(registered),2) if registered else 0,
+        rs_formula='0.4*R63+0.2*R126+0.2*R189+0.2*R252',
+        volume_basis='ACTUAL_CUMULATIVE_VS_CONFIRMED_20D_DAILY')
     df=pd.DataFrame(scores)
     df['rs']=np.ceil(df.score.rank(pct=True)*99).clip(1,99).astype(int)
+    counts['rs_90']=int((df.rs>=90).sum())
     for key,condition in [('rs_85',df.rs>=85),('volume_1x',df.volume_ratio>=1),
                           ('up_channel',df.channel_up),('channel_0_75',df.channel_position.between(0,.75))]:
         df=df[condition.loc[df.index]]
@@ -174,7 +193,7 @@ if __name__=='__main__':
             from quote_collector_v4a import collect_candidate_quotes
             codes=intraday_universe(args.prices,args.flows,args.date,args.previous_session)
             stage='KIS_QUOTE_COLLECTION'
-            quotes=collect_candidate_quotes(codes,args.date)
+            quotes=collect_candidate_quotes(codes,args.date,workers=8)
         stage='CANDIDATE_CALCULATION'
         generate(args.prices,args.flows,args.date,args.output,args.diagnostics,intraday=quotes)
     except Exception as exc:

@@ -37,7 +37,7 @@ def get_token(session, key, secret):
     return payload['access_token']
 
 
-def fetch_year(session, key, secret, token, symbol, start, end):
+def fetch_year(session, key, secret, token, symbol, start, end, *, min_rows=200):
     rows = []
     cursor = end
     for _ in range(7):
@@ -54,10 +54,11 @@ def fetch_year(session, key, secret, token, symbol, start, end):
             'tr_id': 'FHKST03010100', 'content-type': 'application/json',
         }
         response = session.get(f'{BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
-                               params=params, headers=headers, timeout=25)
+                               params=params, headers=headers, timeout=25, allow_redirects=False)
         if response.status_code in (429, 500, 502, 503, 504):
             raise RuntimeError(f'{symbol} 일시적 API 오류 HTTP {response.status_code}')
-        response.raise_for_status()
+        if response.status_code != 200:
+            raise RuntimeError(f'PRICE_HTTP_{response.status_code}')
         payload = response.json()
         if str(payload.get('rt_cd')) != '0':
             raise RuntimeError(f'{symbol} API 오류: {payload.get("msg_cd")} {payload.get("msg1")}')
@@ -80,8 +81,8 @@ def fetch_year(session, key, secret, token, symbol, start, end):
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna().drop_duplicates('date').sort_values('date')
     df = df[(df['date'].dt.date >= start) & (df['date'].dt.date <= end)]
-    if len(df) < 200:
-        raise RuntimeError(f'{symbol} 수집 부족: {len(df)}개 일봉 (200개 이상 필요)')
+    if len(df) < min_rows:
+        raise RuntimeError('PRICE_HISTORY_TOO_SHORT')
     return df
 
 
@@ -133,20 +134,63 @@ def save_atomic(path, data):
     return data
 
 
-def write_status(path, universe, data, today, succeeded, failed):
-    valid=set(data['ticker'].astype(str).str.zfill(6)) if not data.empty else set()
+def confirmed_session(now):
+    """Latest closed KRX session; never call an intraday candle confirmed."""
+    import exchange_calendars as xcals
+    cal=xcals.get_calendar('XKRX')
+    day=now.astimezone(ZoneInfo('Asia/Seoul')).date()
+    session=cal.date_to_session(day.isoformat(),direction='previous')
+    if session.date()==day and now.time()<clock_time(16,0):
+        session=cal.previous_session(session)
+    return session.date()
+
+
+def collection_plan(universe, existing, expected, *, bootstrap_limit=100, refresh_limit=3000):
+    latest=existing.groupby('ticker')['date'].max().to_dict() if not existing.empty else {}
+    missing=[item for item in universe if item[0] not in latest]
+    stale=[item for item in universe if item[0] in latest and latest[item[0]].date()<expected]
+    stale.sort(key=lambda item:(latest[item[0]],item[0]))
+    # Backfill progresses every run; daily refresh no longer waits three days or
+    # loses all but five slots to new symbols. An execution budget bounds work.
+    return missing[:bootstrap_limit]+stale[:refresh_limit]
+
+
+def fetch_incremental(session,key,secret,token,code,history,start,end):
+    if history.empty:
+        return fetch_year(session,key,secret,token,code,start,end,min_rows=1),True
+    recent=history.sort_values('date')
+    since=max(start,recent.date.max().date()-timedelta(days=14))
+    delta=fetch_year(session,key,secret,token,code,since,end,min_rows=1)
+    overlap=recent.merge(delta,on='date',suffixes=('_old','_new'))
+    # Adjustment revisions must refresh the whole window, not combine prices
+    # from different split/rights-adjustment scales into one RS history.
+    if overlap.empty or (overlap.close_old!=overlap.close_new).any():
+        return fetch_year(session,key,secret,token,code,start,end,min_rows=1),True
+    return delta,False
+
+
+def write_status(path, universe, data, today, succeeded, failed, *, expected=None,
+                 attempted=0,remaining_batch=0,full_history_requests=0):
     codes={code for code,_ in universe}
-    completed=len(valid & codes)
+    latest=data.groupby('ticker')['date'].max().to_dict() if not data.empty else {}
+    completed=len(set(latest)&codes)
+    expected=expected or today
+    current={c for c in codes if c in latest and latest[c].date()==expected}
+    history_count=data.groupby('ticker').size().to_dict() if not data.empty else {}
+    eligible={c for c in current if history_count.get(c,0)>=253}
     status={
-        'as_of': today.isoformat(),
-        'universe_total': len(codes),
-        'collected_symbols': completed,
-        'remaining_symbols': max(0,len(codes)-completed),
-        'progress_pct': round(100*completed/len(codes),2) if codes else 0,
-        'daily_rows': int(len(data)),
-        'last_run_success': succeeded,
-        'last_run_failures': failed,
-        'note': '수집 완료 수는 일봉이 1개 이상인 종목 기준이며 RS 계산 적격 종목 수와 다릅니다.'
+        'as_of':today.isoformat(),'confirmed_session':expected.isoformat(),
+        'universe_total':len(codes),'collected_symbols':completed,
+        'remaining_symbols':max(0,len(codes)-completed),
+        'progress_pct':round(100*completed/len(codes),2) if codes else 0,
+        'current_session_symbols':len(current),
+        'current_history_253_symbols':len(eligible),
+        'current_session_coverage_pct':round(100*len(current)/len(codes),2) if codes else 0,
+        'daily_rows':int(len(data)),'last_run_success':succeeded,
+        'last_run_failures':failed,'last_run_attempted':attempted,
+        'remaining_planned_symbols':remaining_batch,
+        'full_history_requests':full_history_requests,
+        'note':'최신 확정 거래일·253개 이력 확보 수를 별도 표시합니다. RS 최종 적격 수는 가격·거래량·정렬 검증 후 결정됩니다.'
     }
     tmp=path.with_suffix('.tmp')
     tmp.write_text(json.dumps(status,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -184,60 +228,61 @@ def main(shared_token=None):
     # Historical zero-volume rows remain untouched: they may be real suspensions.
     existing=confirmed_rows(existing)
     start=today-timedelta(days=410)
-    batch_size=max(1,min(int(os.getenv('KIS_BATCH_SIZE','20')),50))
-    fresh_days=max(1,int(os.getenv('KIS_FRESH_DAYS','3')))
+    expected=confirmed_session(now_kst)
+    batch_size=max(1,min(int(os.getenv('KIS_BATCH_SIZE','100')),200))
+    refresh_limit=max(1,min(int(os.getenv('KIS_DAILY_REFRESH_LIMIT','3000')),5000))
+    max_seconds=max(60,min(int(os.getenv('KIS_COLLECTION_SECONDS','1800')),2100))
+    batch=collection_plan(universe,existing,expected,bootstrap_limit=batch_size,refresh_limit=refresh_limit)
     latest=existing.groupby('ticker')['date'].max().to_dict() if not existing.empty else {}
-    # 최초 구축 시 미수집 종목부터 처리. 기존 종목 갱신은 미수집 종목이 없을 때 진행.
-    missing=[(code,name) for code,name in universe if code not in latest]
-    stale=[(code,name) for code,name in universe if code in latest and (today-latest[code].date()).days>fresh_days]
-    # Reserve capacity for stale symbols while continuing new-universe coverage.
-    refresh_quota = max(0, min(int(os.getenv('KIS_REFRESH_BATCH_SIZE', '10')), batch_size))
-    stale.sort(key=lambda item: latest[item[0]])
-    refresh = stale[:refresh_quota]
-    new = missing[:batch_size-len(refresh)]
-    # If either group is short, fill spare capacity from the other group.
-    if len(new)+len(refresh) < batch_size:
-        new += missing[len(new):len(new)+(batch_size-len(new)-len(refresh))]
-    if len(new)+len(refresh) < batch_size:
-        refresh += stale[len(refresh):len(refresh)+(batch_size-len(new)-len(refresh))]
-    batch = new + refresh
-    print(f'이번 배치 신규 {len(new)} / 갱신 {len(refresh)}', flush=True)
+    missing=[item for item in universe if item[0] not in latest]
+    print(f'확정 거래일 {expected}; 신규 이력 최대 {batch_size}; 기존 일봉 갱신 최대 {refresh_limit}',flush=True)
     print(f'전체 {len(universe)}개 / 저장 {len(latest)}개 / 미수집 {len(missing)}개 / 이번 {len(batch)}개',flush=True)
     if not batch:
         if destination.exists():
             save_atomic(destination,existing)
-        write_status(OUT/'collection_status.json', universe, existing, today, 0, 0)
+        write_status(OUT/'collection_status.json', universe, existing, today, 0, 0, expected=expected)
         print('수집 대상 없음.',flush=True)
         return
     session=requests.Session()
     token = shared_token if shared_token is not None else get_token(session,key,secret)
     if not isinstance(token,str) or not token or any(c.isspace() for c in token):
         raise RuntimeError('KIS 공유 토큰 형식 오류')
-    success=0
+    success=0;attempted=0;full_history_requests=0;started=time.monotonic()
     failures=[]
+    histories={c:g.copy() for c,g in existing.groupby('ticker')}
     for code,name in batch:
+        if time.monotonic()-started>=max_seconds:
+            print('조회 예산 종료; 다음 수집에서 미완료 종목을 이어갑니다.',flush=True)
+            break
+        attempted+=1
         try:
-            df=fetch_year(session,key,secret,token,code,start,today)
+            history=histories.get(code,pd.DataFrame())
+            df,replaced=fetch_incremental(session,key,secret,token,code,history,start,expected)
+            full_history_requests+=int(replaced)
             df=confirmed_rows(df)
             if df.empty:
                 raise RuntimeError('확정된 일봉 없음')
             df.insert(0,'ticker',code)
             df.insert(1,'name',name)
+            if replaced:
+                dates=pd.to_datetime(existing['date']).dt.date
+                existing=existing.loc[~((existing.ticker==code)&(dates>=start))].copy()
             existing=pd.concat([existing,df],ignore_index=True)
             existing=existing.drop_duplicates(['ticker','date'],keep='last')
             success+=1
             print(f'OK {code} {name}: {len(df)} 일봉',flush=True)
         except Exception as e:
             failures.append(code)
-            print(f'FAIL {code}: {type(e).__name__}: {str(e)[:160]}',flush=True)
-        # 5개마다 저장해 중간 실패에도 수집 결과 보존
-        if success and (success%5==0):
+            print(f'FAIL {code}: {type(e).__name__}; 이전 이력 유지',flush=True)
+        # Large daily refreshes checkpoint without rewriting the full CSV per five API calls.
+        if success and success%50==0:
             save_atomic(destination,existing)
         time.sleep(float(os.getenv('KIS_REQUEST_PAUSE','0.8')))
     # Persist cleanup even when API calls fail; don't discard other historical bars.
     if success or destination.exists():
         save_atomic(destination,existing)
-    write_status(OUT/'collection_status.json', universe, existing, today, success, len(failures))
+    write_status(OUT/'collection_status.json', universe, existing, today, success, len(failures),
+        expected=expected,attempted=attempted,remaining_batch=len(batch)-attempted,full_history_requests=full_history_requests)
     print(f'이번 성공 {success}/{len(batch)}, 실패 {len(failures)}, 전체 저장 종목 {existing.ticker.nunique()}',flush=True)
     if success==0:
         raise RuntimeError('이번 실행 성공 종목 0개. 기존 CSV 보존. API 응답/토큰 발급 제한 확인')

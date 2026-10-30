@@ -5,3 +5,4 @@ plotly>=5.20,<7
 requests>=2.31,<3
 psycopg[binary]>=3.2,<4
 cryptography>=42,<47
+exchange-calendars>=4.5,<5

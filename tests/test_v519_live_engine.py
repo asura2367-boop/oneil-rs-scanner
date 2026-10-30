@@ -1485,4 +1485,177 @@ class IntradayCandidateTests(unittest.TestCase):
             snapshot['bought_today']={'234690'}
             self.assertEqual(plan_orders(candidates,snapshot,quote,power)[0],[])
 
+class RsCoverageCollectionTests(unittest.TestCase):
+    def test_collection_budget_saves_real_partial_progress_without_losing_old_bars(self):
+        import build_data as b,pandas as pd,io
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            original=pd.DataFrame([{'ticker':'000001','name':'a','date':'2026-10-28','close':100,'volume':10}])
+            original.to_csv(root/'kis_daily_universe.csv',index=False)
+            delta=pd.DataFrame([{'date':pd.Timestamp('2026-10-29'),'close':200,'volume':20}])
+            with patch.object(b,'OUT',root),patch.object(b,'load_universe',return_value=[('000001','a'),('000002','b'),('000003','c')]),\
+                    patch.object(b,'confirmed_session',return_value=dt.date(2026,10,29)),\
+                    patch.object(b,'fetch_incremental',return_value=(delta,True)) as fetch,\
+                    patch.object(b.time,'monotonic',side_effect=[0,0,61]),patch.object(b.time,'sleep'),\
+                    patch.dict(os.environ,{'KIS_APP_KEY':'fixture','KIS_APP_SECRET':'fixture','KIS_COLLECTION_SECONDS':'60'}),patch('sys.stdout',new=io.StringIO()):
+                b.main(shared_token='memory-only-fixture')
+            saved=pd.read_csv(root/'kis_daily_universe.csv',dtype={'ticker':str});status=json.loads((root/'collection_status.json').read_text())
+        self.assertEqual(set(saved.ticker),{'000001','000002'});self.assertEqual(fetch.call_count,1)
+        self.assertEqual(status['last_run_attempted'],1);self.assertEqual(status['remaining_planned_symbols'],2)
+        self.assertEqual(saved.loc[saved.ticker=='000001','close'].tolist(),[100])
+
+    def test_failed_refresh_preserves_history_and_does_not_log_raw_exception(self):
+        import build_data as b,pandas as pd,io
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            pd.DataFrame([{'ticker':'000001','name':'a','date':'2026-10-28','close':100,'volume':10}]).to_csv(root/'kis_daily_universe.csv',index=False)
+            output=io.StringIO()
+            with patch.object(b,'OUT',root),patch.object(b,'load_universe',return_value=[('000001','a')]),\
+                    patch.object(b,'confirmed_session',return_value=dt.date(2026,10,29)),\
+                    patch.object(b,'fetch_incremental',side_effect=RuntimeError('SENSITIVE_FIXTURE')),\
+                    patch.object(b.time,'sleep'),patch.dict(os.environ,{'KIS_APP_KEY':'fixture','KIS_APP_SECRET':'fixture'}),patch('sys.stdout',new=output):
+                with self.assertRaises(RuntimeError):b.main(shared_token='memory-only-fixture')
+            saved=pd.read_csv(root/'kis_daily_universe.csv');status=json.loads((root/'collection_status.json').read_text())
+        self.assertEqual(saved.close.tolist(),[100]);self.assertEqual(status['last_run_failures'],1)
+        self.assertNotIn('SENSITIVE_FIXTURE',output.getvalue())
+
+    def test_refreshes_all_stale_histories_instead_of_five_slots(self):
+        import build_data as b,pandas as pd
+        universe=[(str(n).zfill(6),str(n)) for n in range(1,16)]
+        old=pd.DataFrame([{'ticker':str(n).zfill(6),'date':pd.Timestamp('2026-10-28')} for n in range(1,13)])
+        plan=b.collection_plan(universe,old,dt.date(2026,10,29),bootstrap_limit=2)
+        self.assertEqual([c for c,_ in plan[:2]],['000013','000014'])
+        self.assertEqual(len(plan),14)
+        self.assertTrue(all((str(n).zfill(6),str(n)) in plan for n in range(1,13)))
+
+    def test_oldest_refresh_first_current_skipped(self):
+        import build_data as b,pandas as pd
+        universe=[('000001','a'),('000002','b'),('000003','c'),('000004','d')]
+        old=pd.DataFrame([{'ticker':'000001','date':pd.Timestamp('2026-10-29')},
+            {'ticker':'000002','date':pd.Timestamp('2026-10-27')},
+            {'ticker':'000003','date':pd.Timestamp('2026-10-23')}])
+        self.assertEqual(b.collection_plan(universe,old,dt.date(2026,10,29),bootstrap_limit=1),
+            [('000004','d'),('000003','c'),('000002','b')])
+
+    def test_confirmed_session_excludes_live_daily_bars_weekends(self):
+        from build_data import confirmed_session
+        for stamp,day in [('2026-10-30T14:00:00+09:00','2026-10-29'),
+                ('2026-10-30T16:00:00+09:00','2026-10-30'),
+                ('2026-10-31T10:00:00+09:00','2026-10-30'),
+                ('2026-11-02T08:00:00+09:00','2026-10-30')]:
+            self.assertEqual(confirmed_session(dt.datetime.fromisoformat(stamp)).isoformat(),day)
+
+    def test_increment_reads_overlap_and_keeps_history(self):
+        import build_data as b,pandas as pd
+        old=pd.DataFrame({'date':pd.to_datetime(['2026-10-27','2026-10-28']),'close':[100,101],'volume':[10,11]})
+        delta=pd.DataFrame({'date':pd.to_datetime(['2026-10-28','2026-10-29']),'close':[101,102],'volume':[11,12]})
+        with patch.object(b,'fetch_year',return_value=delta) as fetch:
+            result,replaced=b.fetch_incremental(None,'k','s','memory-token','000001',old,dt.date(2025,9,1),dt.date(2026,10,29))
+        self.assertFalse(replaced);self.assertEqual(result.close.tolist(),[101,102])
+        self.assertEqual(fetch.call_count,1);self.assertEqual(fetch.call_args.kwargs,{'min_rows':1})
+        self.assertLess(fetch.call_args.args[-2],dt.date(2026,10,28))
+
+    def test_adjusted_overlap_requires_full_refetch(self):
+        import build_data as b,pandas as pd
+        old=pd.DataFrame({'date':pd.to_datetime(['2026-10-28']),'close':[100],'volume':[10]})
+        revised=pd.DataFrame({'date':pd.to_datetime(['2026-10-28','2026-10-29']),'close':[50,51],'volume':[20,21]})
+        with patch.object(b,'fetch_year',side_effect=[revised,revised]) as fetch:
+            _,replaced=b.fetch_incremental(None,'k','s','t','000001',old,dt.date(2025,9,1),dt.date(2026,10,29))
+        self.assertTrue(replaced);self.assertEqual(fetch.call_count,2)
+        self.assertEqual(fetch.call_args.args[-2],dt.date(2025,9,1))
+
+    def test_missing_overlap_requires_full_refetch(self):
+        import build_data as b,pandas as pd
+        old=pd.DataFrame({'date':pd.to_datetime(['2026-10-20']),'close':[100]})
+        delta=pd.DataFrame({'date':pd.to_datetime(['2026-10-29']),'close':[50]})
+        with patch.object(b,'fetch_year',side_effect=[delta,delta]) as fetch:
+            _,replaced=b.fetch_incremental(None,'k','s','t','000001',old,dt.date(2025,9,1),dt.date(2026,10,29))
+        self.assertTrue(replaced);self.assertEqual(fetch.call_count,2)
+
+    def test_short_ipo_history_is_not_padded(self):
+        import build_data as b,pandas as pd
+        short=pd.DataFrame({'date':pd.to_datetime(['2026-10-29']),'close':[100]})
+        with patch.object(b,'fetch_year',return_value=short) as fetch:
+            result,replaced=b.fetch_incremental(None,'k','s','t','000001',pd.DataFrame(),dt.date(2025,9,1),dt.date(2026,10,29))
+        self.assertTrue(replaced);self.assertEqual(len(result),1);self.assertEqual(fetch.call_count,1)
+
+    def test_coverage_is_current_not_ever_collected(self):
+        import build_data as b,pandas as pd
+        rows=pd.DataFrame([{'ticker':'000001','date':d} for d in pd.bdate_range(end='2026-10-29',periods=253)]
+            +[{'ticker':'000002','date':pd.Timestamp('2026-10-28')}])
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/'status.json'
+            b.write_status(path,[('000001','a'),('000002','b'),('000003','c')],rows,dt.date(2026,10,30),1,0,expected=dt.date(2026,10,29),attempted=1,remaining_batch=1)
+            d=json.loads(path.read_text())
+        self.assertEqual(d['collected_symbols'],2);self.assertEqual(d['current_session_symbols'],1)
+        self.assertEqual(d['current_history_253_symbols'],1);self.assertEqual(d['current_session_coverage_pct'],33.33)
+        self.assertEqual(d['remaining_planned_symbols'],1)
+
+    def test_calendar_gaps_do_not_enter_rs(self):
+        import pandas as pd
+        from build_v4b_candidates import history_quality
+        days=pd.bdate_range(end='2026-10-29',periods=254)
+        h=pd.DataFrame({'close':100,'volume':100},index=days[-253:])
+        self.assertIsNone(history_quality(h,days[-1],days))
+        gap=pd.DataFrame({'close':100,'volume':100},index=days.delete(100))
+        self.assertEqual(history_quality(gap,days[-1],days),'misaligned_history')
+        self.assertEqual(history_quality(h.iloc[:-1],days[-1],days),'missing_history')
+
+    def test_rs_reports_actual_cohort_and_uncollected_registry(self):
+        import pandas as pd,io
+        from build_v4b_candidates import generate
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);p,f=IntradayCandidateTests().history(root)
+            pd.DataFrame([{'ticker':'234690'},{'ticker':'000001'},{'ticker':'000002'}]).to_csv(root/'universe_test.csv',index=False)
+            diagnostic=root/'diagnostic.json'
+            with patch('sys.stdout',new=io.StringIO()):generate(p,f,'2026-10-29',root/'out.csv',diagnostic)
+            data=json.loads(diagnostic.read_text())
+        self.assertEqual(data['rs_cohort'],1);self.assertEqual(data['registered_universe_symbols'],3)
+        self.assertEqual(data['uncollected_symbols'],2);self.assertEqual(data['rs_coverage_pct'],33.33)
+        self.assertEqual(data['rs_formula'],'0.4*R63+0.2*R126+0.2*R189+0.2*R252')
+        self.assertEqual(data['volume_basis'],'ACTUAL_CUMULATIVE_VS_CONFIRMED_20D_DAILY')
+
+    def test_stale_high_return_stock_cannot_distort_current_rank(self):
+        import pandas as pd,numpy as np,io
+        from build_v4b_candidates import generate
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);p,f=IntradayCandidateTests().history(root)
+            source=pd.read_csv(p,dtype={'ticker':str})
+            old=source.copy();old.ticker='000001';old.date=pd.bdate_range(end='2026-10-27',periods=253).strftime('%Y-%m-%d');old.close=np.exp(np.arange(253)*.01)*100
+            pd.concat([source,old]).to_csv(p,index=False);diagnostic=root/'d.json'
+            with patch('sys.stdout',new=io.StringIO()):generate(p,f,'2026-10-29',root/'out.csv',diagnostic)
+            d=json.loads(diagnostic.read_text())
+        self.assertEqual(d['rs_cohort'],1);self.assertEqual(d['stale_price'],1)
+
+    def test_parallel_quotes_return_complete_deterministic_identity(self):
+        from quote_collector_v4a import collect_candidate_quotes
+        fixture=IntradayCandidateTests();fixture.setUp()
+        class Client:
+            def daily_candidate_snapshot(self,code,**kwargs):return fixture.quote(code)
+        codes=['234690','005930','000660']
+        result=collect_candidate_quotes(codes,'2026-10-29',client=Client(),clock=lambda:fixture.now,pause=lambda n:None,workers=3)
+        self.assertEqual(list(result),codes)
+        self.assertEqual([result[c]['ticker'] for c in codes],codes)
+
+    def test_parallel_failure_never_publishes_partial_universe(self):
+        from quote_collector_v4a import collect_candidate_quotes
+        fixture=IntradayCandidateTests();fixture.setUp()
+        class Client:
+            def daily_candidate_snapshot(self,code,**kwargs):
+                if code=='005930':raise ValueError('HTTP_FAILURE')
+                return fixture.quote(code)
+        with self.assertRaises(ValueError):collect_candidate_quotes(['234690','005930'],'2026-10-29',client=Client(),clock=lambda:fixture.now,pause=lambda n:None,workers=2)
+        for workers in [0,9,True,'8']:
+            with self.assertRaises(ValueError):collect_candidate_quotes(['234690'],'2026-10-29',client=Client(),clock=lambda:fixture.now,workers=workers)
+
+    def test_shared_data_workflows_are_read_only_and_release_covered(self):
+        root=pathlib.Path(__file__).resolve().parents[1]
+        for path in ['.github/workflows/update.yml','.github/workflows/v10_collect_auto.yml']:
+            text=(root/path).read_text()
+            self.assertIn('python collect_shared_token.py',text)
+            self.assertIn("LIVE_ENABLED: 'false'",text);self.assertIn("KIS_ALLOW_ORDER: 'false'",text)
+            self.assertIn("KIS_DAILY_REFRESH_LIMIT: '3000'",text);self.assertNotIn('sleep 90',text)
+        for path in ['build_data.py','build_investor.py','collect_shared_token.py','.github/workflows/update.yml','.github/workflows/v10_collect_auto.yml','requirements.txt']:
+            self.assertIn(path,RELEASE_FILES)
+
 if __name__=='__main__':unittest.main()

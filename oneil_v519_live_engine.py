@@ -164,6 +164,8 @@ RELEASE_FILES = (
     '.github/workflows/oneil_v519_live_engine_review.yml',
     'build_v4b_candidates.py','quote_collector_v4a.py','kis_live_v4_5_2.py',
     '.github/workflows/v4b_candidate_save_auto.yml',
+    'build_data.py','build_investor.py','collect_shared_token.py',
+    '.github/workflows/update.yml','.github/workflows/v10_collect_auto.yml','requirements.txt',
 )
 
 

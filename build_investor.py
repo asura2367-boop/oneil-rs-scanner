@@ -23,10 +23,13 @@ def main(shared_token=None):
     prices["date"] = pd.to_datetime(prices["date"],errors="coerce")
     prices["close"] = pd.to_numeric(prices["close"],errors="coerce")
     # Prefer stocks with sufficient 1-year history and high weighted returns.
+    from build_data import confirmed_session
+    expected=confirmed_session(datetime.now(ZoneInfo('Asia/Seoul')))
+    prices=prices.loc[prices.date.dt.date<=expected]
     candidates=[]
     for ticker,h in prices.dropna().sort_values("date").groupby("ticker"):
         p=h["close"].to_numpy()
-        if len(p) < 253 or min(p[-253:]) <= 0: continue
+        if len(p) < 253 or min(p[-253:]) <= 0 or h.date.max().date()!=expected: continue
         r=[(p[-1]/p[-1-n]-1)*100 for n in (63,126,189,252)]
         candidates.append((ticker,sum(x*w for x,w in zip(r,[.4,.2,.2,.2]))))
     candidates.sort(key=lambda x:x[1],reverse=True)
@@ -35,22 +38,16 @@ def main(shared_token=None):
     old=pd.read_csv(DEST,dtype={"ticker":str,"date":str}) if DEST.exists() else pd.DataFrame(columns=FIELDS)
     old=old.reindex(columns=FIELDS)
     if not old.empty: old["ticker"]=old["ticker"].str.zfill(6)
-    today=datetime.now(ZoneInfo("Asia/Seoul")).date()
+    old=old.loc[pd.to_datetime(old.date,errors='coerce').dt.date<=expected].copy()
     # Refresh existing tracked symbols first only if older than last available trading date.
     latest_price=prices.groupby("ticker")["date"].max().to_dict()
     last_flow=old.groupby("ticker")["date"].max().to_dict() if not old.empty else {}
-    limit=max(1,min(int(os.getenv("KIS_FLOW_BATCH_SIZE","20")),30))
-    refresh_quota=max(0,min(int(os.getenv('KIS_FLOW_REFRESH_BATCH_SIZE','5')),limit))
-    missing=[c for c,_ in candidates if c not in last_flow]
-    stale=[c for c,_ in candidates if c in last_flow and pd.Timestamp(last_flow[c]) < latest_price[c]]
-    stale.sort(key=lambda c: pd.Timestamp(last_flow[c]))
-    refresh=stale[:refresh_quota]
-    new=missing[:limit-len(refresh)]
-    if len(new)+len(refresh)<limit:
-        new+=missing[len(new):len(new)+(limit-len(new)-len(refresh))]
-    if len(new)+len(refresh)<limit:
-        refresh+=stale[len(refresh):len(refresh)+(limit-len(new)-len(refresh))]
-    batch=new+refresh
+    limit=max(1,min(int(os.getenv("KIS_FLOW_BATCH_SIZE","250")),400))
+    # Strongest RS cohort first, whether newly tracked or stale. A small refresh
+    # quota must not leave yesterday's strongest symbols on last week's flow.
+    batch=[c for c,_ in candidates if c not in last_flow or pd.Timestamp(last_flow[c]).date()<expected][:limit]
+    new=[c for c in batch if c not in last_flow]
+    refresh=[c for c in batch if c in last_flow]
     print(f'이번 배치 신규 {len(new)} / 갱신 {len(refresh)}',flush=True)
     if not batch:
         print("수급 최신 상태. 요청 없음."); return
@@ -69,7 +66,7 @@ def main(shared_token=None):
                 resp=session.get(BASE+"/uapi/domestic-stock/v1/quotations/inquire-investor",
                     headers={"authorization":f"Bearer {token}","appkey":key,"appsecret":secret,
                              "tr_id":"FHKST01010900","content-type":"application/json"},
-                    params={"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":code},timeout=25)
+                    params={"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":code},timeout=25,allow_redirects=False)
                 if not resp.ok: raise RuntimeError(f"HTTP {resp.status_code}")
                 payload=resp.json()
                 if str(payload.get("rt_cd"))!="0":
@@ -86,11 +83,12 @@ def main(shared_token=None):
                     "foreign_net_amount_raw":pd.to_numeric(df.get("frgn_ntby_tr_pbmn",pd.Series(index=df.index,dtype=float)),errors="coerce"),
                     "institution_net_amount_raw":pd.to_numeric(df.get("orgn_ntby_tr_pbmn",pd.Series(index=df.index,dtype=float)),errors="coerce")})
                 result=result.dropna(subset=["date","foreign_net_qty","institution_net_qty"])
+                result=result.loc[pd.to_datetime(result.date).dt.date<=expected].copy()
                 if result.empty: raise RuntimeError("유효한 날짜별 수급 없음")
                 frames.append(result); success+=1
                 print(f"OK {code}: {len(result)} rows")
             except Exception as e:
-                failed+=1; print(f"FAIL {code}: {type(e).__name__}: {str(e)[:100]}")
+                failed+=1; print(f"FAIL {code}: {type(e).__name__}; 이전 수급 유지")
             time.sleep(float(os.getenv("KIS_FLOW_PAUSE","0.8")))
     if success:
         merged=pd.concat(frames,ignore_index=True).dropna(subset=["ticker","date"])
