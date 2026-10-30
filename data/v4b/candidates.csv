@@ -1,1 +1,2 @@
 ﻿date,ticker,rs,foreign_5d,institution_5d,volume_ratio,channel_position,channel_up,signal_date,name,signal_basis,observed_at_kst,flow_signal_date,reference_close
+2026-10-30,340450,95,256725.0,9854.0,2.653095,0.201469,True,2026-10-30,지씨지놈,INTRADAY_KIS_SNAPSHOT,2026-10-30T14:33:05.830749+09:00,2026-10-29,8950
