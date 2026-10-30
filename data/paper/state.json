@@ -9,7 +9,7 @@
       "entry": 5865.86,
       "entry_idx": 2,
       "partial": false,
-      "last_close": 5860.0
+      "last_close": 6460.0
     },
     "048910": {
       "name": "대원미디어",
@@ -17,10 +17,33 @@
       "entry": 7997.989999999999,
       "entry_idx": 2,
       "partial": false,
-      "last_close": 7990.0
+      "last_close": 7700.0
     }
   },
-  "pending": [],
-  "last_processed": "2026-10-29",
-  "session_index": 5
+  "pending": [
+    {
+      "signal_date": "2026-10-30",
+      "side": "SELL",
+      "ticker": "052460",
+      "name": "아이크래프트",
+      "qty": 170,
+      "reason": "1차 익절 신호 +8%"
+    },
+    {
+      "signal_date": "2026-10-30",
+      "side": "BUY",
+      "ticker": "069540",
+      "name": "빛과전자",
+      "reason": "RS 98 + 수급/거래량/채널"
+    },
+    {
+      "signal_date": "2026-10-30",
+      "side": "BUY",
+      "ticker": "042510",
+      "name": "라온시큐어",
+      "reason": "RS 98 + 수급/거래량/채널"
+    }
+  ],
+  "last_processed": "2026-10-30",
+  "session_index": 6
 }

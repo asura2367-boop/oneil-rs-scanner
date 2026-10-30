@@ -1,15 +1,15 @@
 {
-  "as_of": "2026-10-29",
+  "as_of": "2026-10-30",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-10-29",
+  "latest_processed": "2026-10-30",
   "initial_cash": 10000000.0,
   "cash": 6013510.21,
-  "holdings_value": 3981910.0,
-  "equity": 9995420.21,
-  "daily_pnl_mark_to_market": 0.0,
-  "daily_return_pct": 0.0,
-  "cumulative_pnl": -4579.79,
-  "cumulative_return_pct": -0.0458,
+  "holdings_value": 4113700.0,
+  "equity": 10127210.21,
+  "daily_pnl_mark_to_market": 131790.0,
+  "daily_return_pct": 1.3185,
+  "cumulative_pnl": 127210.21,
+  "cumulative_return_pct": 1.2721,
   "trade_count_today": 0,
   "sell_trade_count_today": 0,
   "trade_cost_today": 0,
@@ -26,24 +26,43 @@
       "ticker": "048910",
       "name": "대원미디어",
       "qty": 249,
-      "last_close": 7990.0,
+      "last_close": 7700.0,
       "entry": 7997.99,
-      "unrealized_pnl_before_sell_cost": -1989.51,
-      "unrealized_return_pct": -0.0999
+      "unrealized_pnl_before_sell_cost": -74199.51,
+      "unrealized_return_pct": -3.7258
     },
     {
       "ticker": "052460",
       "name": "아이크래프트",
       "qty": 340,
-      "last_close": 5860.0,
+      "last_close": 6460.0,
       "entry": 5865.86,
-      "unrealized_pnl_before_sell_cost": -1992.4,
-      "unrealized_return_pct": -0.0999
+      "unrealized_pnl_before_sell_cost": 202007.6,
+      "unrealized_return_pct": 10.1288
     }
   ],
   "next_session_strategy": {
     "mode": "REVIEW_ONLY",
-    "pending_orders": [],
+    "pending_orders": [
+      {
+        "ticker": "052460",
+        "name": "아이크래프트",
+        "side": "SELL",
+        "reason": "1차 익절 신호 +8%"
+      },
+      {
+        "ticker": "069540",
+        "name": "빛과전자",
+        "side": "BUY",
+        "reason": "RS 98 + 수급/거래량/채널"
+      },
+      {
+        "ticker": "042510",
+        "name": "라온시큐어",
+        "side": "BUY",
+        "reason": "RS 98 + 수급/거래량/채널"
+      }
+    ],
     "checks": [
       "Confirm priority OHLCV for positions and pending tickers",
       "Check next-session liquidity, flow, RS and gap before action",
