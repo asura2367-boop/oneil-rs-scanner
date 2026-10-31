@@ -1193,6 +1193,8 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertEqual([p.quantity for p in self.broker.calls],[6,4])
 
     def intercepted_live_broker(self, price, depth):
+        # These integration fixtures start after source/indicator qualification.
+        for c in self.candidates:c['technical']={'bb_upper':9000,'cloud_a':8800,'cloud_b':8900}
         fixture=self.broker
         live=object.__new__(KisBroker);live.execution=True;live.quote_evidence={};live.history_cache={}
         for name in ('history','snapshot','quote','power','buy_control','submit'):
@@ -1213,6 +1215,13 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertEqual((sent.price,sent.quantity),(11000,2))
         self.assertLessEqual((sent.price*sent.quantity*1005+999)//1000,25000)
         self.assertEqual(r['gate'],'ALLOW')
+
+    def test_fresh_buy_loses_technical_breakout_no_intent_or_post(self):
+        fixture,live=self.intercepted_live_broker(8000,2)
+        result=self.cycle()
+        self.assertEqual(fixture.calls,[])
+        self.assertEqual(self.ledger.pending(),[])
+        self.assertEqual(result['batch_stop_reason'],'TECHNICAL_ENTRY_NO_LONGER_VALID')
 
     def test_sell_reprice_inside_exit_band_creates_no_new_intent(self):
         ident=self.seed();self.ledger.ack(ident,'000122')
@@ -1848,3 +1857,4 @@ class TechnicalTimingTests(unittest.TestCase):
   with patch.object(b,'fetch_year',return_value=old) as fetch:
    _,replaced=b.fetch_incremental(None,'k','s','t','000001',old,dt.date(2025,9,1),dt.date(2026,10,29))
   self.assertTrue(replaced);self.assertEqual(fetch.call_args.args[-2],dt.date(2025,9,1))
+
