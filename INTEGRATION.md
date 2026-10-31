@@ -76,3 +76,14 @@ The integrated broker retries only the exact balance, daily-price and order-book
 Cash-order POSTs and unknown endpoint/TR pairs never retry. An HTTP 500 or lost response on an order still follows existing uncertain-submission recovery; no automatic resend is added. Exhausted reads return no cached balance and retain the existing safety block. This is bounded read resilience, not proof that the upstream HTTP 500 cause is fixed.
 
 Public diagnostics contain only a fixed API label, attempt count, HTTP status and recognized KIS error-code formats. Broker message text, response payloads, account data, credentials and URLs are excluded. Source approval, account activation, monetary limits, switches, stop-loss/target policy and emergency halt are unchanged.
+
+
+## BB/Ichimoku trend policy (BB_ICHI_TREND_V1)
+
+Entry retains RS >=90, actual volume, rising channel and positive foreign OR institution flow, and additionally requires a new close breakout above BB(20,2), above the displayed Ichimoku cloud, with conversion(9) >= base(26). Cloud spans use the values computed 26 sessions earlier (52-session span B); future bars and close-as-high/low proxies are forbidden. Intraday candidates use actual current-day high/low/price and cumulative volume; these are provisional until the close. Execution rechecks price against the saved upper band/cloud with all existing account/session/quote guards.
+
+For bot-managed holdings only, a confirmed daily close below both BB middle and Ichimoku base adds a technical exit. If the current execution price exceeds average cost it is TAKE_PROFIT_SIGNAL; otherwise STOP_LOSS_SIGNAL obeys the owner's stop-loss lock. Percentage stop(-5% default) and profit(+10% default) retain priority and settings. A profit signal is pre-fee/tax and is not a guaranteed net profit. Missing/stale/non-session OHLC disables only the additional technical exit, never the existing percentage exits. Unknown settings still fail closed.
+
+KIS history collection now preserves actual high/low. Legacy close-only histories are scheduled for full OHLC backfill. Until validated history and new candidates exist, old RS-only candidates cannot authorize new buys. Owner source approval and per-account activation remain required; no setting or approval is auto-changed by deployment.
+
+Validation limitation: the pre-change stored history has no high/low, so real historical performance uplift cannot be measured yet. Formula tests and synthetic execution fixtures are correctness tests, not a profit backtest or paper account. Compare out-of-sample historical results with fees/taxes/slippage once actual OHLC backfill completes before claiming return improvement.

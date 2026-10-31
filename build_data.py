@@ -74,11 +74,12 @@ def fetch_year(session, key, secret, token, symbol, start, end, *, min_rows=200)
     if not rows:
         raise RuntimeError(f'{symbol} 일봉 응답 없음')
     df = pd.DataFrame(rows)
-    df = df.rename(columns={'stck_bsop_date':'date','stck_clpr':'close','acml_vol':'volume'})
-    df = df[['date','close','volume']].copy()
+    df = df.rename(columns={'stck_bsop_date':'date','stck_clpr':'close','acml_vol':'volume','stck_hgpr':'high','stck_lwpr':'low'})
+    df = df[['date','close','volume','high','low']].copy()
     df['date'] = pd.to_datetime(df['date'], format='%Y%m%d', errors='coerce')
-    for col in ('close','volume'):
+    for col in ('close','volume','high','low'):
         df[col] = pd.to_numeric(df[col], errors='coerce')
+    if ((df['low']<=0)|(df['high']<df['close'])|(df['low']>df['close'])).any():raise ValueError('OHLC_RANGE_INVALID')
     df = df.dropna().drop_duplicates('date').sort_values('date')
     df = df[(df['date'].dt.date >= start) & (df['date'].dt.date <= end)]
     if len(df) < min_rows:
@@ -117,7 +118,11 @@ def read_existing(path):
     d=pd.read_csv(path,dtype={'ticker':str},encoding='utf-8-sig')
     if not set(cols).issubset(d.columns):
         raise RuntimeError(f'{path.name}: CSV 열 이름 불일치')
+    for c in ('high','low'):
+        if c not in d:d[c]=float('nan')
+    cols+=['high','low']
     d=d[cols].copy()
+    for c in ('high','low'):d[c]=pd.to_numeric(d[c],errors='coerce')
     d['ticker']=d['ticker'].astype(str).str.zfill(6)
     d['date']=pd.to_datetime(d['date'],errors='coerce')
     d['close']=pd.to_numeric(d['close'],errors='coerce')
@@ -148,7 +153,8 @@ def confirmed_session(now):
 def collection_plan(universe, existing, expected, *, bootstrap_limit=100, refresh_limit=3000):
     latest=existing.groupby('ticker')['date'].max().to_dict() if not existing.empty else {}
     missing=[item for item in universe if item[0] not in latest]
-    stale=[item for item in universe if item[0] in latest and latest[item[0]].date()<expected]
+    ohlc_ready={c for c,g in existing.groupby('ticker') if {'high','low'}.issubset(g.columns) and g.tail(253)[['high','low']].notna().all().all()} if not existing.empty else set()
+    stale=[item for item in universe if item[0] in latest and (latest[item[0]].date()<expected or item[0] not in ohlc_ready)]
     stale.sort(key=lambda item:(latest[item[0]],item[0]))
     # Backfill progresses every run; daily refresh no longer waits three days or
     # loses all but five slots to new symbols. An execution budget bounds work.
@@ -156,7 +162,7 @@ def collection_plan(universe, existing, expected, *, bootstrap_limit=100, refres
 
 
 def fetch_incremental(session,key,secret,token,code,history,start,end):
-    if history.empty:
+    if history.empty or not {'high','low'}.issubset(history.columns) or history.tail(253)[['high','low']].isna().any().any():
         return fetch_year(session,key,secret,token,code,start,end,min_rows=1),True
     recent=history.sort_values('date')
     since=max(start,recent.date.max().date()-timedelta(days=14))

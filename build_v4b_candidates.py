@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 
 COLUMNS=['date','ticker','rs','foreign_5d','institution_5d','volume_ratio','channel_position','channel_up','signal_date','name',
-         'signal_basis','observed_at_kst','flow_signal_date','reference_close']
+         'signal_basis','observed_at_kst','flow_signal_date','reference_close','technical_policy','technical_entry','technical_details']
 
 def load_inputs(prices_path, flows_path, target):
     target=pd.Timestamp(target).normalize()
@@ -82,7 +82,7 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
             'stale_price':0,'invalid_price_or_volume':0,'misaligned_history':0,
             'rs_85':0,'volume_1x':0,'up_channel':0,'channel_0_75':0,
             'flow_five_valid':0,'foreign_positive':0,'institution_positive':0,'selected':0,
-            'flow_missing_or_short':0,'flow_stale':0,'flow_invalid':0,
+            'technical_data_missing':0,'technical_rejected':0,'technical_passed':0,'legacy_selected':0,'flow_missing_or_short':0,'flow_stale':0,'flow_invalid':0,
              'foreign_only':0,'institution_only':0,'both_positive':0}
     scores=[]
     if intraday is not None:
@@ -100,7 +100,7 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
             live=intraday.get(ticker)
             if live is None:continue
             h=pd.concat([h,pd.DataFrame([{'name':str(h.name.iloc[-1]),'close':live['price'],
-                'volume':live['cumulative_volume']}],index=[target])]).tail(253)
+                'volume':live['cumulative_volume'],'high':live.get('high'),'low':live.get('low')}],index=[target])]).tail(253)
         counts['valid_history']+=1
         close=h.close.to_numpy(float);vol=h.volume.to_numpy(float)
         returns=np.array([close[-1]/close[-1-n]-1 for n in (63,126,189,252)])
@@ -111,7 +111,12 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
         mid=intercept+slope*x
         width=max(2*np.std(y-mid),1e-8)
         channel=float((y[-1]-mid[-1]+width)/(2*width))
-        scores.append(dict(ticker=ticker,name=str(h.name.iloc[-1]),score=score,volume_ratio=ratio,channel_position=channel,channel_up=slope>0,reference_close=int(close[-1])))
+        technical=None
+        try:
+            from oneil_live_v5_9 import technical_timing
+            technical=technical_timing(h.to_dict('records'))
+        except (ValueError,TypeError,KeyError):pass
+        scores.append(dict(technical=technical,ticker=ticker,name=str(h.name.iloc[-1]),score=score,volume_ratio=ratio,channel_position=channel,channel_up=slope>0,reference_close=int(close[-1])))
     if not scores: raise ValueError('RS 계산 가능한 전일 종목 없음')
     registry=prices_path.parent/'universe_test.csv'
     registered=set(p.ticker.unique())
@@ -157,7 +162,13 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
         elif foreign_ok: counts['foreign_only']+=1
         elif institution_ok: counts['institution_only']+=1
         if not (foreign_ok or institution_ok): continue
-        result.append(dict(date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=foreign,institution_5d=institution,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),channel_up=bool(r.channel_up),
+        counts['legacy_selected']+=1
+        if not isinstance(r.technical,dict):
+            counts['technical_data_missing']+=1;continue
+        if not r.technical['entry']:
+            counts['technical_rejected']+=1;continue
+        counts['technical_passed']+=1
+        result.append(dict(technical_policy='BB_ICHI_TREND_V1',technical_entry=True,technical_details=json.dumps(r.technical,separators=(',',':')),date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=foreign,institution_5d=institution,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),channel_up=bool(r.channel_up),
             signal_date=(target if intraday is not None else signal_day).strftime('%Y-%m-%d'),name=r.name,
             signal_basis=counts['source_basis'],observed_at_kst=intraday[r.ticker]['received_at_kst'] if intraday is not None else '',
             flow_signal_date=fh.index[-1].strftime('%Y-%m-%d'),reference_close=r.reference_close))

@@ -236,7 +236,8 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
         if not price:
             raise TradingBlocked('PRICE_ZERO')
         reason = ('STOP_LOSS' if price * 100 <= avg * (100-stop_loss_pct) else
-                  'TAKE_PROFIT' if price * 100 >= avg * (100+take_profit_pct) else None)
+                  'TAKE_PROFIT' if price * 100 >= avg * (100+take_profit_pct) else ('TAKE_PROFIT_SIGNAL' if price>avg else 'STOP_LOSS_SIGNAL')
+                  if isinstance(pos.get('technical'),dict) and pos['technical'].get('exit') is True else None)
         if reason:
             plans.append(OrderPlan(ticker, 'SELL', qty, price, 'exit', reason))
     b = limits(cash, invested, cash,reserve_pct=reserve_pct,per_stock_pct=per_stock_pct)
@@ -404,7 +405,7 @@ class KisBroker:
                     raise TradingBlocked('COST_INVALID')
                 positions[ticker] = {'quantity':qty, 'sellable':exact_int(r.get('ord_psbl_qty')),
                     'name':str(r.get('prdt_name') or ticker), 'average':str(avg), 'cost':int((avg*qty).to_integral_value(rounding=ROUND_CEILING)),
-                    'valuation':exact_int(r.get('evlu_amt'))}
+                    'valuation':exact_int(r.get('evlu_amt')),'technical':self.technical_signal(ticker)}
             if cont.strip().upper() not in ('F','M'):
                 break
             fk, nk = str(body.get('ctx_area_fk100') or '').strip(), str(body.get('ctx_area_nk100') or '').strip()
@@ -421,6 +422,28 @@ class KisBroker:
         pending = unfilled_codes(self.key,self.secret,self.account,self.product,self.access)
         return {'cash':cash,'invested':invested,'positions':positions,'pending':pending,
                 'equity':equity,'valuation':valuation}
+
+    def technical_signal(self,ticker):
+        # Only confirmed OHLC bars; missing data never disables the existing
+        # percentage exits and never creates a guessed technical exit.
+        try:
+            import csv
+            from build_data import confirmed_session
+            from oneil_live_v5_9 import technical_timing
+            import exchange_calendars as xcals
+            now=dt.datetime.now(ZoneInfo('Asia/Seoul'));day=confirmed_session(now)
+            with open(Path(__file__).resolve().parent/'data/kis_daily_universe.csv',encoding='utf-8-sig',newline='') as f:
+                reader=csv.DictReader(f)
+                if not {'high','low','close'}.issubset(reader.fieldnames or []):return None
+                rows=[r for r in reader if r['ticker'].zfill(6)==ticker and dt.date.fromisoformat(r['date'])<=day]
+            rows.sort(key=lambda r:r['date']);rows=rows[-78:]
+            if len(rows)!=78:return None
+            dates=[r['date'] for r in rows]
+            cal=xcals.get_calendar('XKRX');sessions=cal.sessions_in_range(dates[0],day.isoformat())
+            if dates!=[s.date().isoformat() for s in sessions]:return None
+            t=technical_timing(rows);t['signal_date']=day.isoformat();t['basis']='CONFIRMED_DAILY_OHLC'
+            return t
+        except (OSError,ValueError,TypeError,KeyError,ImportError):return None
 
     def history(self, day):
         from oneil_v519_history_observe import fetch_page
@@ -643,7 +666,7 @@ def sell_plan_allowed(plan,control):
     checks remain independent prerequisites for every sell.
     """
     policy=sell_policy(control)
-    return policy['connected'] and (policy['enabled'] or plan.reason=='TAKE_PROFIT')
+    return policy['connected'] and (policy['enabled'] or plan.reason in ('TAKE_PROFIT','TAKE_PROFIT_SIGNAL'))
 
 
 def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
@@ -770,6 +793,11 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     evidence=broker.quote_evidence[(plan.ticker,plan.side)]
                     quantity=min(quantity,evidence['size'])
                 if plan.side=='BUY':
+                    candidate=next((c for c in candidates if c['ticker']==plan.ticker),{})
+                    tech=candidate.get('technical')
+                    if isinstance(broker,KisBroker) and (not isinstance(tech,dict) or fresh<=max(tech['bb_upper'],tech['cloud_a'],tech['cloud_b'])):
+                        result['batch_stop_reason']='TECHNICAL_ENTRY_NO_LONGER_VALID'
+                        return result
                     amount,broker_qty=broker.power(plan.ticker,fresh)
                     money(amount);money(broker_qty)
                     cap=min(initial_remaining-spent,allocation['remaining'],
@@ -778,9 +806,11 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
                 elif isinstance(broker,KisBroker):
                     from decimal import Decimal
                     average=Decimal(str(snapshot['positions'][plan.ticker]['average']))
-                    if not (fresh*100<=average*(100-stop_loss_pct) or fresh*100>=average*(100+take_profit_pct)):
-                        quantity=0
-                    else:fresh_reason='STOP_LOSS' if fresh*100<=average*(100-stop_loss_pct) else 'TAKE_PROFIT'
+                    if fresh*100<=average*(100-stop_loss_pct):fresh_reason='STOP_LOSS'
+                    elif fresh*100>=average*(100+take_profit_pct):fresh_reason='TAKE_PROFIT'
+                    elif isinstance(snapshot['positions'][plan.ticker].get('technical'),dict) and snapshot['positions'][plan.ticker]['technical'].get('exit') is True:
+                        fresh_reason='TAKE_PROFIT_SIGNAL' if fresh>average else 'STOP_LOSS_SIGNAL'
+                    else:quantity=0
                 if quantity<1:
                     if not result['orders_sent']:result['status']='QUOTE_CHANGED_NO_ORDER'
                     ledger.dashboard_state['plans']=display_plans
@@ -996,7 +1026,7 @@ def scan_candidates(source, now):
     fatal={'SOURCE_FILE_MISSING','REQUIRED_COLUMNS_MISSING','INVALID_ROWS_PRESENT','STALE_SIGNAL_ROWS'}
     if fatal.intersection(report['reason_codes']):
         raise TradingBlocked('CANDIDATE_SOURCE_INVALID_OR_STALE')
-    return report['review_candidates']
+    return [c for c in report['review_candidates'] if c.get('technical') is not None]
 
 
 def read_buy_control(*, opener=None, now=None, access_token=None):
@@ -1063,7 +1093,7 @@ def dashboard_snapshot(ledger,result):
             'quantity':p['quantity'],'sellable':p['sellable'],'average':p['average'],
             'valuation':value,'cost':cost,'unrealized_pnl':value-cost,
             'return_pct':(value-cost)/cost*100 if cost else None,
-            'strategy_quantity':snap['managed'].get(ticker,0)})
+            'technical':p.get('technical'),'strategy_quantity':snap['managed'].get(ticker,0)})
     orders=ledger.rows("""SELECT ticker,side,venue,quantity,filled_quantity,status,
         broker_order_id,trading_day,limit_price,verified_not_sent,created_at,updated_at
         FROM v519_order_intents WHERE account_fingerprint=%s ORDER BY created_at DESC LIMIT 100""",

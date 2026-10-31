@@ -171,7 +171,9 @@ class CandidateQuoteClient(QuoteClient):
         price=integer(current.get('stck_prpr'));volume=integer(current.get('acml_vol'))
         if volume==0:return None
         row={'ticker':ticker,'price':price,'cumulative_volume':volume,
-             'received_at_kst':at.isoformat(),'trading_day':at.date().isoformat()}
+             'received_at_kst':at.isoformat(),'trading_day':at.date().isoformat(),
+             'high':integer(today[0].get('stck_hgpr')),'low':integer(today[0].get('stck_lwpr'))}
+        if not 0<row['low']<=price<=row['high']:raise ValueError('CANDIDATE_OHLC_INVALID')
         validate_candidate_quote(row,ticker,at)
         return row
 
