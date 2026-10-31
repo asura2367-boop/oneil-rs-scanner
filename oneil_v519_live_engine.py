@@ -660,6 +660,8 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
     now = now or clock()
     if now.tzinfo is None:
         raise TradingBlocked('CLOCK_INVALID')
+    if weekend_closed(now):
+        return market_closed_result()
     def order_time():
         current=clock()
         if current.tzinfo is None:raise TradingBlocked('CLOCK_INVALID')
@@ -1032,9 +1034,20 @@ def read_buy_control(*, opener=None, now=None, access_token=None):
         return {**denied,'reason':'CONTROL_READ_FAILED'}
 
 
+def weekend_closed(now):
+    """KST weekend closure; no quote, account, ledger or alert side effects."""
+    return now.astimezone(ZoneInfo('Asia/Seoul')).weekday() >= 5
+
+
+def market_closed_result():
+    return {'status':'MARKET_CLOSED','gate':'DENY','reason':'WEEKEND_KRX_CLOSED',
+            'orders_sent':0,'order_attempts':0,'execution_requested':False,
+            'account_checked':False,'recovery_checked':False}
+
+
 def monitoring_open(now):
     local=now.astimezone(ZoneInfo('Asia/Seoul'))
-    return dt.time(9)<=local.time().replace(tzinfo=None)<dt.time(20)
+    return not weekend_closed(now) and dt.time(9)<=local.time().replace(tzinfo=None)<dt.time(20)
 
 
 def dashboard_snapshot(ledger,result):
@@ -1160,6 +1173,11 @@ def runtime_main():
             require_live_release()  # deny before DB, token or any network order
         if not any((args.run,args.migrate,args.halt,args.recover,args.close,args.broker_audit,args.activate)):
             print(json.dumps(result))
+            return
+        if (args.run or args.close or args.activate or args.broker_audit) and weekend_closed(dt.datetime.now(ZoneInfo('Asia/Seoul'))):
+            result=market_closed_result()
+            Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
+            print(json.dumps(result,ensure_ascii=False))
             return
         if urlparse(os.getenv('SUPABASE_DB_URL','')).port==6543:
             raise TradingBlocked('SESSION_DATABASE_CONNECTION_REQUIRED')

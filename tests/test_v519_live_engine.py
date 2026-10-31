@@ -1767,3 +1767,36 @@ class KisReadRetryTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_FIXTURE',json.dumps(d))
 
 if __name__=='__main__':unittest.main()
+
+class WeekendClosureTests(unittest.TestCase):
+ def test_kst_boundaries(self):
+  from zoneinfo import ZoneInfo
+  z=ZoneInfo('Asia/Seoul')
+  self.assertFalse(weekend_closed(dt.datetime(2026,10,30,23,59,tzinfo=z)))
+  self.assertTrue(weekend_closed(dt.datetime(2026,10,30,15,0,tzinfo=dt.timezone.utc)))
+  self.assertTrue(weekend_closed(dt.datetime(2026,11,1,23,59,tzinfo=z)))
+  self.assertFalse(weekend_closed(dt.datetime(2026,11,2,0,0,tzinfo=z)))
+  self.assertFalse(monitoring_open(dt.datetime(2026,10,31,10,0,tzinfo=z)))
+ def test_weekend_cycle_has_no_external_calls(self):
+  from unittest.mock import Mock
+  from zoneinfo import ZoneInfo
+  for day in (31,):
+   for execute in (False,True):
+    ledger=Mock();broker=Mock()
+    result=integrated_cycle(ledger,broker,[],execute=execute,now=dt.datetime(2026,10,day,10,tzinfo=ZoneInfo('Asia/Seoul')))
+    self.assertEqual(result['status'],'MARKET_CLOSED')
+    self.assertFalse(result['recovery_checked'])
+    self.assertEqual(result['orders_sent'],0)
+    self.assertEqual(ledger.mock_calls,[]);self.assertEqual(broker.mock_calls,[])
+ def test_cli_weekend_skips_database(self):
+  import io,sys
+  from unittest.mock import patch,Mock
+  class Clock(dt.datetime):
+   @classmethod
+   def now(cls,tz=None):return cls(2026,11,1,10,tzinfo=ZoneInfo('Asia/Seoul'))
+  with tempfile.TemporaryDirectory() as d:
+   out=str(pathlib.Path(d)/'result.json')
+   with patch('oneil_v519_live_engine.dt.datetime',Clock),patch('v519_pg_ledger.connect') as connect,patch.object(sys,'argv',['engine','--run','--output',out]),patch('sys.stdout',new_callable=io.StringIO):
+    runtime_main()
+   connect.assert_not_called()
+   self.assertEqual(json.loads(pathlib.Path(out).read_text())['status'],'MARKET_CLOSED')
