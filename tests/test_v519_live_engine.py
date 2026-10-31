@@ -231,7 +231,7 @@ printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE
                 expected=scan_candidates(path,now)
             with patch.dict(os.environ,{'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true'}):
                 self.assertEqual(scan_candidates(path,now),expected)
-                self.assertEqual([x['ticker'] for x in expected],['144960'])
+                self.assertEqual(expected,[]) # old RS-only rows cannot bypass technical confirmation
                 with self.assertRaisesRegex(RuntimeError,'LIVE_FLAGS_NOT_DISABLED'):
                     analyze(path,now)
                 path.write_text('date,ticker,rs\n2026-10-29,144960,95\n')
@@ -1339,7 +1339,7 @@ class IntradayCandidateTests(unittest.TestCase):
 
     def quote(self,code='234690',**overrides):
         return {'ticker':code,'price':12760,'cumulative_volume':2000,'trading_day':'2026-10-29',
-            'received_at_kst':self.now.isoformat(),**overrides}
+            'received_at_kst':self.now.isoformat(),'high':12800,'low':12500,**overrides}
 
     def history(self,root):
         import pandas as pd,numpy as np
@@ -1352,21 +1352,15 @@ class IntradayCandidateTests(unittest.TestCase):
         prices.to_csv(p,index=False);flows.to_csv(f,index=False)
         return p,f
 
-    def test_live_price_and_volume_create_candidate_absent_at_open(self):
+    def test_live_price_and_volume_without_ohlc_does_not_bypass_new_filter(self):
         from build_v4b_candidates import generate
         with tempfile.TemporaryDirectory() as directory:
-            root=pathlib.Path(directory);p,f=self.history(root);out=root/'candidates.csv'
+            root=pathlib.Path(directory);p,f=self.history(root);out=root/'candidates.csv';diag=root/'diagnostic.json'
             self.assertEqual(generate(p,f,'2026-10-29',out),[])
-            # Same confirmed history and flow; only current price/volume change.
-            rows=generate(p,f,'2026-10-29',out,intraday={'234690':self.quote()},now=self.now)
-            self.assertEqual([r['ticker'] for r in rows],['234690'])
-            self.assertEqual(rows[0]['signal_date'],'2026-10-29')
-            self.assertEqual(rows[0]['flow_signal_date'],'2026-10-28')
-            self.assertEqual(rows[0]['signal_basis'],'INTRADAY_KIS_SNAPSHOT')
-            candidates=scan_candidates(out,self.now)
-            self.assertEqual(candidates[0]['name'],'녹십자웰빙')
-            self.assertEqual(candidates[0]['observed_at_kst'],self.now.isoformat())
-            with self.assertRaises(TradingBlocked):scan_candidates(out,self.now+dt.timedelta(days=1))
+            rows=generate(p,f,'2026-10-29',out,diag,intraday={'234690':self.quote()},now=self.now)
+            self.assertEqual(rows,[])
+            self.assertEqual(json.loads(diag.read_text())['technical_data_missing'],1)
+            self.assertEqual(scan_candidates(out,self.now),[])
 
     def test_invalid_or_partial_quotes_preserve_previous_candidate_output(self):
         from build_v4b_candidates import generate
@@ -1404,7 +1398,7 @@ class IntradayCandidateTests(unittest.TestCase):
 
     def body(self):
         return {'rt_cd':'0','output1':{'stck_shrn_iscd':'234690','stck_prpr':'12760','acml_vol':'2000'},
-            'output2':[{'stck_bsop_date':'20261029','stck_clpr':'12760','acml_vol':'2000'}]}
+            'output2':[{'stck_bsop_date':'20261029','stck_clpr':'12760','acml_vol':'2000','stck_hgpr':'12800','stck_lwpr':'12500'}]}
 
     def test_kis_collector_uses_only_fixed_krx_quote_get(self):
         client=self.client(self.body());row=client.daily_candidate_snapshot('234690',clock=lambda:self.now)
@@ -1481,7 +1475,7 @@ class IntradayCandidateTests(unittest.TestCase):
             snapshot={'cash':500000,'invested':0,'pending':set(),'positions':{},'managed':{}}
             quote=lambda t,s:12760;power=lambda t,p:(500000,100)
             plans,allocation=plan_orders(candidates,snapshot,quote,power,reserve_pct=40,per_stock_pct=30)
-            self.assertTrue(plans);self.assertLessEqual(plans[0].quantity*plans[0].price,90000)
+            self.assertEqual(plans,[]) # missing indicator history blocks entry before sizing
             snapshot['bought_today']={'234690'}
             self.assertEqual(plan_orders(candidates,snapshot,quote,power)[0],[])
 
@@ -1535,7 +1529,7 @@ class RsCoverageCollectionTests(unittest.TestCase):
             {'ticker':'000002','date':pd.Timestamp('2026-10-27')},
             {'ticker':'000003','date':pd.Timestamp('2026-10-23')}])
         self.assertEqual(b.collection_plan(universe,old,dt.date(2026,10,29),bootstrap_limit=1),
-            [('000004','d'),('000003','c'),('000002','b')])
+            [('000004','d'),('000003','c'),('000002','b'),('000001','a')]) # current close-only history also needs OHLC backfill
 
     def test_confirmed_session_excludes_live_daily_bars_weekends(self):
         from build_data import confirmed_session
@@ -1549,6 +1543,7 @@ class RsCoverageCollectionTests(unittest.TestCase):
         import build_data as b,pandas as pd
         old=pd.DataFrame({'date':pd.to_datetime(['2026-10-27','2026-10-28']),'close':[100,101],'volume':[10,11]})
         delta=pd.DataFrame({'date':pd.to_datetime(['2026-10-28','2026-10-29']),'close':[101,102],'volume':[11,12]})
+        old['high']=old.close+1;old['low']=old.close-1
         with patch.object(b,'fetch_year',return_value=delta) as fetch:
             result,replaced=b.fetch_incremental(None,'k','s','memory-token','000001',old,dt.date(2025,9,1),dt.date(2026,10,29))
         self.assertFalse(replaced);self.assertEqual(result.close.tolist(),[101,102])
@@ -1559,6 +1554,7 @@ class RsCoverageCollectionTests(unittest.TestCase):
         import build_data as b,pandas as pd
         old=pd.DataFrame({'date':pd.to_datetime(['2026-10-28']),'close':[100],'volume':[10]})
         revised=pd.DataFrame({'date':pd.to_datetime(['2026-10-28','2026-10-29']),'close':[50,51],'volume':[20,21]})
+        old['high']=old.close+1;old['low']=old.close-1
         with patch.object(b,'fetch_year',side_effect=[revised,revised]) as fetch:
             _,replaced=b.fetch_incremental(None,'k','s','t','000001',old,dt.date(2025,9,1),dt.date(2026,10,29))
         self.assertTrue(replaced);self.assertEqual(fetch.call_count,2)
@@ -1568,6 +1564,7 @@ class RsCoverageCollectionTests(unittest.TestCase):
         import build_data as b,pandas as pd
         old=pd.DataFrame({'date':pd.to_datetime(['2026-10-20']),'close':[100]})
         delta=pd.DataFrame({'date':pd.to_datetime(['2026-10-29']),'close':[50]})
+        old['high']=old.close+1;old['low']=old.close-1
         with patch.object(b,'fetch_year',side_effect=[delta,delta]) as fetch:
             _,replaced=b.fetch_incremental(None,'k','s','t','000001',old,dt.date(2025,9,1),dt.date(2026,10,29))
         self.assertTrue(replaced);self.assertEqual(fetch.call_count,2)
@@ -1800,3 +1797,54 @@ class WeekendClosureTests(unittest.TestCase):
     runtime_main()
    connect.assert_not_called()
    self.assertEqual(json.loads(pathlib.Path(out).read_text())['status'],'MARKET_CLOSED')
+
+class TechnicalTimingTests(unittest.TestCase):
+ def bars(self):
+  return [{'high':101,'low':99,'close':100} for _ in range(79)]+[{'high':111,'low':99,'close':110}]
+ def test_bb_and_shifted_cloud_exact(self):
+  from oneil_live_v5_9 import technical_timing
+  t=technical_timing(self.bars())
+  self.assertTrue(t['entry']);self.assertFalse(t['exit'])
+  self.assertEqual(t['cloud_a'],100);self.assertEqual(t['cloud_b'],100)
+  self.assertAlmostEqual(t['bb_middle'],100.5)
+  self.assertAlmostEqual(t['bb_upper'],100.5+2*(4.75**.5))
+  # Recent high must not leak into today's cloud, computed 26 bars ago.
+  b=self.bars();b[-1]['high']=1000
+  self.assertEqual(technical_timing(b)['cloud_b'],100)
+ def test_missing_short_nonfinite_or_fake_high_low_rejected(self):
+  from oneil_live_v5_9 import technical_timing
+  with self.assertRaises(ValueError):technical_timing(self.bars()[:77])
+  for v in (float('nan'),float('inf'),0,98):
+   b=self.bars();b[-1]['high']=v
+   with self.assertRaises(ValueError):technical_timing(b)
+ def test_proof_and_scanner_require_both_indicators(self):
+  import csv
+  from oneil_live_v5_9 import technical_timing,read_technical_proof
+  t=technical_timing(self.bars());row={'reference_close':110,'technical_policy':'BB_ICHI_TREND_V1','technical_details':json.dumps(t)}
+  self.assertIsNotNone(read_technical_proof(row))
+  t['ichimoku_bullish']=False;row['technical_details']=json.dumps(t)
+  self.assertIsNone(read_technical_proof(row));self.assertIsNone(read_technical_proof({}))
+  t=technical_timing(self.bars())
+  with tempfile.TemporaryDirectory() as d:
+   p=pathlib.Path(d)/'candidate.csv'
+   r={'date':'2026-10-29','ticker':'234690','rs':95,'foreign_5d':1,'institution_5d':0,'volume_ratio':2,'channel_up':True,'channel_position':.3,'reference_close':110,'technical_policy':t['policy'],'technical_details':json.dumps(t)}
+   with p.open('w',newline='') as f:w=csv.DictWriter(f,fieldnames=list(r));w.writeheader();w.writerow(r)
+   self.assertEqual(len(scan_candidates(p,dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul')))),1)
+ def test_technical_exit_honors_stop_lock_and_keeps_percentage_exits(self):
+  from oneil_live_v5_9 import technical_timing
+  b=self.bars();b[-1]={'high':101,'low':89,'close':90};t=technical_timing(b)
+  self.assertTrue(t['exit'])
+  snap={'cash':100000,'invested':10000,'pending':set(),'managed':{'234690':1},'positions':{'234690':{'quantity':1,'sellable':1,'average':100,'technical':t}}}
+  control={'sell':{'connected':True,'enabled':False,'revision':1}}
+  for price,reason,allowed in ((103,'TAKE_PROFIT_SIGNAL',True),(98,'STOP_LOSS_SIGNAL',False),(94,'STOP_LOSS',False),(111,'TAKE_PROFIT',True)):
+   plans,_=plan_orders([],snap,lambda *_:price,lambda *_:(0,0))
+   self.assertEqual(plans[0].reason,reason);self.assertEqual(sell_plan_allowed(plans[0],control),allowed)
+  snap['positions']['234690']['technical']=None
+  self.assertEqual(plan_orders([],snap,lambda *_:98,lambda *_:(0,0))[0],[])
+  self.assertEqual(plan_orders([],snap,lambda *_:94,lambda *_:(0,0))[0][0].reason,'STOP_LOSS')
+ def test_close_only_histories_force_full_backfill(self):
+  import build_data as b,pandas as pd
+  old=pd.DataFrame({'date':pd.to_datetime(['2026-10-29']),'close':[100],'volume':[10]})
+  with patch.object(b,'fetch_year',return_value=old) as fetch:
+   _,replaced=b.fetch_incremental(None,'k','s','t','000001',old,dt.date(2025,9,1),dt.date(2026,10,29))
+  self.assertTrue(replaced);self.assertEqual(fetch.call_args.args[-2],dt.date(2025,9,1))

@@ -17,6 +17,53 @@ REQUIRED=('date','ticker','rs','foreign_5d','institution_5d',
           'volume_ratio','channel_up','channel_position')
 TICKER=re.compile(r'^\d{6}$')
 
+def technical_timing(bars):
+    """BB(20,2) and Ichimoku(9,26,52), aligned cloud shifted 26 bars.
+
+    Ordered actual high/low/close only. No future values or close-as-high proxy.
+    Caller supplies validated session dates and labels provisional candles.
+    """
+    import math, statistics
+    if len(bars)<78:raise ValueError('TECHNICAL_HISTORY_SHORT')
+    rows=[]
+    for b in bars:
+        h,l,c=(float(b[k]) for k in ('high','low','close'))
+        if not all(math.isfinite(v) and v>0 for v in (h,l,c)) or not l<=c<=h:
+            raise ValueError('TECHNICAL_OHLC_INVALID')
+        rows.append((h,l,c))
+    def midpoint(end,n):
+        w=rows[end-n:end]
+        return (max(r[0] for r in w)+min(r[1] for r in w))/2
+    n=len(rows);close=[r[2] for r in rows]
+    mid=statistics.mean(close[-20:]);sd=statistics.pstdev(close[-20:])
+    upper=mid+2*sd;lower=mid-2*sd
+    prev=statistics.mean(close[-21:-1])+2*statistics.pstdev(close[-21:-1])
+    conversion=midpoint(n,9);base=midpoint(n,26)
+    # Today's displayed cloud was computed 26 sessions ago, never future cloud.
+    a=(midpoint(n-26,9)+midpoint(n-26,26))/2;b=midpoint(n-26,52)
+    breakout=close[-1]>upper and close[-2]<=prev
+    bullish=close[-1]>max(a,b) and conversion>=base
+    return {'policy':'BB_ICHI_TREND_V1','bb_middle':mid,'bb_upper':upper,'bb_lower':lower,
+            'ichimoku_conversion':conversion,'ichimoku_base':base,'cloud_a':a,'cloud_b':b,
+            'reference_close':close[-1],'bb_breakout':breakout,'ichimoku_bullish':bullish,
+            'entry':breakout and bullish,'exit':close[-1]<mid and close[-1]<base}
+
+
+def read_technical_proof(row):
+    try:
+        t=json.loads(row.get('technical_details',''))
+        if row.get('technical_policy')!='BB_ICHI_TREND_V1' or t.get('policy')!='BB_ICHI_TREND_V1':return None
+        import math
+        keys=('bb_middle','bb_upper','bb_lower','ichimoku_conversion','ichimoku_base','cloud_a','cloud_b','reference_close')
+        if any(type(t.get(k)) not in (int,float) or not math.isfinite(t[k]) or t[k]<=0 for k in keys):return None
+        if not t['bb_lower']<=t['bb_middle']<=t['bb_upper']:return None
+        if float(row.get('reference_close',0))!=t['reference_close']:return None
+        if not (t.get('entry') is True and t.get('bb_breakout') is True and t.get('ichimoku_bullish') is True):return None
+        if not (t['reference_close']>max(t['bb_upper'],t['cloud_a'],t['cloud_b']) and t['ichimoku_conversion']>=t['ichimoku_base']):return None
+        return t
+    except (ValueError,TypeError,AttributeError):return None
+
+
 def analyze(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
     if any(os.getenv(n,'false').lower()!='false' for n in ('LIVE_ENABLED','KIS_ALLOW_ORDER')):
         raise RuntimeError('LIVE_FLAGS_NOT_DISABLED')
@@ -102,7 +149,7 @@ def analyze_candidates(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
                       'foreign_5d':f, 'institution_5d':inst,
                       'flow_category': ('BOTH' if f>0 and inst>0 else 'FOREIGN_ONLY' if f>0 else 'INSTITUTION_ONLY')}
                 item.update(name=(row.get('name') or code).strip(),signal_basis=basis or 'LEGACY_PRE_SESSION',
-                    signal_date=row.get('signal_date'),observed_at_kst=observed.isoformat() if observed else None,
+                    technical=read_technical_proof(row),signal_date=row.get('signal_date'),observed_at_kst=observed.isoformat() if observed else None,
                     flow_signal_date=row.get('flow_signal_date'),volume_ratio=volume,channel_position=channel)
                 if close is not None: item['reference_close_krw']=close
                 report['review_candidates'].append(item)
