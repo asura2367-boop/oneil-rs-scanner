@@ -77,6 +77,7 @@ jobs:
           python -m unittest discover -s tests -p 'test_live_runner.py' -v
           python -m unittest discover -s tests -p 'test_v519_cash_sizing.py' -v
           python -m unittest -v test_v519_durable_submit test_v519_pipeline
+          python -m unittest discover -s tests -p 'test_kis_live_v4_5_2.py' -v
       - name: Release lock resists all environment flags
         run: |
           if LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES python oneil_v519_live_engine.py --run --execute; then
@@ -87,9 +88,19 @@ jobs:
           r=json.load(open('v5_19_report.json'))
           assert r['reason']=='RELEASE_LOCKED_PENDING_OPERATOR_ACTIVATION' and r['orders_sent']==0
           PY
-  observe:
-    if: always() && github.event_name != 'pull_request' && (needs.test.result == 'success' || inputs.operation == 'halt')
+  session:
     needs: test
+    if: github.event_name != 'pull_request' && needs.test.result == 'success' && inputs.operation != 'halt' && inputs.operation != 'migrate'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/kis_live_v4_5_2.yml
+    secrets:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+  observe:
+    if: always() && github.event_name != 'pull_request' && (needs.test.result == 'success' || inputs.operation == 'halt') && (needs.session.result == 'success' || needs.session.result == 'skipped')
+    needs: [test, session]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -99,6 +110,7 @@ jobs:
       KIS_ALLOW_ORDER: 'false'
       KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
       KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
       KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
       KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -111,6 +123,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Load latest shared encrypted session (no token issuance)
+        if: needs.session.outputs.ready == 'true'
+        run: |
+          git fetch origin main
+          git show FETCH_HEAD:data/live/kis_token_cache.enc.json > data/live/kis_token_cache.enc.json
       - name: Clear prior generated results
         run: rm -f v5_19_report.json data/live/dashboard.enc.json data/live/release_review.json
       - uses: actions/setup-python@v5

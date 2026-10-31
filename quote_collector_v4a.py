@@ -42,16 +42,10 @@ class QuoteClient:
     def authorize(self):
         if self.token and now_kst() < self.token_expires:
             return
-        res = self.session.post(BASE + '/oauth2/tokenP', json={
-            'grant_type': 'client_credentials', 'appkey': self.key, 'appsecret': self.secret
-        }, timeout=20)
-        res.raise_for_status()
-        data = res.json()
-        self.token = data.get('access_token')
-        if not self.token:
-            raise RuntimeError('토큰 발급 응답에 access_token 없음')
-        expires = int(data.get('expires_in', 3600))
-        self.token_expires = now_kst() + timedelta(seconds=max(60, expires - 300))
+        from kis_live_v4_5_2 import required_cached_token
+        self.token=required_cached_token()
+        # Re-read encrypted expiry before every quote; no separate memory TTL.
+        self.token_expires=now_kst()
 
     def quote(self, ticker):
         self.authorize()
@@ -127,9 +121,8 @@ class CandidateQuoteClient(QuoteClient):
         if any(os.getenv(n,'false').lower()!='false' for n in ('LIVE_ENABLED','KIS_ALLOW_ORDER')):
             raise ValueError('CANDIDATE_COLLECTOR_REQUIRES_READ_ONLY')
         super().__init__()
-        from kis_live_v4_5_2 import _key,acquire_token,_persist,UTC
-        self.token,refreshed=acquire_token(_key(),datetime.now(UTC))
-        if refreshed:_persist()  # Ciphertext only, before any candidate output.
+        from kis_live_v4_5_2 import required_cached_token
+        self.token=required_cached_token()
 
     def daily_candidate_snapshot(self,ticker,*,clock=now_kst,pause=time.sleep):
         if not re.fullmatch('[0-9]{6}',ticker):raise ValueError('CANDIDATE_TICKER_INVALID')

@@ -87,3 +87,14 @@ For bot-managed holdings only, a confirmed daily close below both BB middle and 
 KIS history collection now preserves actual high/low. Legacy close-only histories are scheduled for full OHLC backfill. Until validated history and new candidates exist, old RS-only candidates cannot authorize new buys. Owner source approval and per-account activation remain required; no setting or approval is auto-changed by deployment.
 
 Validation limitation: the pre-change stored history has no high/low, so real historical performance uplift cannot be measured yet. Formula tests and synthetic execution fixtures are correctness tests, not a profit backtest or paper account. Compare out-of-sample historical results with fees/taxes/slippage once actual OHLC backfill completes before claiming return improvement.
+
+
+## Essential live requests and shared session
+
+Automatic KIS consumers are the integrated engine, 08/11/14 candidate refresh and the single 18:30 confirmed history/flow collector. V4-A/V4-E duplicate experimental quote schedules and V10 extra automatic collection are retired; manual workflows remain available only for explicit diagnostics/backfill. Offline analysis/paper jobs do not call KIS and are not used as live evidence.
+
+The existing token-cache workflow now provides a short reusable preparation job under `kis-shared-token-cache`. It checks the latest main ciphertext, reuses valid sessions and issues once only when absent/near expiry. One hour of validity is required before long collectors; consumers require at least five minutes. It persists ciphertext before returning only a `ready` boolean. No token is passed through job outputs, plaintext files, logs, artifacts, or approval values. Corrupt cache/key failures remain blocked, without fresh-token fallback.
+
+Engine, candidate collector and shared price/flow collector read the latest ciphertext into their tested checkout without changing source HEAD. They never request a fresh token. Long collection jobs do not hold the short issuance lock. The emergency-halt path does not depend on token preparation. Session failures block consumers rather than causing independent auth retries. Existing live release/account activation, stop switch, unknown-order recovery, post-order balance/history verification and risk limits are unchanged. Weekend preparation sends no token request.
+
+Live cross-workflow cache reuse still requires observation during the next weekday run; offline tests are not evidence of a production token refresh.
