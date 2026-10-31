@@ -1,46 +1,45 @@
-name: KIS V4.5.2 ENCRYPTED TOKEN CACHE (NO ORDERS)
+name: Shared KIS Session (TOKEN CACHE ONLY)
 on:
   workflow_dispatch:
+  workflow_call:
+    outputs:
+      ready:
+        description: 'Usable encrypted cache prepared; no token in outputs'
+        value: ${{ jobs.prepare.outputs.ready }}
+    secrets:
+      KIS_APP_KEY:
+        required: true
+      KIS_APP_SECRET:
+        required: true
+      KIS_TOKEN_CACHE_KEY:
+        required: true
 permissions:
   contents: write
-concurrency:
-  group: kis-v45-safe-gate
-  cancel-in-progress: false
 jobs:
-  preflight:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
-    environment: kis-readonly
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.cache.outputs.ready }}
+    concurrency:
+      group: kis-shared-token-cache
+      cancel-in-progress: false
     env:
       LIVE_ENABLED: 'false'
       KIS_ALLOW_ORDER: 'false'
-      EMERGENCY_HALT: 'false'
       KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
       KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
-      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
-      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
       KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: true
           ref: main
+          persist-credentials: true
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install encryption package
-        run: python -m pip install 'cryptography>=43,<47'
-      - name: Test encrypted cache offline
-        run: python -m unittest discover -s tests -p 'test_kis_live_v4_5_2.py' -v
-      - name: Mark this run before broker reads
-        run: mkdir -p data/live && touch data/live/v4_5_run_marker
-      - name: Cached-token read-only safety gate (NO ORDERS)
-        run: python kis_live_v4_5_2.py
-      - name: Upload sanitized gate report only
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v4-5-2-gate-report
-          path: data/live/v4_5_gate_report.json
-          if-no-files-found: ignore
-          retention-days: 3
+      - run: python -m pip install 'cryptography>=42,<47'
+      - name: Refresh ciphertext cache only, no market/account/order calls
+        id: cache
+        run: python collect_shared_token.py --prepare-only

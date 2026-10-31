@@ -2,10 +2,7 @@ name: V10 Extra Market Data Collection (no orders)
 
 on:
   workflow_dispatch:
-  schedule:
-    # UTC 01:00,04:00,12:00 = KST 10:00,13:00,21:00 weekdays
-    # V9 already runs 18:30 KST. GitHub schedules can be delayed/skipped.
-    - cron: '0 1,4,12 * * 1-5'
+  # Manual backfill only; automatic confirmed collection stays in update.yml.
 
 permissions:
   contents: write
@@ -16,7 +13,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  session:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/kis_live_v4_5_2.yml
+    secrets:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
   collect:
+    needs: session
+    if: always() && (needs.session.result == 'success' || needs.session.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -46,6 +54,11 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Refresh checkout before collection
         run: git pull --ff-only origin main
+      - name: Load latest shared encrypted session (no token issuance)
+        if: needs.session.outputs.ready == 'true'
+        run: |
+          git fetch origin main
+          git show FETCH_HEAD:data/live/kis_token_cache.enc.json > data/live/kis_token_cache.enc.json
       - name: Collect confirmed history and flow with one encrypted-cache token
         run: python collect_shared_token.py
       - name: Commit collected read-only data

@@ -165,6 +165,7 @@ RELEASE_FILES = (
     'build_v4b_candidates.py','quote_collector_v4a.py','kis_live_v4_5_2.py',
     '.github/workflows/v4b_candidate_save_auto.yml',
     'build_data.py','build_investor.py','collect_shared_token.py',
+    '.github/workflows/kis_live_v4_5_2.yml',
     '.github/workflows/update.yml','.github/workflows/v10_collect_auto.yml','requirements.txt',
 )
 
@@ -301,9 +302,9 @@ class KisBroker:
         self.quote_evidence={}
         self.history_cache={}
         from kis_buying_power_readonly import credentials
-        from oneil_v519_live_runner import token
+        from kis_live_v4_5_2 import required_cached_token
         self.key, self.secret, self.account, self.product = credentials(read_only=not (execution or operator_activation))
-        self.access = token(self.key, self.secret)
+        self.access = required_cached_token()
         self.fingerprint = hashlib.sha256((self.account+'|'+self.product).encode()).hexdigest()
 
     def request(self, path, tr, params, *, continuing=False, post=False):

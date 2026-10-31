@@ -279,7 +279,7 @@ printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE
             with self.assertRaises(TradingBlocked):b._send_verified(OrderPlan('144960','BUY',1,10000,'rs','RS'))
             wire.assert_not_called()
     def test_live_broker_construction_is_locked_before_authentication(self):
-        with patch('oneil_v519_live_runner.token') as auth:
+        with patch('kis_live_v4_5_2.required_cached_token') as auth:
             with self.assertRaisesRegex(TradingBlocked,'RELEASE_LOCKED'):
                 KisBroker(execution=True)
             auth.assert_not_called()
@@ -293,7 +293,7 @@ printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE
                'I_APPROVE_LIVE_KIS_ORDERS':'YES'}
         import oneil_v519_live_engine as engine
         with patch.dict(os.environ,flags),patch.object(engine,'RELEASE_LIVE_APPROVED',True), \
-                patch('oneil_v519_live_runner.token',return_value='test-token'), \
+                patch('kis_live_v4_5_2.required_cached_token',return_value='test-token'), \
                 patch('urllib.request.urlopen') as wire:
             broker=KisBroker(execution=True)
             self.assertEqual(broker.account,'12345678')
@@ -1456,7 +1456,7 @@ class IntradayCandidateTests(unittest.TestCase):
         from quote_collector_v4a import CandidateQuoteClient
         with patch.dict(os.environ,{'KIS_APP_KEY':'test','KIS_APP_SECRET':'test','LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false'}),\
                 patch('kis_live_v4_5_2._key',return_value=b'0'*32),\
-                patch('kis_live_v4_5_2.acquire_token',return_value=('test',False)) as acquire,\
+                patch('kis_live_v4_5_2.required_cached_token',return_value='test') as acquire,\
                 patch('kis_live_v4_5_2._persist') as persist:
             client=CandidateQuoteClient()
             self.assertEqual(client.token,'test');acquire.assert_called_once();persist.assert_not_called()
@@ -1858,3 +1858,59 @@ class TechnicalTimingTests(unittest.TestCase):
    _,replaced=b.fetch_incremental(None,'k','s','t','000001',old,dt.date(2025,9,1),dt.date(2026,10,29))
   self.assertTrue(replaced);self.assertEqual(fetch.call_args.args[-2],dt.date(2025,9,1))
 
+
+class SharedSessionOnlyTests(unittest.TestCase):
+ def test_consumers_reuse_cache_even_in_authorized_live_profile(self):
+  import base64,kis_live_v4_5_2 as cache
+  from unittest.mock import patch
+  with tempfile.TemporaryDirectory() as d:
+   key=os.urandom(32);path=pathlib.Path(d)/'cache.json'
+   with patch.object(cache,'CACHE',path),patch.dict(os.environ,{'KIS_TOKEN_CACHE_KEY':base64.urlsafe_b64encode(key).decode(),'LIVE_ENABLED':'true'}),patch.object(cache,'request') as auth:
+    cache._save(key,'SYNTHETIC_PRIVATE_SESSION',dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=5))
+    self.assertEqual(cache.required_cached_token(),'SYNTHETIC_PRIVATE_SESSION')
+    self.assertEqual(cache.required_cached_token(),'SYNTHETIC_PRIVATE_SESSION')
+    auth.assert_not_called()
+ def test_missing_expired_or_corrupt_cache_never_triggers_auth_fallback(self):
+  import base64,kis_live_v4_5_2 as cache
+  with tempfile.TemporaryDirectory() as d:
+   key=os.urandom(32);path=pathlib.Path(d)/'cache.json'
+   with patch.object(cache,'CACHE',path),patch.dict(os.environ,{'KIS_TOKEN_CACHE_KEY':base64.urlsafe_b64encode(key).decode()}),patch.object(cache,'request') as auth:
+    with self.assertRaisesRegex(cache.CacheBlocked,'REFRESH_REQUIRED'):cache.required_cached_token()
+    cache._save(key,'SYNTHETIC_PRIVATE_SESSION',dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=1))
+    with self.assertRaisesRegex(cache.CacheBlocked,'REFRESH_REQUIRED'):cache.required_cached_token()
+    path.write_text('{}')
+    with self.assertRaisesRegex(cache.CacheBlocked,'DECRYPT_OR_FORMAT'):cache.required_cached_token()
+    auth.assert_not_called()
+ def test_preparation_never_reads_account_or_market_and_outputs_only_ready(self):
+  import collect_shared_token as collect,io
+  class Friday(dt.datetime):
+   @classmethod
+   def now(cls,tz=None):return cls(2026,10,30,9,tzinfo=dt.timezone.utc)
+  with tempfile.TemporaryDirectory() as d:
+   out=pathlib.Path(d)/'output.txt'
+   flags={'LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false','KIS_APP_KEY':'fixture-key','KIS_APP_SECRET':'fixture-secret','GITHUB_OUTPUT':str(out)}
+   with patch.dict(os.environ,flags),patch.object(collect.dt,'datetime',Friday),patch.object(collect,'_key',return_value=b'k'*32),patch.object(collect,'acquire_token',return_value=('DO_NOT_PRINT',True)) as acquire,patch.object(collect,'_persist') as persist,patch('build_data.main') as prices,patch('build_investor.main') as flows,patch('sys.stdout',new_callable=io.StringIO) as log:
+    collect.main(prepare_only=True)
+   self.assertEqual(out.read_text(),'ready=true\n');self.assertNotIn('DO_NOT_PRINT',log.getvalue())
+   self.assertEqual(acquire.call_args.kwargs['min_validity'],dt.timedelta(hours=1));persist.assert_called_once();prices.assert_not_called();flows.assert_not_called()
+ def test_weekend_preparation_never_issues_or_reads_cache_key(self):
+  import collect_shared_token as collect,io
+  class Saturday(dt.datetime):
+   @classmethod
+   def now(cls,tz=None):return cls(2026,10,31,9,tzinfo=dt.timezone.utc)
+  with tempfile.TemporaryDirectory() as d,patch.dict(os.environ,{'LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false','GITHUB_OUTPUT':d+'/out'}),patch.object(collect.dt,'datetime',Saturday),patch.object(collect,'_key') as key,patch.object(collect,'acquire_token') as auth,patch('sys.stdout',new_callable=io.StringIO):
+   collect.main(prepare_only=True);key.assert_not_called();auth.assert_not_called();self.assertEqual(pathlib.Path(d+'/out').read_text(),'ready=false\n')
+ def test_collectors_pass_same_cached_session_without_auth_or_persist(self):
+  import collect_shared_token as collect
+  with patch.dict(os.environ,{'LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false'}),patch('kis_live_v4_5_2.required_cached_token',return_value='MEMORY_FIXTURE'),patch.object(collect,'acquire_token') as auth,patch.object(collect,'_persist') as persist,patch('build_data.main') as prices,patch('build_investor.main') as flows,patch('sys.stdout',new_callable=__import__('io').StringIO):
+   collect.main();auth.assert_not_called();persist.assert_not_called();prices.assert_called_once_with(shared_token='MEMORY_FIXTURE');flows.assert_called_once_with(shared_token='MEMORY_FIXTURE')
+ def test_unnecessary_automatic_consumers_retired_and_refresh_serialized(self):
+  root=pathlib.Path(__file__).resolve().parents[1]
+  for name in ('quote_intraday_v4a.yml','quote_v4e_hourly.yml','v10_collect_auto.yml'):
+   self.assertNotIn('  schedule:',(root/'.github/workflows'/name).read_text())
+  issuer=(root/'.github/workflows/kis_live_v4_5_2.yml').read_text()
+  self.assertIn('group: kis-shared-token-cache',issuer);self.assertIn('python collect_shared_token.py --prepare-only',issuer)
+  self.assertNotIn('KIS_ACCOUNT_NO',issuer);self.assertNotIn('run_checks',issuer)
+  self.assertIn('.github/workflows/kis_live_v4_5_2.yml',RELEASE_FILES)
+  engine=(root/'.github/workflows/oneil_v519_live_engine_review.yml').read_text()
+  self.assertIn("inputs.operation != 'halt'",engine);self.assertIn("if: needs.session.outputs.ready == 'true'",engine)

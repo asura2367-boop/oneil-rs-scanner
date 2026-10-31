@@ -53,7 +53,7 @@ def _expiry(api_data, now):
         raise CacheBlocked('AUTH_EXPIRY_INVALID')
     return now+dt.timedelta(seconds=seconds)
 
-def _read(key, now):
+def _read(key, now, min_validity=MARGIN):
     if not CACHE.exists():
         return None
     try:
@@ -71,7 +71,7 @@ def _read(key, now):
         token=obj['token']
         if not isinstance(token,str) or not token or any(c.isspace() for c in token):
             raise ValueError('invalid token')
-        return (token,expiry) if expiry>now+MARGIN else None
+        return (token,expiry) if expiry>now+min_validity else None
     except Exception:
         # Never fall back to a fresh token if cache is corrupted or key rotated.
         raise CacheBlocked('CACHE_DECRYPT_OR_FORMAT_FAILURE') from None
@@ -95,6 +95,7 @@ def _persist():
               ['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'],
               ['git','add','--',str(CACHE)],
               ['git','commit','-m','chore: refresh encrypted KIS read-only token cache'],
+              ['git','pull','--rebase','origin','main'],
               ['git','push','origin','HEAD:main']]
     for cmd in commands:
         try:
@@ -104,11 +105,17 @@ def _persist():
         if proc.returncode!=0:
             raise CacheBlocked('CACHE_PERSIST_FAILURE')
 
-def acquire_token(key, now):
-    cached=_read(key,now)
+def acquire_token(key, now, *, app_credentials=None, min_validity=MARGIN):
+    cached=_read(key,now,min_validity)
     if cached:
         return cached[0],False
-    app_key,app_secret,_,_=credentials()
+    if app_credentials is None:
+        app_key,app_secret,_,_=credentials()
+    else:
+        if (not isinstance(app_credentials,tuple) or len(app_credentials)!=2 or
+                any(not isinstance(v,str) or not v.strip() for v in app_credentials)):
+            raise CacheBlocked('AUTH_CREDENTIALS_INVALID')
+        app_key,app_secret=app_credentials
     try:
         response=request('POST','/oauth2/tokenP',
                          {'grant_type':'client_credentials','appkey':app_key,'appsecret':app_secret})
@@ -123,10 +130,16 @@ def acquire_token(key, now):
     if not isinstance(token,str) or not token or any(c.isspace() for c in token):
         raise CacheBlocked('AUTH_TOKEN_MISSING')
     expiry=_expiry(response,now)
-    if expiry<=now+MARGIN:
+    if expiry<=now+min_validity:
         raise CacheBlocked('AUTH_TOO_CLOSE_TO_EXPIRY')
     _save(key,token,expiry)
     return token,True
+
+def required_cached_token():
+    """Consumer path: valid encrypted cache only. Never issues or retries auth."""
+    cached=_read(_key(),dt.datetime.now(UTC))
+    if not cached:raise CacheBlocked('SHARED_SESSION_REFRESH_REQUIRED')
+    return cached[0]
 
 def main():
     guard()

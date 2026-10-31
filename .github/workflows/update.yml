@@ -13,7 +13,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  session:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/kis_live_v4_5_2.yml
+    secrets:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
   collect:
+    needs: session
+    if: always() && (needs.session.result == 'success' || needs.session.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -43,6 +54,11 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install 'cryptography>=42,<47'
+      - name: Load latest shared encrypted session (no token issuance)
+        if: needs.session.outputs.ready == 'true'
+        run: |
+          git fetch origin main
+          git show FETCH_HEAD:data/live/kis_token_cache.enc.json > data/live/kis_token_cache.enc.json
       - name: Collect prices and investor flow with single encrypted-cache token
         run: python collect_shared_token.py
       - name: Commit collected read-only data

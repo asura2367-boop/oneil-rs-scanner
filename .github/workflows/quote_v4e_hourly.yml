@@ -2,9 +2,7 @@ name: V4-E Intraday Quotes (hourly windows, no orders)
 
 on:
   workflow_dispatch:
-  schedule:
-    # UTC 00:05..06:05 => KST 09:05..15:05, weekdays
-    - cron: '5 0-6 * * 1-5'
+  # Automatic duplicate quote collection retired; manual diagnostics only.
 
 permissions:
   contents: write
@@ -20,12 +18,13 @@ jobs:
     env:
       KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
       KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install requests
+      - run: python -m pip install requests 'cryptography>=42,<47'
       - name: Collect for 65 minutes, stop by 15:20 KST
         shell: bash
         run: |
