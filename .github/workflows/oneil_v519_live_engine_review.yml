@@ -21,10 +21,10 @@ on:
       - '.github/workflows/v10_collect_auto.yml'
       - '.github/workflows/oneil_v519_live_engine_review.yml'
   schedule:
-    # KST 09:00–19:40 every 20 minutes; 20:00 closes new-order intake.
+    # KST weekdays only; 09:00–19:40 every 20 minutes; 20:00 closes new-order intake.
     # Automatic trading requires an exact reviewed release hash AND account activation. Best effort.
-    - cron: '0,20,40 0-10 * * *'
-    - cron: '0 11 * * *'
+    - cron: '0,20,40 0-10 * * 1-5'
+    - cron: '0 11 * * 1-5'
   workflow_dispatch:
     inputs:
       operation:
@@ -106,7 +106,7 @@ jobs:
       APPROVED_RELEASE: ${{ vars.V519_APPROVED_RELEASE }}
       V519_APPROVED_RELEASE: ${{ vars.V519_APPROVED_RELEASE }}
       OPERATOR_CONFIRMED: ${{ inputs.confirm_live_activation }}
-      OPERATION: ${{ github.event.schedule == '0 11 * * *' && 'close' || (github.event_name == 'schedule' && 'auto') || inputs.operation || 'observe' }}
+      OPERATION: ${{ github.event.schedule == '0 11 * * 1-5' && 'close' || (github.event_name == 'schedule' && 'auto') || inputs.operation || 'observe' }}
     steps:
       - uses: actions/checkout@v4
         with:
