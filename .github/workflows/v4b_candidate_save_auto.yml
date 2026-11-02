@@ -15,7 +15,7 @@ on:
   schedule:
     # 08:00 KST Mon-Fri = 23:00 UTC Sun-Thu
     - cron: '0 23 * * 0-4'
-    # 11:00 and 14:00 KST Mon-Fri: fresh KIS snapshots + confirmed history/flow.
+    # 11:00 and 14:00 KST Mon-Fri: fresh KIS snapshots + confirmed price history.
     - cron: '0 2,5 * * 1-5'
 
 permissions:
@@ -117,7 +117,7 @@ jobs:
       - name: Validate input files
         if: ${{ hashFiles('candidate_target.txt') != '' }}
         run: |
-          for f in build_v4b_candidates.py data/kis_daily_universe.csv data/kis_investor_flow.csv; do
+          for f in build_v4b_candidates.py data/kis_daily_universe.csv; do
             test -f "$f" || { echo "Missing $f"; exit 1; }
           done
       - name: Generate candidates from the selected data basis
@@ -154,7 +154,7 @@ jobs:
           if not src.exists(): raise SystemExit('Missing candidates.csv')
           with src.open(encoding='utf-8-sig', newline='') as f:
               reader=csv.DictReader(f)
-              required={'date','ticker','rs','foreign_5d','institution_5d','volume_ratio','channel_position','signal_date'}
+              required={'date','ticker','rs','volume_ratio','channel_position','signal_date'}
               if not required.issubset(reader.fieldnames or []): raise SystemExit('Candidate columns missing')
               rows=list(reader)
           for r in rows:

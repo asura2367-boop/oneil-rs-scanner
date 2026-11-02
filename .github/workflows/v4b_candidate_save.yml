@@ -35,7 +35,7 @@ jobs:
           from pathlib import Path
           d=date.fromisoformat(os.environ['TRADE_DAY'])
           assert d <= date.today(), 'Future date refused'
-          for f in ('build_v4b_candidates.py','data/kis_daily_universe.csv','data/kis_investor_flow.csv'):
+          for f in ('build_v4b_candidates.py','data/kis_daily_universe.csv'):
               assert Path(f).is_file(), f'Missing source file: {f}'
           print('Validated target:',d)
           PY
@@ -55,7 +55,7 @@ jobs:
           assert p.is_file(), 'Candidate output missing'
           with p.open(encoding='utf-8-sig',newline='') as f:
               reader=csv.DictReader(f)
-              required={'date','ticker','rs','foreign_5d','institution_5d','volume_ratio','channel_position','signal_date'}
+              required={'date','ticker','rs','volume_ratio','channel_position','signal_date'}
               assert required.issubset(reader.fieldnames or []), 'Missing candidate columns'
               records=list(reader)
           for r in records:
