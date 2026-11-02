@@ -1037,6 +1037,7 @@ def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss
         result.update(sent);return result
     except TradingBlocked as exc:
         if getattr(exc,'execution_progress',None):raise
+        state['manual_buy_checks']=[{'id':active[0]['id'],'status':'BLOCKED','reason':str(exc)}]
         result['manual_buy_status']='BLOCKED';result['manual_buy_reason']=str(exc);return result
 
 
@@ -1224,6 +1225,7 @@ def dashboard_snapshot(ledger,result):
     halted=ledger.halted();armed=approved and authorized and not halted
     return {'schema_version':1,'generated_at':state['at'].isoformat(),
         'account_reference':ledger.fingerprint,'manual_buy_supported':True,
+        'manual_buy_checks':state.get('manual_buy_checks',[]),
         'mode':('LIVE_EXECUTION' if result.get('execution_requested') else 'LIVE_ARMED') if armed else 'OBSERVE_ONLY',
         'orders_enabled':armed,'halted':halted,
         'activation':{'expected_release':release_fingerprint(),'release_configured':approved,
