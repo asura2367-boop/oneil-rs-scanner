@@ -977,7 +977,7 @@ def process_manual_buy(ledger,broker,requests,*,now,clock):
         recovery=recover_pending(ledger,broker)
         if recovery['unresolved']:raise TradingBlocked('UNRESOLVED_ORDERS')
         control=broker.buy_control();risk=risk_policy(control)
-        if not control.get('connected') or not control.get('enabled') or not risk['connected']:raise TradingBlocked('MANUAL_BUY_CONTROL_UNAVAILABLE')
+        if not control.get('connected') or not control.get('enabled') or not risk['connected'] or (control.get('release') or {}).get('approved_release')!=release_fingerprint():raise TradingBlocked('MANUAL_BUY_CONTROL_UNAVAILABLE')
         live=control.get('manual_buys',[])
         request=next((r for r in requests if any(x.get('id')==r.get('id') for x in live if isinstance(x,dict))),None)
         request=manual_buy_request(request,now=current,fingerprint=ledger.fingerprint,release=release_fingerprint())
@@ -994,7 +994,7 @@ def process_manual_buy(ledger,broker,requests,*,now,clock):
         if isinstance(broker,KisBroker) and plan.quantity>broker.quote_evidence[(plan.ticker,'BUY')]['size']:raise TradingBlocked('BOOK_SIZE_EXCEEDED')
         latest=broker.buy_control()
         if (not latest.get('connected') or not latest.get('enabled') or latest.get('revision')!=request['buy_revision'] or
-            not same_risk(risk,risk_policy(latest)) or not any(x==request for x in latest.get('manual_buys',[]))):raise TradingBlocked('MANUAL_SETTINGS_CHANGED')
+            not same_risk(risk,risk_policy(latest)) or (latest.get('release') or {}).get('approved_release')!=release_fingerprint() or not any(x==request for x in latest.get('manual_buys',[]))):raise TradingBlocked('MANUAL_SETTINGS_CHANGED')
         manual_buy_request(request,now=time_check(),fingerprint=ledger.fingerprint,release=release_fingerprint())
         if ledger.halted() or not ledger.release_authorized(release_fingerprint()):raise TradingBlocked('MANUAL_ACCOUNT_NOT_READY')
         # Durable daily/ticker key is unchanged. A second ID cannot evade the daily cap.

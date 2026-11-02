@@ -1959,7 +1959,7 @@ class ManualAveragingTests(unittest.TestCase):
         class Broker(BrokerFixture):
             def snapshot(self):return test.snap.copy()
             def quote(self,*a):return 8000
-            def buy_control(self):return {'connected':True,'enabled':True,'revision':1,'risk':{'connected':True,'reserve_pct':40,'per_stock_pct':30,'revision':0},'sell':{'connected':True,'enabled':False,'revision':1},'manual_buys':[test.req]}
+            def buy_control(self):return {'connected':True,'enabled':True,'revision':1,'risk':{'connected':True,'reserve_pct':40,'per_stock_pct':30,'revision':0},'sell':{'connected':True,'enabled':False,'revision':1},'manual_buys':[test.req],'release':{'approved_release':'b'*64}}
         return Ledger(),Broker()
     def run_request(self,l,b):
         with patch('oneil_v519_live_engine.require_live_release'),patch('oneil_v519_live_engine.release_fingerprint',return_value='b'*64):return process_manual_buy(l,b,[self.req],now=self.now,clock=lambda:self.now)
