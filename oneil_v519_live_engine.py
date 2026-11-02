@@ -670,7 +670,7 @@ def sell_plan_allowed(plan,control):
     return policy['connected'] and (policy['enabled'] or plan.reason in ('TAKE_PROFIT','TAKE_PROFIT_SIGNAL'))
 
 
-def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
+def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                      stop_loss_pct=5, take_profit_pct=10, clock=None):
     """Sequential candidate buys under one account lock and conservative cash caps.
 
@@ -926,6 +926,121 @@ def integrated_cycle(ledger, broker, candidates, *, execute=False, now=None,
             raise
 
 
+def manual_buy_request(value, *, now, fingerprint, release):
+    """Private owner queue; fail closed on changed account/release or expired intent."""
+    if not isinstance(value,dict):raise TradingBlocked('MANUAL_REQUEST_INVALID')
+    fields=('quantity','limit_price','holding_quantity','buy_revision','risk_revision')
+    if any(type(value.get(k)) is not int or value[k] < (0 if k.endswith('revision') else 1) or value[k]>2147483647 for k in fields):
+        raise TradingBlocked('MANUAL_REQUEST_INVALID')
+    if (not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',str(value.get('id',''))) or
+            not CODE.fullmatch(str(value.get('ticker',''))) or value.get('account_ref')!=fingerprint or value.get('approved_release')!=release):
+        raise TradingBlocked('MANUAL_REQUEST_IDENTITY_CHANGED')
+    try:
+        created=dt.datetime.fromisoformat(value['created_at'].replace('Z','+00:00'))
+        expires=dt.datetime.fromisoformat(value['expires_at'].replace('Z','+00:00'))
+        local=now.astimezone(ZoneInfo('Asia/Seoul'))
+        if (created.tzinfo is None or expires.tzinfo is None or not created<=now<expires or
+            not 0<(expires-created).total_seconds()<=1200 or value['trading_day']!=local.date().isoformat() or
+            created.astimezone(local.tzinfo).date()!=local.date() or
+            expires.astimezone(local.tzinfo).date()!=local.date() or
+            expires.astimezone(local.tzinfo).time()>dt.time(15,15)):
+            raise ValueError()
+    except Exception:raise TradingBlocked('MANUAL_REQUEST_EXPIRED_OR_INVALID')
+    return value
+
+
+def manual_buy_plan(request,snapshot,allocation,price,power,bought_today):
+    ticker=request['ticker'];pos=snapshot['positions'].get(ticker)
+    if snapshot['pending']:raise TradingBlocked('BROKER_PENDING_ORDERS')
+    if ticker in bought_today:raise TradingBlocked('ALREADY_BOUGHT_TODAY')
+    if not pos or pos['quantity']!=request['holding_quantity']:raise TradingBlocked('HOLDING_CHANGED')
+    if type(price) is not int or not 0<price<=request['limit_price']:raise TradingBlocked('OWNER_LIMIT_PRICE_EXCEEDED')
+    amount,broker_qty=power(ticker,price);money(amount);money(broker_qty)
+    charge=(request['quantity']*price*1005+999)//1000
+    exposure=max(money(pos['cost']),money(pos['valuation']))
+    cap=min(allocation['remaining'],max(0,allocation['per_stock']-exposure),amount)
+    # Exact owner quantity. Never silently increase or shrink the requested order.
+    if request['quantity']>broker_qty or charge>cap:raise TradingBlocked('MANUAL_BUY_LIMIT_EXCEEDED')
+    return OrderPlan(ticker,'BUY',request['quantity'],price,'owner:'+request['id'],'OWNER_AVERAGING')
+
+
+def process_manual_buy(ledger,broker,requests,*,now,clock):
+    from v519_cash_policy import limits
+    def time_check():
+        current=clock().astimezone(ZoneInfo('Asia/Seoul'))
+        if current.date()!=now.date() or current.weekday()>=5 or not dt.time(9)<=current.time()<dt.time(15,15):
+            raise TradingBlocked('OUTSIDE_KRX_CONTINUOUS_SESSION')
+        return current
+    with ledger.lock():
+        current=time_check();require_live_release()
+        if ledger.halted() or not ledger.release_authorized(release_fingerprint()):raise TradingBlocked('MANUAL_ACCOUNT_NOT_READY')
+        recovery=recover_pending(ledger,broker)
+        if recovery['unresolved']:raise TradingBlocked('UNRESOLVED_ORDERS')
+        control=broker.buy_control();risk=risk_policy(control)
+        if not control.get('connected') or not control.get('enabled') or not risk['connected'] or (control.get('release') or {}).get('approved_release')!=release_fingerprint():raise TradingBlocked('MANUAL_BUY_CONTROL_UNAVAILABLE')
+        live=control.get('manual_buys',[])
+        request=next((r for r in requests if any(x.get('id')==r.get('id') for x in live if isinstance(x,dict))),None)
+        request=manual_buy_request(request,now=current,fingerprint=ledger.fingerprint,release=release_fingerprint())
+        if control['revision']!=request['buy_revision'] or risk['revision']!=request['risk_revision']:raise TradingBlocked('MANUAL_SETTINGS_CHANGED')
+        if ledger.rows("SELECT intent_id FROM v519_order_intents WHERE account_fingerprint=%s AND signal=%s",(ledger.fingerprint,'owner:'+request['id'])):
+            return {'status':'MANUAL_ALREADY_RECORDED','orders_sent':0,'order_attempts':0}
+        snap=broker.snapshot();snap['managed']=ledger.managed();bought=ledger.bought_today(now.date())
+        allocation=limits(snap['cash'],snap['invested'],snap['cash'],reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
+        # Existing enabled or unknown exits retain priority over discretionary averaging.
+        exits,_=plan_orders([],snap,broker.quote,broker.power,reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
+        if any(sell_plan_allowed(p,control) or not sell_policy(control)['connected'] for p in exits):raise TradingBlocked('EXIT_PRIORITY')
+        price=broker.execution_quote(request['ticker'],'BUY') if isinstance(broker,KisBroker) else broker.quote(request['ticker'],'BUY')
+        plan=manual_buy_plan(request,snap,allocation,price,broker.power,bought)
+        if isinstance(broker,KisBroker) and plan.quantity>broker.quote_evidence[(plan.ticker,'BUY')]['size']:raise TradingBlocked('BOOK_SIZE_EXCEEDED')
+        latest=broker.buy_control()
+        if (not latest.get('connected') or not latest.get('enabled') or latest.get('revision')!=request['buy_revision'] or
+            not same_risk(risk,risk_policy(latest)) or (latest.get('release') or {}).get('approved_release')!=release_fingerprint() or not any(x==request for x in latest.get('manual_buys',[]))):raise TradingBlocked('MANUAL_SETTINGS_CHANGED')
+        manual_buy_request(request,now=time_check(),fingerprint=ledger.fingerprint,release=release_fingerprint())
+        if ledger.halted() or not ledger.release_authorized(release_fingerprint()):raise TradingBlocked('MANUAL_ACCOUNT_NOT_READY')
+        # Durable daily/ticker key is unchanged. A second ID cannot evade the daily cap.
+        ident=ledger.reserve_plan(plan,now.date());uncertain=False
+        ledger.dashboard_state.update(snapshot=snap,allocation=allocation,plans=[plan],at=current)
+        try:
+            with ledger.send_guard():
+                time_check();require_live_release()
+                uncertain=True;response=broker.submit(plan)
+                out=response.get('output') if isinstance(response,dict) else None
+                order_id=out.get('ODNO') if isinstance(out,dict) else None
+                if str(response.get('rt_cd'))!='0' or not isinstance(order_id,str) or not re.fullmatch('[0-9]{1,20}',order_id):raise TradingBlocked('BROKER_ACK_INVALID')
+            ledger.ack(ident,order_id);uncertain=False
+        except Exception as exc:
+            ledger.halt();exc.execution_progress={'orders_sent':None if uncertain else 0,'confirmed_orders_sent':0,'order_attempts':1};raise
+        if isinstance(broker,KisBroker):broker.history_cache.pop(now.strftime('%Y%m%d'),None)
+        # Acknowledgement is not a fill. Existing recovery owns every fill transition.
+        try:
+            recovery=recover_pending(ledger,broker);fresh=broker.snapshot();fresh['managed']=ledger.managed()
+            ledger.dashboard_state.update(snapshot=fresh,at=clock())
+        except Exception:
+            return {'status':'ACKNOWLEDGED','orders_sent':1,'order_attempts':1,'gate':'ALLOW','manual_recovery':'CHECK_LEDGER'}
+        return {'status':'ACKNOWLEDGED','orders_sent':1,'order_attempts':1,'gate':'ALLOW','recovery':recovery}
+
+
+def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss_pct=5,take_profit_pct=10,clock=None):
+    clock=clock or (lambda:dt.datetime.now(ZoneInfo('Asia/Seoul')));now=now or clock()
+    result=_automatic_cycle(ledger,broker,candidates,execute=execute,now=now,stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,clock=clock)
+    if not execute or weekend_closed(now):return result
+    state=getattr(ledger,'dashboard_state',None)
+    requests=state.get('buy_control',{}).get('manual_buys',[]) if state else []
+    if not execute or not requests or result.get('orders_sent') or result.get('planned_sells') or result.get('recovery',{}).get('unresolved'):return result
+    active=[]
+    for r in requests:
+        try:active.append(manual_buy_request(r,now=clock(),fingerprint=ledger.fingerprint,release=release_fingerprint()))
+        except TradingBlocked:pass
+    if not active:return result
+    try:
+        sent=process_manual_buy(ledger,broker,active,now=now,clock=clock)
+        result.update(sent);return result
+    except TradingBlocked as exc:
+        if getattr(exc,'execution_progress',None):raise
+        state['manual_buy_checks']=[{'id':active[0]['id'],'status':'BLOCKED','reason':str(exc)}]
+        result['manual_buy_status']='BLOCKED';result['manual_buy_reason']=str(exc);return result
+
+
 def failure_details(exc):
     """Public diagnostic metadata only: never exception text, locals or URLs."""
     from urllib.error import HTTPError, URLError
@@ -1060,6 +1175,7 @@ def read_buy_control(*, opener=None, now=None, access_token=None):
         sell=sell_policy({'sell':{**raw_sell,'connected':True} if isinstance(raw_sell,dict) else None})
         return {'enabled':body['enabled'],'connected':True,'revision':body['revision'],'risk':risk,'sell':sell,
                 'release':release_review_policy(body.get('release')),
+                'manual_buys':body.get('manual_buys',[]) if isinstance(body.get('manual_buys'),list) and len(body['manual_buys'])<=30 else [],
                 'updated_at':body.get('updated_at'),'reason':'OWNER_SETTING'}
     except Exception:
         return {**denied,'reason':'CONTROL_READ_FAILED'}
@@ -1095,7 +1211,7 @@ def dashboard_snapshot(ledger,result):
             'valuation':value,'cost':cost,'unrealized_pnl':value-cost,
             'return_pct':(value-cost)/cost*100 if cost else None,
             'technical':p.get('technical'),'strategy_quantity':snap['managed'].get(ticker,0)})
-    orders=ledger.rows("""SELECT ticker,side,venue,quantity,filled_quantity,status,
+    orders=ledger.rows("""SELECT ticker,side,venue,quantity,filled_quantity,status,signal,
         broker_order_id,trading_day,limit_price,verified_not_sent,created_at,updated_at
         FROM v519_order_intents WHERE account_fingerprint=%s ORDER BY created_at DESC LIMIT 100""",
         (ledger.fingerprint,))
@@ -1108,6 +1224,8 @@ def dashboard_snapshot(ledger,result):
     approved=release_is_approved();authorized=ledger.release_authorized(release_fingerprint())
     halted=ledger.halted();armed=approved and authorized and not halted
     return {'schema_version':1,'generated_at':state['at'].isoformat(),
+        'account_reference':ledger.fingerprint,'manual_buy_supported':True,
+        'manual_buy_checks':state.get('manual_buy_checks',[]),
         'mode':('LIVE_EXECUTION' if result.get('execution_requested') else 'LIVE_ARMED') if armed else 'OBSERVE_ONLY',
         'orders_enabled':armed,'halted':halted,
         'activation':{'expected_release':release_fingerprint(),'release_configured':approved,

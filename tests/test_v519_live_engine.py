@@ -1914,3 +1914,73 @@ class SharedSessionOnlyTests(unittest.TestCase):
   self.assertIn('.github/workflows/kis_live_v4_5_2.yml',RELEASE_FILES)
   engine=(root/'.github/workflows/oneil_v519_live_engine_review.yml').read_text()
   self.assertIn("inputs.operation != 'halt'",engine);self.assertIn("if: needs.session.outputs.ready == 'true'",engine)
+
+class ManualAveragingTests(unittest.TestCase):
+    def setUp(self):
+        self.now=dt.datetime(2026,11,2,10,tzinfo=ZoneInfo('Asia/Seoul'))
+        self.req={'id':'11111111-1111-4111-8111-111111111111','ticker':'000001','quantity':5,'limit_price':8000,'holding_quantity':10,
+            'buy_revision':1,'risk_revision':0,'account_ref':'a'*64,'approved_release':'b'*64,'trading_day':'2026-11-02',
+            'created_at':self.now.isoformat(),'expires_at':(self.now+dt.timedelta(minutes=20)).isoformat()}
+        self.snap={'cash':1000000,'invested':100000,'pending':set(),'managed':{'000001':10},'positions':{'000001':{'quantity':10,'sellable':10,'cost':100000,'valuation':80000,'average':'10000'}}}
+        self.alloc={'remaining':500000,'per_stock':180000}
+    def test_bound_identity_expiration_and_schema(self):
+        self.assertEqual(manual_buy_request(self.req,now=self.now,fingerprint='a'*64,release='b'*64),self.req)
+        for update in ({'quantity':True},{'limit_price':0},{'holding_quantity':0},{'account_ref':'c'*64},{'approved_release':'c'*64},{'id':'bad'},{'expires_at':(self.now+dt.timedelta(minutes=21)).isoformat()},{'trading_day':'2026-11-03'}):
+            with self.assertRaises(TradingBlocked):manual_buy_request({**self.req,**update},now=self.now,fingerprint='a'*64,release='b'*64)
+        with self.assertRaises(TradingBlocked):manual_buy_request(self.req,now=self.now+dt.timedelta(minutes=20),fingerprint='a'*64,release='b'*64)
+    def test_exact_quantity_price_exposure_and_cash(self):
+        plan=manual_buy_plan(self.req,self.snap,self.alloc,8000,lambda *a:(100000,100),set())
+        self.assertEqual(plan.quantity,5);self.assertEqual(plan.signal,'owner:'+self.req['id']);self.assertEqual(plan.reason,'OWNER_AVERAGING')
+        for price,power,allocation,bought in [(8001,(100000,100),self.alloc,set()),(8000,(100000,4),self.alloc,set()),(8000,(40000,100),self.alloc,set()),(8000,(100000,100),{'remaining':40000,'per_stock':180000},set()),(8000,(100000,100),{'remaining':500000,'per_stock':140000},set()),(8000,(100000,100),self.alloc,{'000001'})]:
+            with self.assertRaises(TradingBlocked):manual_buy_plan(self.req,self.snap,allocation,price,lambda *a:power,bought)
+        self.snap['positions']['000001']['quantity']=11
+        with self.assertRaises(TradingBlocked):manual_buy_plan(self.req,self.snap,self.alloc,8000,lambda *a:(100000,100),set())
+    def fixtures(self):
+        test=self
+        class Ledger:
+            fingerprint='a'*64
+            dashboard_state={}
+            def __init__(self):self.records=[];self.stopped=False
+            @contextmanager
+            def lock(self):yield
+            @contextmanager
+            def send_guard(self):
+                if self.stopped:raise TradingBlocked('EMERGENCY_HALT_ACTIVE')
+                yield
+            def halted(self):return self.stopped
+            def halt(self):self.stopped=True
+            def release_authorized(self,r):return r=='b'*64
+            def pending(self):return []
+            def managed(self):return {'000001':10}
+            def bought_today(self,d):return set()
+            def rows(self,*a):return self.records
+            def reserve_plan(self,p,d):self.records.append({'signal':p.signal});return 'intent'
+            def ack(self,*a):pass
+        class Broker(BrokerFixture):
+            def snapshot(self):return test.snap.copy()
+            def quote(self,*a):return 8000
+            def buy_control(self):return {'connected':True,'enabled':True,'revision':1,'risk':{'connected':True,'reserve_pct':40,'per_stock_pct':30,'revision':0},'sell':{'connected':True,'enabled':False,'revision':1},'manual_buys':[test.req],'release':{'approved_release':'b'*64}}
+        return Ledger(),Broker()
+    def run_request(self,l,b):
+        with patch('oneil_v519_live_engine.require_live_release'),patch('oneil_v519_live_engine.release_fingerprint',return_value='b'*64):return process_manual_buy(l,b,[self.req],now=self.now,clock=lambda:self.now)
+    def test_ack_is_not_fill_and_duplicate_id_never_resubmits(self):
+        l,b=self.fixtures();r=self.run_request(l,b);self.assertEqual(r['status'],'ACKNOWLEDGED');self.assertEqual(len(b.calls),1)
+        self.assertEqual(self.run_request(l,b)['status'],'MANUAL_ALREADY_RECORDED');self.assertEqual(len(b.calls),1)
+    def test_unknown_wire_halts_and_never_retries(self):
+        l,b=self.fixtures();b.failure=TimeoutError('fixture')
+        with self.assertRaises(TimeoutError) as ctx:self.run_request(l,b)
+        self.assertTrue(l.stopped);self.assertEqual(len(b.calls),1);self.assertIsNone(ctx.exception.execution_progress['orders_sent'])
+        with self.assertRaises(TradingBlocked):self.run_request(l,b)
+        self.assertEqual(len(b.calls),1)
+    def test_halt_release_control_changes_and_exit_priority(self):
+        for condition in ('halt','activation','buy_off','risk_change','take_profit','holding_change'):
+            l,b=self.fixtures();original=b.buy_control
+            if condition=='halt':l.stopped=True
+            if condition=='activation':l.release_authorized=lambda r:False
+            if condition=='buy_off':b.buy_control=lambda:{**original(),'enabled':False}
+            if condition=='risk_change':b.buy_control=lambda:{**original(),'risk':{**original()['risk'],'revision':2}}
+            if condition=='take_profit':b.quote=lambda *a:12000
+            if condition=='holding_change':self.snap['positions']['000001']['quantity']=11
+            with self.assertRaises(TradingBlocked):self.run_request(l,b)
+            self.assertEqual(b.calls,[])
+            self.snap['positions']['000001']['quantity']=10
