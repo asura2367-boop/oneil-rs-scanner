@@ -251,7 +251,7 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
     def rank(c):
         rs=Decimal(str(c.get('rs',0)))
         if not rs.is_finite():raise TradingBlocked('RS_INVALID')
-        return (-rs,0 if c.get('flow_category')=='BOTH' else 1,str(c.get('ticker','')))
+        return (-rs,str(c.get('ticker','')))
     for c in sorted(candidates,key=rank):
         ticker = c['ticker']
         if not isinstance(ticker, str) or not CODE.fullmatch(ticker) or ticker in seen:
@@ -1136,7 +1136,7 @@ def public_release_review():
 
 
 def scan_candidates(source, now):
-    """Reuse proven RS/volume/channel/flow filtering without stale report files."""
+    """Reuse RS/volume/channel/technical filtering; investor flow is not a gate."""
     from oneil_live_v5_9 import analyze_candidates
     report=analyze_candidates(Path(source),now,min_rs=90)
     fatal={'SOURCE_FILE_MISSING','REQUIRED_COLUMNS_MISSING','INVALID_ROWS_PRESENT','STALE_SIGNAL_ROWS'}

@@ -13,7 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 KST=ZoneInfo('Asia/Seoul')
-REQUIRED=('date','ticker','rs','foreign_5d','institution_5d',
+REQUIRED=('date','ticker','rs',
           'volume_ratio','channel_up','channel_position')
 TICKER=re.compile(r'^\d{6}$')
 
@@ -119,18 +119,17 @@ def analyze_candidates(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
                 local=now.astimezone(KST);at=observed.astimezone(KST)
                 if (observed.tzinfo is None or date!=local.date() or at.date()!=local.date()
                         or dt.date.fromisoformat(row['signal_date'])!=date
-                        or not dt.date.fromisoformat(row['flow_signal_date'])<date
                         or at.weekday()>=5 or not dt.time(9)<=at.time().replace(tzinfo=None)<dt.time(15,15)
                         or (now-observed).total_seconds() < -2):
                     raise ValueError()
             elif basis=='PREVIOUS_CONFIRMED_SESSION' and not dt.date.fromisoformat(row['signal_date'])<date:
                 raise ValueError()
-            rs=float(row['rs']); f=float(row['foreign_5d']); inst=float(row['institution_5d'])
+            rs=float(row['rs'])
             volume=float(row['volume_ratio']); channel=float(row['channel_position'])
             # Optional historical close must never be treated as executable price.
             raw_close=(row.get('reference_close') or '').strip()
             close=float(raw_close) if raw_close else None
-            numbers=[rs,f,inst,volume,channel]+([close] if close is not None else [])
+            numbers=[rs,volume,channel]+([close] if close is not None else [])
             if not all(x==x and abs(x)!=float('inf') for x in numbers): raise ValueError()
             up=row['channel_up'].strip().lower() in ('true','1','yes')
             if not (0 <= rs <= 100 and volume>=0) or (close is not None and close<=0): raise ValueError()
@@ -139,15 +138,13 @@ def analyze_candidates(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
             if volume<min_volume: blocks.append('VOLUME_BELOW_MIN')
             if not up: blocks.append('CHANNEL_NOT_UP')
             if not 0<=channel<=max_channel: blocks.append('CHANNEL_POSITION_OUTSIDE')
-            if not (f>0 or inst>0): blocks.append('NO_POSITIVE_FLOW')
             report['candidate_diagnostics'].append({'ticker':code, 'reason_codes':blocks,
-                'rs':rs, 'volume_ratio':volume, 'foreign_5d':f, 'institution_5d':inst,
-                'flow_category':('BOTH' if f>0 and inst>0 else 'FOREIGN_ONLY' if f>0 else 'INSTITUTION_ONLY' if inst>0 else 'NEITHER')})
+                'rs':rs, 'volume_ratio':volume, 'flow_category':'NOT_USED'})
             if not blocks:
                 item={'date':date.isoformat(),'ticker':code,'rs':rs,
                       'flag':'REVIEW_ONLY_NOT_LIVE_QUOTE', 'price_verified':False,
-                      'foreign_5d':f, 'institution_5d':inst,
-                      'flow_category': ('BOTH' if f>0 and inst>0 else 'FOREIGN_ONLY' if f>0 else 'INSTITUTION_ONLY')}
+                      'foreign_5d':None, 'institution_5d':None,
+                      'flow_category':'NOT_USED'}
                 item.update(name=(row.get('name') or code).strip(),signal_basis=basis or 'LEGACY_PRE_SESSION',
                     technical=read_technical_proof(row),signal_date=row.get('signal_date'),observed_at_kst=observed.isoformat() if observed else None,
                     flow_signal_date=row.get('flow_signal_date'),volume_ratio=volume,channel_position=channel)

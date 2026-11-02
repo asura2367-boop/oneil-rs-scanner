@@ -1859,6 +1859,53 @@ class TechnicalTimingTests(unittest.TestCase):
   self.assertTrue(replaced);self.assertEqual(fetch.call_args.args[-2],dt.date(2025,9,1))
 
 
+class NoInvestorFlowSelectionTests(unittest.TestCase):
+ def test_builder_does_not_read_missing_invalid_or_negative_flow_files(self):
+  from build_v4b_candidates import generate
+  fixture=IntradayCandidateTests();fixture.setUp()
+  with tempfile.TemporaryDirectory() as d:
+   root=pathlib.Path(d);p,f=fixture.history(root);out=root/'c.csv';diag=root/'d.json'
+   # Isolate investor flow from technical calculation (covered above).
+   with patch('oneil_live_v5_9.technical_timing',return_value={'entry':True}):
+    results=[]
+    for flow_text in (None,'not,a,flow,csv\n','ticker,date,foreign_net_qty,institution_net_qty\n234690,2020-01-01,-100,-200\n'):
+     f.unlink(missing_ok=True)
+     if flow_text is not None:f.write_text(flow_text)
+     rows=generate(p,f,'2026-10-29',out,diag,intraday={'234690':fixture.quote()},now=fixture.now)
+     self.assertEqual([r['ticker'] for r in rows],['234690'])
+     self.assertIsNone(rows[0]['foreign_5d']);self.assertIsNone(rows[0]['institution_5d'])
+     self.assertFalse(json.loads(diag.read_text())['flow_filter_enabled']);results.append(rows)
+    self.assertEqual(results[0],results[1]);self.assertEqual(results[1],results[2])
+   with patch('oneil_live_v5_9.technical_timing',return_value={'entry':False}):
+    self.assertEqual(generate(p,f,'2026-10-29',out,intraday={'234690':fixture.quote()},now=fixture.now),[])
+
+ def test_scanner_ignores_all_flow_values_and_keeps_other_entry_conditions(self):
+  import csv
+  from oneil_live_v5_9 import technical_timing
+  t=technical_timing(TechnicalTimingTests().bars())
+  now=dt.datetime(2026,10,29,11,5,tzinfo=ZoneInfo('Asia/Seoul'))
+  row={'date':'2026-10-29','ticker':'234690','rs':95,'volume_ratio':2,'channel_up':True,'channel_position':.3,
+       'reference_close':110,'technical_policy':t['policy'],'technical_details':json.dumps(t),
+       'signal_basis':'INTRADAY_KIS_SNAPSHOT','signal_date':'2026-10-29','observed_at_kst':now.isoformat()}
+  with tempfile.TemporaryDirectory() as d:
+   p=pathlib.Path(d)/'c.csv'
+   def check(extra):
+    r={**row,**extra}
+    with p.open('w',newline='') as f:
+     w=csv.DictWriter(f,fieldnames=list(r));w.writeheader();w.writerow(r)
+    return scan_candidates(p,now)
+   for f,i in ((None,None),(-10,-20),(0,0),('bad','NaN')):
+    self.assertEqual(len(check({'foreign_5d':f,'institution_5d':i,'flow_signal_date':'invalid'})),1)
+   self.assertEqual(len(check({})),1)
+   for extra in ({'rs':89},{'volume_ratio':.9},{'channel_up':False},{'channel_position':.76},{'technical_details':''}):
+    self.assertEqual(check(extra),[])
+
+ def test_equal_rs_priority_no_longer_prefers_positive_flow(self):
+  snap={'cash':100000,'invested':0,'pending':set(),'managed':{},'positions':{}}
+  c=[{'ticker':'000002','rs':95,'flow_category':'BOTH'},{'ticker':'000001','rs':95,'flow_category':'NEITHER'}]
+  plans,_=plan_orders(c,snap,lambda *_:1000,lambda *_:(100000,100),max_buys=1)
+  self.assertEqual([p.ticker for p in plans],['000001'])
+
 class SharedSessionOnlyTests(unittest.TestCase):
  def test_consumers_reuse_cache_even_in_authorized_live_profile(self):
   import base64,kis_live_v4_5_2 as cache

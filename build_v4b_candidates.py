@@ -12,15 +12,15 @@ COLUMNS=['date','ticker','rs','foreign_5d','institution_5d','volume_ratio','chan
 
 def load_inputs(prices_path, flows_path, target):
     target=pd.Timestamp(target).normalize()
-    if not prices_path.exists() or not flows_path.exists():
-        raise FileNotFoundError('일봉 또는 수급 CSV 없음: 후보를 생성하지 않습니다')
+    if not prices_path.exists():
+        raise FileNotFoundError('일봉 CSV 없음: 후보를 생성하지 않습니다')
     p=pd.read_csv(prices_path,dtype={'ticker':str},encoding='utf-8-sig')
-    f=pd.read_csv(flows_path,dtype={'ticker':str},encoding='utf-8-sig')
+    # Keep the legacy argument/return shape; flow data is not an input anymore.
+    f=pd.DataFrame(columns=['ticker','date','foreign_net_qty','institution_net_qty'])
     required_p={'ticker','name','date','close','volume'}
-    required_f={'ticker','date','foreign_net_qty','institution_net_qty'}
-    if not required_p.issubset(p.columns) or not required_f.issubset(f.columns):
+    if not required_p.issubset(p.columns):
         raise ValueError('CSV 필수 열 누락')
-    for df in (p,f):
+    for df in (p,):
         df['ticker']=df['ticker'].astype(str).str.zfill(6)
         df['date']=pd.to_datetime(df['date'],errors='coerce').dt.normalize()
         df.dropna(subset=['date','ticker'],inplace=True)
@@ -28,7 +28,6 @@ def load_inputs(prices_path, flows_path, target):
         df.sort_values(['ticker','date'],inplace=True)
         df.drop_duplicates(['ticker','date'],keep='last',inplace=True)
     for c in ['close','volume']:p[c]=pd.to_numeric(p[c],errors='coerce')
-    for c in ['foreign_net_qty','institution_net_qty']:f[c]=pd.to_numeric(f[c],errors='coerce')
     sessions=pd.DatetimeIndex(sorted(p.loc[(p.volume>0)&(p.close>0),'date'].unique()))
     if sessions.empty: raise ValueError('유효한 전일 거래 데이터 없음')
     signal_day=sessions[-1]
@@ -74,16 +73,14 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
         observed=[dt.datetime.fromisoformat(r['received_at_kst']) for r in intraday.values() if r is not None]
         if not observed:raise ValueError('INTRADAY_QUOTES_EMPTY')
         if (max(observed)-min(observed)).total_seconds()>600:raise ValueError('INTRADAY_COLLECTION_EXPIRED')
-    flows={c:g.set_index('date') for c,g in f.groupby('ticker')}
     counts={'universe_symbols':int(p.ticker.nunique()),'latest_signal_day':str(signal_day.date()),
             'latest_history_day':str(signal_day.date()),
             'source_basis':'INTRADAY_KIS_SNAPSHOT' if intraday is not None else 'PREVIOUS_CONFIRMED_SESSION',
             'target_date':str(target.date()),'valid_history':0,'missing_history':0,
             'stale_price':0,'invalid_price_or_volume':0,'misaligned_history':0,
             'rs_85':0,'volume_1x':0,'up_channel':0,'channel_0_75':0,
-            'flow_five_valid':0,'foreign_positive':0,'institution_positive':0,'selected':0,
-            'technical_data_missing':0,'technical_rejected':0,'technical_passed':0,'legacy_selected':0,'flow_missing_or_short':0,'flow_stale':0,'flow_invalid':0,
-             'foreign_only':0,'institution_only':0,'both_positive':0}
+            'selection_policy':'RS_TECHNICAL_NO_FLOW_V1','flow_filter_enabled':False,'selected':0,
+            'technical_data_missing':0,'technical_rejected':0,'technical_passed':0,'legacy_selected':0}
     scores=[]
     if intraday is not None:
         counts.update(latest_signal_day=str(target.date()),quote_universe=len(intraday),
@@ -140,38 +137,16 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
         counts[key]=int(len(df))
     result=[]
     for r in df.itertuples():
-        fh=flows.get(r.ticker)
-        if fh is None:
-            counts['flow_missing_or_short']+=1;continue
-        fh=fh.loc[:signal_day]
-        if len(fh)<5:
-            counts['flow_missing_or_short']+=1;continue
-        lag=sessions.searchsorted(signal_day,side='right')-sessions.searchsorted(fh.index[-1],side='right')
-        if lag not in (0,1):
-            counts['flow_stale']+=1;continue
-        five=fh.tail(5)
-        if five[['foreign_net_qty','institution_net_qty']].isna().any().any():
-            counts['flow_invalid']+=1;continue
-        counts['flow_five_valid']+=1
-        foreign=float(five.foreign_net_qty.sum());institution=float(five.institution_net_qty.sum())
-        foreign_ok = foreign > 0
-        institution_ok = institution > 0
-        if foreign_ok: counts['foreign_positive']+=1
-        if institution_ok: counts['institution_positive']+=1
-        if foreign_ok and institution_ok: counts['both_positive']+=1
-        elif foreign_ok: counts['foreign_only']+=1
-        elif institution_ok: counts['institution_only']+=1
-        if not (foreign_ok or institution_ok): continue
         counts['legacy_selected']+=1
         if not isinstance(r.technical,dict):
             counts['technical_data_missing']+=1;continue
         if not r.technical['entry']:
             counts['technical_rejected']+=1;continue
         counts['technical_passed']+=1
-        result.append(dict(technical_policy='BB_ICHI_TREND_V1',technical_entry=True,technical_details=json.dumps(r.technical,separators=(',',':')),date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=foreign,institution_5d=institution,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),channel_up=bool(r.channel_up),
+        result.append(dict(technical_policy='BB_ICHI_TREND_V1',technical_entry=True,technical_details=json.dumps(r.technical,separators=(',',':')),date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=None,institution_5d=None,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),channel_up=bool(r.channel_up),
             signal_date=(target if intraday is not None else signal_day).strftime('%Y-%m-%d'),name=r.name,
             signal_basis=counts['source_basis'],observed_at_kst=intraday[r.ticker]['received_at_kst'] if intraday is not None else '',
-            flow_signal_date=fh.index[-1].strftime('%Y-%m-%d'),reference_close=r.reference_close))
+            flow_signal_date='',reference_close=r.reference_close))
     output.parent.mkdir(parents=True,exist_ok=True)
     temp=output.with_suffix('.tmp')
     pd.DataFrame(result,columns=COLUMNS).sort_values(['rs','ticker'],ascending=[False,True]).to_csv(temp,index=False,encoding='utf-8-sig')

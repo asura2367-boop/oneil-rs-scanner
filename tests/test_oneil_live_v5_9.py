@@ -19,14 +19,14 @@ class Tests(unittest.TestCase):
  def test_review_only(self):
   with tempfile.TemporaryDirectory() as d:
    p=Path(d)/'c.csv'
-   p.write_text(','.join(REQUIRED)+'\n2026-10-26,052460,98,200,200,1.4,true,0.5,5800\n')
+   p.write_text(','.join(REQUIRED)+'\n2026-10-26,052460,98,1.4,true,0.5,5800\n')
    result=analyze(p,NOW)
    self.assertEqual(len(result['review_candidates']),1)
    self.assertEqual(result['approved_order_intents'],[])
    self.assertEqual(result['status'],'DENY')
  def test_stale(self):
   with tempfile.TemporaryDirectory() as d:
-   p=Path(d)/'c.csv';p.write_text(','.join(REQUIRED)+'\n2026-10-15,052460,98,200,200,1.4,true,0.5,5800\n')
+   p=Path(d)/'c.csv';p.write_text(','.join(REQUIRED)+'\n2026-10-15,052460,98,1.4,true,0.5,5800\n')
    self.assertIn('STALE_SIGNAL_ROWS',analyze(p,NOW)['reason_codes'])
  def test_hard_flags(self):
   with patch.dict(os.environ, {'LIVE_ENABLED':'true'}):
