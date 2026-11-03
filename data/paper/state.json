@@ -1,7 +1,7 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 4555645.32459,
+  "cash": 3740709.1024900004,
   "positions": {
     "052460": {
       "name": "아이크래프트",
@@ -9,7 +9,7 @@
       "entry": 5865.86,
       "entry_idx": 2,
       "partial": true,
-      "last_close": 6440.0
+      "last_close": 6210.0
     },
     "048910": {
       "name": "대원미디어",
@@ -17,7 +17,7 @@
       "entry": 7997.989999999999,
       "entry_idx": 2,
       "partial": false,
-      "last_close": 7660.0
+      "last_close": 7720.0
     },
     "069540": {
       "name": "빛과전자",
@@ -25,7 +25,7 @@
       "entry": 4003.9999999999995,
       "entry_idx": 7,
       "partial": false,
-      "last_close": 4000.0
+      "last_close": 3810.0
     },
     "042510": {
       "name": "라온시큐어",
@@ -33,18 +33,27 @@
       "entry": 18428.409999999996,
       "entry_idx": 7,
       "partial": false,
-      "last_close": 18410.0
+      "last_close": 17030.0
+    },
+    "121440": {
+      "name": "골프존홀딩스",
+      "qty": 100,
+      "entry": 8148.139999999999,
+      "entry_idx": 8,
+      "partial": false,
+      "last_close": 8140.0
     }
   },
   "pending": [
     {
-      "signal_date": "2026-11-02",
-      "side": "BUY",
-      "ticker": "121440",
-      "name": "골프존홀딩스",
-      "reason": "RS 95 + 수급/거래량/채널"
+      "signal_date": "2026-11-03",
+      "side": "SELL",
+      "ticker": "042510",
+      "name": "라온시큐어",
+      "qty": 69,
+      "reason": "손절 신호 -5%"
     }
   ],
-  "last_processed": "2026-11-02",
-  "session_index": 7
+  "last_processed": "2026-11-03",
+  "session_index": 8
 }
