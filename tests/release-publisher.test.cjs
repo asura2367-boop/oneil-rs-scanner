@@ -9,8 +9,9 @@ const github={async request(route,args){if(route.endsWith('/runs'))return{data:{
 const core={async getIDToken(aud){tokenCalls++;assert.ok(aud.startsWith('https://oneil-control-desk.asura2367.chatgpt.site/api/release-evidence#sha256='));return 'fixture signed identity';},info(){}};
 const fetcher=async(url,args)=>{assert.equal(url,'https://oneil-control-desk.asura2367.chatgpt.site/api/release-evidence');assert.equal(args.redirect,'manual');assert.equal(args.headers['X-Oneil-Release-Attestation'],'fixture signed identity');sent.push(JSON.parse(args.body));return{ok:true};};
 (async()=>{await runScript(github,context,core,{env:{SITE_ACCESS:'fixture service access',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);assert.equal(sent[0].test_conclusion,'success');assert.deepEqual(Object.keys(sent[0].manifest.source_files),expected);assert.equal(sent[0].manifest.review_run_id,123);assert.equal(sent[0].issuer.run_id,789);assert.equal(sent[0].issuer.source_commit,'b'.repeat(40));
-conclusion='failure';await runScript(github,context,core,{env:{SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);assert.equal(sent[1].test_conclusion,'failure');
-status='in_progress';await assert.rejects(runScript(github,context,core,{env:{}},fetcher,require),/TEST_UNFINISHED/);assert.equal(tokenCalls,2);
-await assert.rejects(runScript(github,{...context,eventName:'pull_request'},core,{env:{}},fetcher,require),/CONTEXT_INVALID/);assert.equal(sent.length,2);
+await runScript(github,{...context,eventName:'push',payload:{}},core,{env:{SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);assert.equal(sent[1].manifest.review_run_id,123);
+conclusion='failure';await runScript(github,context,core,{env:{SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);assert.equal(sent[2].test_conclusion,'failure');
+status='in_progress';await assert.rejects(runScript(github,context,core,{env:{}},fetcher,require),/TEST_UNFINISHED/);assert.equal(tokenCalls,3);
+await assert.rejects(runScript(github,{...context,eventName:'pull_request'},core,{env:{}},fetcher,require),/CONTEXT_INVALID/);assert.equal(sent.length,3);
 console.log('PASS isolated publisher checks actual run/test completion, binds exact source files, sends failures as failures, excludes PRs, and only posts public verification evidence');
 })().catch(e=>{console.error(e);process.exitCode=1});
