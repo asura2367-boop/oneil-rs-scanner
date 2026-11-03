@@ -13,8 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 KST=ZoneInfo('Asia/Seoul')
-REQUIRED=('date','ticker','rs',
-          'volume_ratio','channel_up','channel_position')
+REQUIRED=('date','ticker','rs')
 TICKER=re.compile(r'^\d{6}$')
 
 def technical_timing(bars):
@@ -67,12 +66,12 @@ def read_technical_proof(row):
     except (ValueError,TypeError,AttributeError):return None
 
 
-def analyze(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
+def analyze(path, now, min_rs=90, min_volume=1.0, max_channel=.75):
     if any(os.getenv(n,'false').lower()!='false' for n in ('LIVE_ENABLED','KIS_ALLOW_ORDER')):
         raise RuntimeError('LIVE_FLAGS_NOT_DISABLED')
     return analyze_candidates(path, now, min_rs, min_volume, max_channel)
 
-def analyze_candidates(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
+def analyze_candidates(path, now, min_rs=90, min_volume=1.0, max_channel=.75):
     """Pure CSV filtering for the integrated runtime; grants no order authority.
 
     The standalone analyze/CLI entry point retains its flags-off guard. Live
@@ -128,19 +127,16 @@ def analyze_candidates(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
             elif basis=='PREVIOUS_CONFIRMED_SESSION' and not dt.date.fromisoformat(row['signal_date'])<date:
                 raise ValueError()
             rs=float(row['rs'])
-            volume=float(row['volume_ratio']); channel=float(row['channel_position'])
+            # Legacy indicator columns are descriptive only, never entry gates.
+            volume=channel=None
             # Optional historical close must never be treated as executable price.
             raw_close=(row.get('reference_close') or '').strip()
             close=float(raw_close) if raw_close else None
-            numbers=[rs,volume,channel]+([close] if close is not None else [])
+            numbers=[rs]+([close] if close is not None else [])
             if not all(x==x and abs(x)!=float('inf') for x in numbers): raise ValueError()
-            up=row['channel_up'].strip().lower() in ('true','1','yes')
-            if not (0 <= rs <= 100 and volume>=0) or (close is not None and close<=0): raise ValueError()
+            if not (1 <= rs <= 99) or (close is not None and close<=0): raise ValueError()
             blocks=[]
             if rs<min_rs: blocks.append('RS_BELOW_MIN')
-            if volume<min_volume: blocks.append('VOLUME_BELOW_MIN')
-            if not up: blocks.append('CHANNEL_NOT_UP')
-            if not 0<=channel<=max_channel: blocks.append('CHANNEL_POSITION_OUTSIDE')
             report['candidate_diagnostics'].append({'ticker':code, 'reason_codes':blocks,
                 'rs':rs, 'volume_ratio':volume, 'flow_category':'NOT_USED'})
             if not blocks:
@@ -149,7 +145,7 @@ def analyze_candidates(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
                       'foreign_5d':None, 'institution_5d':None,
                       'flow_category':'NOT_USED'}
                 item.update(name=(row.get('name') or code).strip(),signal_basis=basis or 'LEGACY_PRE_SESSION',
-                    technical=read_technical_proof(row),signal_date=row.get('signal_date'),observed_at_kst=observed.isoformat() if observed else None,
+                    technical=None,selection_policy='RS_ONLY_V1',signal_date=row.get('signal_date'),observed_at_kst=observed.isoformat() if observed else None,
                     flow_signal_date=row.get('flow_signal_date'),volume_ratio=volume,channel_position=channel)
                 if close is not None: item['reference_close_krw']=close
                 report['review_candidates'].append(item)
@@ -159,7 +155,6 @@ def analyze_candidates(path, now, min_rs=85, min_volume=1.0, max_channel=.75):
     if stale: reason('STALE_SIGNAL_ROWS')
     if not report['review_candidates']: reason('NO_VERIFIED_RULE_MATCHES')
     report['review_candidates'].sort(key=lambda x:(-x['rs'],x['ticker']))
-    report['review_candidates']=report['review_candidates'][:10]
     report['candidate_diagnostics']=report['candidate_diagnostics'][:200]
     reason('BROKER_CASH_NOT_VERIFIED')
     reason('LIVE_QUOTE_NOT_VERIFIED')
@@ -171,7 +166,7 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--source',default='data/v4b/candidates.csv')
     p.add_argument('--output',default='v5_9_candidates_review.json')
-    p.add_argument('--rs',type=float,default=85)
+    p.add_argument('--rs',type=float,default=90)
     p.add_argument('--volume',type=float,default=1.0)
     p.add_argument('--channel',type=float,default=.75)
     a=p.parse_args()

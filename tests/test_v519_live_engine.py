@@ -231,10 +231,10 @@ printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE
                 expected=scan_candidates(path,now)
             with patch.dict(os.environ,{'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true'}):
                 self.assertEqual(scan_candidates(path,now),expected)
-                self.assertEqual(expected,[]) # old RS-only rows cannot bypass technical confirmation
+                self.assertEqual([r['ticker'] for r in expected],['144960'])
                 with self.assertRaisesRegex(RuntimeError,'LIVE_FLAGS_NOT_DISABLED'):
                     analyze(path,now)
-                path.write_text('date,ticker,rs\n2026-10-29,144960,95\n')
+                path.write_text('date,ticker,rs\n2026-10-29,144960,NaN\n')
                 with self.assertRaisesRegex(TradingBlocked,'CANDIDATE_SOURCE_INVALID_OR_STALE'):
                     scan_candidates(path,now)
 
@@ -1216,12 +1216,11 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertLessEqual((sent.price*sent.quantity*1005+999)//1000,25000)
         self.assertEqual(r['gate'],'ALLOW')
 
-    def test_fresh_buy_loses_technical_breakout_no_intent_or_post(self):
+    def test_rs_only_fresh_buy_does_not_require_technical_breakout(self):
         fixture,live=self.intercepted_live_broker(8000,2)
         result=self.cycle()
-        self.assertEqual(fixture.calls,[])
-        self.assertEqual(self.ledger.pending(),[])
-        self.assertEqual(result['batch_stop_reason'],'TECHNICAL_ENTRY_NO_LONGER_VALID')
+        self.assertEqual(len(fixture.calls),1)
+        self.assertEqual(fixture.calls[0].price,8000)
 
     def test_sell_reprice_inside_exit_band_creates_no_new_intent(self):
         ident=self.seed();self.ledger.ack(ident,'000122')
@@ -1361,15 +1360,15 @@ class IntradayCandidateTests(unittest.TestCase):
         prices.to_csv(p,index=False);flows.to_csv(f,index=False)
         return p,f
 
-    def test_live_price_and_volume_without_ohlc_does_not_bypass_new_filter(self):
+    def test_rs_only_accepts_valid_closes_without_technical_ohlc(self):
         from build_v4b_candidates import generate
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory);p,f=self.history(root);out=root/'candidates.csv';diag=root/'diagnostic.json'
-            self.assertEqual(generate(p,f,'2026-10-29',out),[])
+            self.assertEqual(len(generate(p,f,'2026-10-29',out)),1)
             rows=generate(p,f,'2026-10-29',out,diag,intraday={'234690':self.quote()},now=self.now)
-            self.assertEqual(rows,[])
-            self.assertEqual(json.loads(diag.read_text())['technical_data_missing'],1)
-            self.assertEqual(scan_candidates(out,self.now),[])
+            self.assertEqual(len(rows),1)
+            self.assertEqual(json.loads(diag.read_text())['technical_data_missing'],0)
+            self.assertEqual(len(scan_candidates(out,self.now)),1)
 
     def test_invalid_or_partial_quotes_preserve_previous_candidate_output(self):
         from build_v4b_candidates import generate
@@ -1389,7 +1388,7 @@ class IntradayCandidateTests(unittest.TestCase):
             root=pathlib.Path(directory);p,f=self.history(root);out=root/'candidates.csv'
             data=pd.read_csv(p,dtype={'ticker':str});data.loc[len(data)]=['2026-10-29','234690','녹십자웰빙',999999,999999]
             data.to_csv(p,index=False)
-            self.assertEqual(generate(p,f,'2026-10-29',out),[])
+            self.assertEqual(len(generate(p,f,'2026-10-29',out)),1)
             self.assertEqual(intraday_universe(p,f,'2026-10-29','2026-10-28'),['234690'])
             with self.assertRaises(ValueError):intraday_universe(p,f,'2026-10-29','2026-10-27')
 
@@ -1484,7 +1483,7 @@ class IntradayCandidateTests(unittest.TestCase):
             snapshot={'cash':500000,'invested':0,'pending':set(),'positions':{},'managed':{}}
             quote=lambda t,s:12760;power=lambda t,p:(500000,100)
             plans,allocation=plan_orders(candidates,snapshot,quote,power,reserve_pct=40,per_stock_pct=30)
-            self.assertEqual(plans,[]) # missing indicator history blocks entry before sizing
+            self.assertEqual(len(plans),1);self.assertLessEqual(plans[0].price*plans[0].quantity,90000)
             snapshot['bought_today']={'234690'}
             self.assertEqual(plan_orders(candidates,snapshot,quote,power)[0],[])
 
@@ -1945,7 +1944,7 @@ class NoInvestorFlowSelectionTests(unittest.TestCase):
      self.assertFalse(json.loads(diag.read_text())['flow_filter_enabled']);results.append(rows)
     self.assertEqual(results[0],results[1]);self.assertEqual(results[1],results[2])
    with patch('oneil_live_v5_9.technical_timing',return_value={'entry':False}):
-    self.assertEqual(generate(p,f,'2026-10-29',out,intraday={'234690':fixture.quote()},now=fixture.now),[])
+    self.assertEqual(len(generate(p,f,'2026-10-29',out,intraday={'234690':fixture.quote()},now=fixture.now)),1)
 
  def test_scanner_ignores_all_flow_values_and_keeps_other_entry_conditions(self):
   import csv
@@ -1965,8 +1964,9 @@ class NoInvestorFlowSelectionTests(unittest.TestCase):
    for f,i in ((None,None),(-10,-20),(0,0),('bad','NaN')):
     self.assertEqual(len(check({'foreign_5d':f,'institution_5d':i,'flow_signal_date':'invalid'})),1)
    self.assertEqual(len(check({})),1)
-   for extra in ({'rs':89},{'volume_ratio':.9},{'channel_up':False},{'channel_position':.76},{'technical_details':''}):
-    self.assertEqual(check(extra),[])
+   self.assertEqual(check({'rs':89}),[])
+   for extra in ({'rs':90},{'volume_ratio':.9},{'channel_up':False},{'channel_position':.76},{'technical_details':''},{'volume_ratio':'bad','channel_position':'bad'}):
+    self.assertEqual(len(check(extra)),1)
 
  def test_equal_rs_priority_no_longer_prefers_positive_flow(self):
   snap={'cash':100000,'invested':0,'pending':set(),'managed':{},'positions':{}}
@@ -2099,3 +2099,34 @@ class ManualAveragingTests(unittest.TestCase):
             with self.assertRaises(TradingBlocked):self.run_request(l,b)
             self.assertEqual(b.calls,[])
             self.snap['positions']['000001']['quantity']=10
+
+class PureRsSelectionTests(unittest.TestCase):
+ def test_rs_boundary_sort_and_no_top_ten_truncation(self):
+  import csv
+  now=dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul'))
+  with tempfile.TemporaryDirectory() as d:
+   p=pathlib.Path(d)/'c.csv'
+   with p.open('w',newline='') as f:
+    w=csv.writer(f);w.writerow(['date','ticker','rs'])
+    for i in range(20):w.writerow(['2026-10-29',f'{i+1:06}',90+i%10])
+    w.writerow(['2026-10-29','999999',89])
+   found=scan_candidates(p,now)
+   self.assertEqual(len(found),20)
+   self.assertEqual([(r['rs'],r['ticker']) for r in found],sorted([(r['rs'],r['ticker']) for r in found],key=lambda r:(-r[0],r[1])))
+   for value in ('NaN','inf','100','0'):
+    p.write_text('date,ticker,rs\n2026-10-29,000001,'+value+'\n')
+    with self.assertRaises(TradingBlocked):scan_candidates(p,now)
+ def test_builder_uses_only_real_close_rs_and_keeps_all_qualified(self):
+  import pandas as pd,numpy as np
+  from build_v4b_candidates import generate
+  with tempfile.TemporaryDirectory() as d:
+   root=pathlib.Path(d);p=root/'p.csv';out=root/'c.csv';diag=root/'d.json'
+   days=pd.bdate_range(end='2026-10-28',periods=253)
+   frames=[pd.DataFrame({'ticker':f'{i+1:06}','name':str(i),'date':days,'close':100*np.exp(i*.0001*np.arange(253)),'volume':([100]*252+[0] if i>=18 else [100]*253)}) for i in range(20)]
+   pd.concat(frames).to_csv(p,index=False)
+   with patch('oneil_live_v5_9.technical_timing',side_effect=AssertionError('must not compute indicator')):
+    rows=generate(p,root/'absent.csv','2026-10-29',out,diag)
+   self.assertEqual([r['ticker'] for r in rows],['000018','000019','000020']) # ceil percentile includes RS 90 boundary
+   found=scan_candidates(out,dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul')))
+   self.assertEqual([r['ticker'] for r in found],['000020','000019','000018'])
+   self.assertEqual(json.loads(diag.read_text())['selection_policy'],'RS_ONLY_V1')

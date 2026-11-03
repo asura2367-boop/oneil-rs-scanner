@@ -794,11 +794,6 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     evidence=broker.quote_evidence[(plan.ticker,plan.side)]
                     quantity=min(quantity,evidence['size'])
                 if plan.side=='BUY':
-                    candidate=next((c for c in candidates if c['ticker']==plan.ticker),{})
-                    tech=candidate.get('technical')
-                    if isinstance(broker,KisBroker) and (not isinstance(tech,dict) or fresh<=max(tech['bb_upper'],tech['cloud_a'],tech['cloud_b'])):
-                        result['batch_stop_reason']='TECHNICAL_ENTRY_NO_LONGER_VALID'
-                        return result
                     amount,broker_qty=broker.power(plan.ticker,fresh)
                     money(amount);money(broker_qty)
                     cap=min(initial_remaining-spent,allocation['remaining'],
@@ -1136,13 +1131,13 @@ def public_release_review():
 
 
 def scan_candidates(source, now):
-    """Reuse RS/volume/channel/technical filtering; investor flow is not a gate."""
+    """Select by ONeil RS >= 90 only; quote/account/order safety gates remain separate."""
     from oneil_live_v5_9 import analyze_candidates
     report=analyze_candidates(Path(source),now,min_rs=90)
     fatal={'SOURCE_FILE_MISSING','REQUIRED_COLUMNS_MISSING','INVALID_ROWS_PRESENT','STALE_SIGNAL_ROWS'}
     if fatal.intersection(report['reason_codes']):
         raise TradingBlocked('CANDIDATE_SOURCE_INVALID_OR_STALE')
-    return [c for c in report['review_candidates'] if c.get('technical') is not None]
+    return report['review_candidates']
 
 
 def read_buy_control(*, opener=None, now=None, access_token=None):

@@ -40,8 +40,8 @@ def history_quality(h,signal_day,sessions):
     if h.index[-1]!=signal_day:return 'stale_price'
     h=h.tail(253)
     if not h.index.equals(sessions[-253:]):return 'misaligned_history'
-    if (not np.isfinite(h[['close','volume']].to_numpy(float)).all() or
-            (h.close<=0).any() or (h.volume.tail(21)<=0).any()):
+    if (not np.isfinite(h[['close']].to_numpy(float)).all() or
+            (h.close<=0).any()):
         return 'invalid_price_or_volume'
     return None
 
@@ -79,7 +79,7 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
             'target_date':str(target.date()),'valid_history':0,'missing_history':0,
             'stale_price':0,'invalid_price_or_volume':0,'misaligned_history':0,
             'rs_85':0,'volume_1x':0,'up_channel':0,'channel_0_75':0,
-            'selection_policy':'RS_TECHNICAL_NO_FLOW_V1','flow_filter_enabled':False,'selected':0,
+            'selection_policy':'RS_ONLY_V1','flow_filter_enabled':False,'volume_filter_enabled':False,'channel_filter_enabled':False,'technical_filter_enabled':False,'min_rs':90,'selected':0,
             'technical_data_missing':0,'technical_rejected':0,'technical_passed':0,'legacy_selected':0,
             'technical_bb_not_breaking_out':0,'technical_ichimoku_not_bullish':0}
     scores=[]
@@ -103,18 +103,7 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
         close=h.close.to_numpy(float);vol=h.volume.to_numpy(float)
         returns=np.array([close[-1]/close[-1-n]-1 for n in (63,126,189,252)])
         score=float(np.dot(returns,[.4,.2,.2,.2]))
-        ratio=float(vol[-1]/np.mean(vol[-21:-1]))
-        y=np.log(close[-60:]);x=np.arange(60)
-        slope,intercept=np.polyfit(x,y,1)
-        mid=intercept+slope*x
-        width=max(2*np.std(y-mid),1e-8)
-        channel=float((y[-1]-mid[-1]+width)/(2*width))
-        technical=None
-        try:
-            from oneil_live_v5_9 import technical_timing
-            technical=technical_timing(h.to_dict('records'))
-        except (ValueError,TypeError,KeyError):pass
-        scores.append(dict(technical=technical,ticker=ticker,name=str(h.name.iloc[-1]),score=score,volume_ratio=ratio,channel_position=channel,channel_up=slope>0,reference_close=int(close[-1])))
+        scores.append(dict(ticker=ticker,name=str(h.name.iloc[-1]),score=score,reference_close=int(close[-1])))
     if not scores: raise ValueError('RS 계산 가능한 전일 종목 없음')
     registry=prices_path.parent/'universe_test.csv'
     registered=set(p.ticker.unique())
@@ -132,21 +121,13 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
     df=pd.DataFrame(scores)
     df['rs']=np.ceil(df.score.rank(pct=True)*99).clip(1,99).astype(int)
     counts['rs_90']=int((df.rs>=90).sum())
-    for key,condition in [('rs_85',df.rs>=85),('volume_1x',df.volume_ratio>=1),
-                          ('up_channel',df.channel_up),('channel_0_75',df.channel_position.between(0,.75))]:
-        df=df[condition.loc[df.index]]
-        counts[key]=int(len(df))
+    counts['rs_85']=int((df.rs>=85).sum())
+    df=df[df.rs>=90]
     result=[]
     for r in df.itertuples():
-        counts['legacy_selected']+=1
-        if not isinstance(r.technical,dict):
-            counts['technical_data_missing']+=1;continue
-        if not r.technical['entry']:
-            if not r.technical.get('bb_breakout'):counts['technical_bb_not_breaking_out']+=1
-            if not r.technical.get('ichimoku_bullish'):counts['technical_ichimoku_not_bullish']+=1
-            counts['technical_rejected']+=1;continue
-        counts['technical_passed']+=1
-        result.append(dict(technical_policy='BB_ICHI_TREND_V1',technical_entry=True,technical_details=json.dumps(r.technical,separators=(',',':')),date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=None,institution_5d=None,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),channel_up=bool(r.channel_up),
+        result.append(dict(technical_policy='RS_ONLY_V1',technical_entry=None,technical_details='',
+            date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=None,institution_5d=None,
+            volume_ratio=None,channel_position=None,channel_up=None,
             signal_date=(target if intraday is not None else signal_day).strftime('%Y-%m-%d'),name=r.name,
             signal_basis=counts['source_basis'],observed_at_kst=intraday[r.ticker]['received_at_kst'] if intraday is not None else '',
             flow_signal_date='',reference_close=r.reference_close))
@@ -171,7 +152,7 @@ if __name__=='__main__':
     ap.add_argument('--flows',type=Path,default=Path('data/kis_investor_flow.csv'))
     ap.add_argument('--output',type=Path,default=Path('data/v4b/candidates.csv'))
     ap.add_argument('--diagnostics',type=Path,default=Path('data/v4b/diagnostics.json'))
-    ap.add_argument('--intraday',action='store_true',help='KIS 당일 스냅샷으로 RS·거래량·채널 재계산; 주문 없음')
+    ap.add_argument('--intraday',action='store_true',help='KIS 당일 스냅샷으로 RS 재계산; 주문 없음')
     ap.add_argument('--previous-session',help='거래소 달력으로 확인한 직전 거래일; 장중 수집에 필수')
     args=ap.parse_args()
     stage='HISTORY_INPUT'
