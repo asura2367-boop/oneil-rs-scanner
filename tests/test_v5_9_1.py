@@ -18,7 +18,7 @@ class CandidateTests(unittest.TestCase):
   r=self.read(HEADER+'2026-10-27,052460,96,10,20,1.5,0.4,True,2026-10-26,example\n')
   self.assertEqual(len(r['review_candidates']),1);self.assertNotIn('reference_close_krw',r['review_candidates'][0]);self.assertEqual(r['orders_sent'],0)
  def test_missing_actual_required(self):
-  r=self.read('date,ticker,rs\n');self.assertIn('REQUIRED_COLUMNS_MISSING',r['reason_codes'])
+  r=self.read('date,ticker\n');self.assertIn('REQUIRED_COLUMNS_MISSING',r['reason_codes'])
  def test_optional_close_if_present(self):
   r=self.read(HEADER.rstrip('\n')+',reference_close\n'+'2026-10-27,052460,95,10,20,1.4,0.4,True,2026-10-26,example,6000\n');self.assertEqual(r['review_candidates'][0]['reference_close_krw'],6000)
  def test_reject_live(self):
