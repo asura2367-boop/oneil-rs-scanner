@@ -1,15 +1,15 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 6013510.2062135,
+  "cash": 4555645.32459,
   "positions": {
     "052460": {
       "name": "아이크래프트",
-      "qty": 340,
+      "qty": 170,
       "entry": 5865.86,
       "entry_idx": 2,
-      "partial": false,
-      "last_close": 6460.0
+      "partial": true,
+      "last_close": 6440.0
     },
     "048910": {
       "name": "대원미디어",
@@ -17,33 +17,34 @@
       "entry": 7997.989999999999,
       "entry_idx": 2,
       "partial": false,
-      "last_close": 7700.0
+      "last_close": 7660.0
+    },
+    "069540": {
+      "name": "빛과전자",
+      "qty": 319,
+      "entry": 4003.9999999999995,
+      "entry_idx": 7,
+      "partial": false,
+      "last_close": 4000.0
+    },
+    "042510": {
+      "name": "라온시큐어",
+      "qty": 69,
+      "entry": 18428.409999999996,
+      "entry_idx": 7,
+      "partial": false,
+      "last_close": 18410.0
     }
   },
   "pending": [
     {
-      "signal_date": "2026-10-30",
-      "side": "SELL",
-      "ticker": "052460",
-      "name": "아이크래프트",
-      "qty": 170,
-      "reason": "1차 익절 신호 +8%"
-    },
-    {
-      "signal_date": "2026-10-30",
+      "signal_date": "2026-11-02",
       "side": "BUY",
-      "ticker": "069540",
-      "name": "빛과전자",
-      "reason": "RS 98 + 수급/거래량/채널"
-    },
-    {
-      "signal_date": "2026-10-30",
-      "side": "BUY",
-      "ticker": "042510",
-      "name": "라온시큐어",
-      "reason": "RS 98 + 수급/거래량/채널"
+      "ticker": "121440",
+      "name": "골프존홀딩스",
+      "reason": "RS 95 + 수급/거래량/채널"
     }
   ],
-  "last_processed": "2026-10-30",
-  "session_index": 6
+  "last_processed": "2026-11-02",
+  "session_index": 7
 }
