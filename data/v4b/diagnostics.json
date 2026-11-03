@@ -35,6 +35,6 @@
   "rs_formula": "0.4*R63+0.2*R126+0.2*R189+0.2*R252",
   "volume_basis": "ACTUAL_CUMULATIVE_VS_CONFIRMED_20D_DAILY",
   "rs_90": 249,
-  "refreshed_at_kst": "2026-11-04T08:32:33.766435+09:00",
-  "archive": "candidates_2026-11-04.csv"
+  "refreshed_at_kst": "2026-11-04T08:49:05.417788+09:00",
+  "archive": "candidates_2026-11-04_manual_41742045481_1.csv"
 }
