@@ -23,6 +23,7 @@ SYMBOLS = {
     '247540':'에코프로비엠','086520':'에코프로','196170':'알테오젠',
 }
 OUT = Path(__file__).resolve().parent / 'data'
+TECHNICAL_BARS = 78  # Ichimoku 52 sessions shifted by 26; BB needs only 21.
 
 
 def get_token(session, key, secret):
@@ -150,22 +151,46 @@ def confirmed_session(now):
     return session.date()
 
 
-def collection_plan(universe, existing, expected, *, bootstrap_limit=100, refresh_limit=3000):
+def recent_ohlc_ready(history):
+    """Only the real bars used by technical_timing need high/low values.
+
+    Older closes still belong to the separately validated 253-session RS window.
+    A short listing with all available OHLC need not be refetched every run.
+    """
+    if history.empty or not {'date','close','high','low'}.issubset(history.columns):return False
+    h=history.sort_values('date').tail(TECHNICAL_BARS)
+    values=h[['close','high','low']].apply(pd.to_numeric,errors='coerce')
+    return bool(values.notna().all().all() and not values.isin([float('inf'),-float('inf')]).any().any()
+                and (values.low>0).all() and (values.low<=values.close).all()
+                and (values.high>=values.close).all())
+
+
+def collection_plan(universe, existing, expected, *, bootstrap_limit=3000, refresh_limit=3000):
     latest=existing.groupby('ticker')['date'].max().to_dict() if not existing.empty else {}
     missing=[item for item in universe if item[0] not in latest]
-    ohlc_ready={c for c,g in existing.groupby('ticker') if {'high','low'}.issubset(g.columns) and g.tail(253)[['high','low']].notna().all().all()} if not existing.empty else set()
+    ohlc_ready={c for c,g in existing.groupby('ticker') if recent_ohlc_ready(g)} if not existing.empty else set()
     stale=[item for item in universe if item[0] in latest and (latest[item[0]].date()<expected or item[0] not in ohlc_ready)]
     stale.sort(key=lambda item:(latest[item[0]],item[0]))
     # Backfill progresses every run; daily refresh no longer waits three days or
     # loses all but five slots to new symbols. An execution budget bounds work.
-    return missing[:bootstrap_limit]+stale[:refresh_limit]
+    new=missing[:bootstrap_limit]
+    # Bootstrap a small first tranche, refresh all existing symbols, then
+    # continue the rest of the registered universe within the bounded budget.
+    return new[:100]+stale[:refresh_limit]+new[100:]
 
 
 def fetch_incremental(session,key,secret,token,code,history,start,end):
-    if history.empty or not {'high','low'}.issubset(history.columns) or history.tail(253)[['high','low']].isna().any().any():
+    if history.empty:
         return fetch_year(session,key,secret,token,code,start,end,min_rows=1),True
     recent=history.sort_values('date')
-    since=max(start,recent.date.max().date()-timedelta(days=14))
+    if not recent_ohlc_ready(recent):
+        if len(recent)<253:
+            return fetch_year(session,key,secret,token,code,start,end,min_rows=1),True
+        # Repair actual high/low for the needed window; preserve existing RS
+        # closes only after comparing overlapping adjusted prices below.
+        since=max(start,recent.date.iloc[-TECHNICAL_BARS].date())
+    else:
+        since=max(start,recent.date.max().date()-timedelta(days=14))
     delta=fetch_year(session,key,secret,token,code,since,end,min_rows=1)
     overlap=recent.merge(delta,on='date',suffixes=('_old','_new'))
     # Adjustment revisions must refresh the whole window, not combine prices
@@ -235,9 +260,9 @@ def main(shared_token=None):
     existing=confirmed_rows(existing)
     start=today-timedelta(days=410)
     expected=confirmed_session(now_kst)
-    batch_size=max(1,min(int(os.getenv('KIS_BATCH_SIZE','100')),200))
+    batch_size=max(1,min(int(os.getenv('KIS_BATCH_SIZE','3000')),5000))
     refresh_limit=max(1,min(int(os.getenv('KIS_DAILY_REFRESH_LIMIT','3000')),5000))
-    max_seconds=max(60,min(int(os.getenv('KIS_COLLECTION_SECONDS','1800')),2100))
+    max_seconds=max(60,min(int(os.getenv('KIS_COLLECTION_SECONDS','4800')),5400))
     batch=collection_plan(universe,existing,expected,bootstrap_limit=batch_size,refresh_limit=refresh_limit)
     latest=existing.groupby('ticker')['date'].max().to_dict() if not existing.empty else {}
     missing=[item for item in universe if item[0] not in latest]
@@ -270,11 +295,11 @@ def main(shared_token=None):
                 raise RuntimeError('확정된 일봉 없음')
             df.insert(0,'ticker',code)
             df.insert(1,'name',name)
-            if replaced:
-                dates=pd.to_datetime(existing['date']).dt.date
-                existing=existing.loc[~((existing.ticker==code)&(dates>=start))].copy()
-            existing=pd.concat([existing,df],ignore_index=True)
-            existing=existing.drop_duplicates(['ticker','date'],keep='last')
+            if replaced and not history.empty:
+                history=history.loc[pd.to_datetime(history['date']).dt.date<start].copy()
+            # Merge only this ticker's few hundred bars. Rebuilding the entire
+            # market CSV for every ticker consumed much of the read budget.
+            histories[code]=pd.concat([history,df],ignore_index=True).drop_duplicates(['ticker','date'],keep='last')
             success+=1
             print(f'OK {code} {name}: {len(df)} 일봉',flush=True)
         except Exception as e:
@@ -282,10 +307,12 @@ def main(shared_token=None):
             print(f'FAIL {code}: {type(e).__name__}; 이전 이력 유지',flush=True)
         # Large daily refreshes checkpoint without rewriting the full CSV per five API calls.
         if success and success%50==0:
+            existing=pd.concat(list(histories.values()),ignore_index=True)
             save_atomic(destination,existing)
         time.sleep(float(os.getenv('KIS_REQUEST_PAUSE','0.8')))
     # Persist cleanup even when API calls fail; don't discard other historical bars.
     if success or destination.exists():
+        existing=pd.concat(list(histories.values()),ignore_index=True)
         save_atomic(destination,existing)
     write_status(OUT/'collection_status.json', universe, existing, today, success, len(failures),
         expected=expected,attempted=attempted,remaining_batch=len(batch)-attempted,full_history_requests=full_history_requests)

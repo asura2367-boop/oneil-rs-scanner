@@ -25,6 +25,9 @@ def technical_timing(bars):
     """
     import math, statistics
     if len(bars)<78:raise ValueError('TECHNICAL_HISTORY_SHORT')
+    # 52-session cloud shifted 26 sessions is the longest dependency. Missing
+    # high/low outside this window must not invalidate otherwise usable bars.
+    bars=bars[-78:]
     rows=[]
     for b in bars:
         h,l,c=(float(b[k]) for k in ('high','low','close'))

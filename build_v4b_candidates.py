@@ -80,7 +80,8 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
             'stale_price':0,'invalid_price_or_volume':0,'misaligned_history':0,
             'rs_85':0,'volume_1x':0,'up_channel':0,'channel_0_75':0,
             'selection_policy':'RS_TECHNICAL_NO_FLOW_V1','flow_filter_enabled':False,'selected':0,
-            'technical_data_missing':0,'technical_rejected':0,'technical_passed':0,'legacy_selected':0}
+            'technical_data_missing':0,'technical_rejected':0,'technical_passed':0,'legacy_selected':0,
+            'technical_bb_not_breaking_out':0,'technical_ichimoku_not_bullish':0}
     scores=[]
     if intraday is not None:
         counts.update(latest_signal_day=str(target.date()),quote_universe=len(intraday),
@@ -141,6 +142,8 @@ def generate(prices_path, flows_path, target, output, diagnostics=None, *, intra
         if not isinstance(r.technical,dict):
             counts['technical_data_missing']+=1;continue
         if not r.technical['entry']:
+            if not r.technical.get('bb_breakout'):counts['technical_bb_not_breaking_out']+=1
+            if not r.technical.get('ichimoku_bullish'):counts['technical_ichimoku_not_bullish']+=1
             counts['technical_rejected']+=1;continue
         counts['technical_passed']+=1
         result.append(dict(technical_policy='BB_ICHI_TREND_V1',technical_entry=True,technical_details=json.dumps(r.technical,separators=(',',':')),date=target.strftime('%Y-%m-%d'),ticker=r.ticker,rs=r.rs,foreign_5d=None,institution_5d=None,volume_ratio=round(r.volume_ratio,6),channel_position=round(r.channel_position,6),channel_up=bool(r.channel_up),

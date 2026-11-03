@@ -1859,6 +1859,61 @@ class TechnicalTimingTests(unittest.TestCase):
   self.assertTrue(replaced);self.assertEqual(fetch.call_args.args[-2],dt.date(2025,9,1))
 
 
+class CoverageRepairTests(unittest.TestCase):
+ def history(self):
+  import pandas as pd
+  return pd.DataFrame({'date':pd.bdate_range(end='2026-10-30',periods=253),'close':100,'volume':100,
+                       'high':float('nan'),'low':float('nan')})
+
+ def test_technical_result_uses_exact_real_78_bar_window(self):
+  from oneil_live_v5_9 import technical_timing
+  bars=TechnicalTimingTests().bars()
+  expected=technical_timing(bars[-78:])
+  prefix=[{'close':100,'high':float('nan'),'low':float('nan')} for _ in range(200)]
+  self.assertEqual(technical_timing(prefix+bars[-78:]),expected)
+  broken=prefix+bars[-78:];broken[-78]={'close':100,'high':float('nan'),'low':99}
+  with self.assertRaises(ValueError):technical_timing(broken)
+
+ def test_backfill_requests_recent_window_and_preserves_real_rs_closes(self):
+  import build_data as b,pandas as pd
+  old=self.history();delta=old.tail(78).copy();delta['high']=101;delta['low']=99
+  delta.loc[len(delta)]={'date':pd.Timestamp('2026-11-02'),'close':101,'volume':100,'high':102,'low':100}
+  with patch.object(b,'fetch_year',return_value=delta) as fetch:
+   rows,replaced=b.fetch_incremental(None,'k','s','t','000001',old,dt.date(2025,9,1),dt.date(2026,11,2))
+  self.assertFalse(replaced);self.assertEqual(fetch.call_count,1)
+  self.assertEqual(fetch.call_args.args[-2],old.date.iloc[-78].date())
+  merged=pd.concat([old,rows]).drop_duplicates('date',keep='last').sort_values('date')
+  self.assertEqual(len(merged),254);self.assertEqual(merged.close.iloc[0],100)
+  self.assertTrue(b.recent_ohlc_ready(merged))
+  ready=merged.assign(ticker='000001')
+  self.assertEqual(b.collection_plan([('000001','a')],ready,dt.date(2026,11,2)),[])
+
+ def test_recent_window_still_requires_full_adjustment_refetch(self):
+  import build_data as b
+  old=self.history();delta=old.tail(78).copy();delta['close']=50;delta['high']=51;delta['low']=49
+  with patch.object(b,'fetch_year',side_effect=[delta,delta]) as fetch:
+   _,replaced=b.fetch_incremental(None,'k','s','t','000001',old,dt.date(2025,9,1),dt.date(2026,11,2))
+  self.assertTrue(replaced);self.assertEqual(fetch.call_count,2)
+  self.assertEqual(fetch.call_args.args[-2],dt.date(2025,9,1))
+
+ def test_complete_registered_universe_is_planned_without_100_symbol_ceiling(self):
+  import build_data as b,pandas as pd
+  universe=[(str(n).zfill(6),str(n)) for n in range(1,2676)]
+  old=pd.DataFrame([{'ticker':str(n).zfill(6),'date':pd.Timestamp('2026-10-30')} for n in range(1,1729)])
+  plan=b.collection_plan(universe,old,dt.date(2026,11,2))
+  self.assertEqual(len(plan),2675);self.assertEqual(len(set(c for c,_ in plan)),2675)
+  self.assertEqual(plan[100],universe[0]);self.assertEqual(set(plan),set(universe))
+
+ def test_price_repair_uses_shared_token_without_extra_investor_queries(self):
+  import collect_shared_token as collect,io
+  with patch.dict(os.environ,{'LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false'}),\
+       patch('kis_live_v4_5_2.required_cached_token',return_value='MEMORY_FIXTURE'),\
+       patch.object(collect,'acquire_token') as issue,patch.object(collect,'_persist') as persist,\
+       patch('build_data.main') as prices,patch('build_investor.main') as flows,patch('sys.stdout',new=io.StringIO()):
+   collect.main(prices_only=True)
+  prices.assert_called_once_with(shared_token='MEMORY_FIXTURE');flows.assert_not_called()
+  issue.assert_not_called();persist.assert_not_called()
+
 class NoInvestorFlowSelectionTests(unittest.TestCase):
  def test_builder_does_not_read_missing_invalid_or_negative_flow_files(self):
   from build_v4b_candidates import generate
@@ -1939,7 +1994,7 @@ class SharedSessionOnlyTests(unittest.TestCase):
    with patch.dict(os.environ,flags),patch.object(collect.dt,'datetime',Friday),patch.object(collect,'_key',return_value=b'k'*32),patch.object(collect,'acquire_token',return_value=('DO_NOT_PRINT',True)) as acquire,patch.object(collect,'_persist') as persist,patch('build_data.main') as prices,patch('build_investor.main') as flows,patch('sys.stdout',new_callable=io.StringIO) as log:
     collect.main(prepare_only=True)
    self.assertEqual(out.read_text(),'ready=true\n');self.assertNotIn('DO_NOT_PRINT',log.getvalue())
-   self.assertEqual(acquire.call_args.kwargs['min_validity'],dt.timedelta(hours=1));persist.assert_called_once();prices.assert_not_called();flows.assert_not_called()
+   self.assertEqual(acquire.call_args.kwargs['min_validity'],dt.timedelta(minutes=100));persist.assert_called_once();prices.assert_not_called();flows.assert_not_called()
  def test_weekend_preparation_never_issues_or_reads_cache_key(self):
   import collect_shared_token as collect,io
   class Saturday(dt.datetime):
