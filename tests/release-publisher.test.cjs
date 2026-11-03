@@ -1,0 +1,16 @@
+const fs=require('fs'),path=require('path'),assert=require('assert/strict'),crypto=require('crypto');
+const root=path.resolve(__dirname,'..'),yaml=fs.readFileSync(root+'/.github/workflows/oneil_v519_release_attest.yml','utf8');
+const script=yaml.split('          script: |\n')[1].split('\n').map(l=>l.slice(12)).join('\n');
+const runScript=new (Object.getPrototypeOf(async function(){}).constructor)('github','context','core','process','fetch','require',script);
+const expected=fs.readFileSync(root+'/oneil_v519_live_engine.py','utf8').match(/RELEASE_FILES = \(([\s\S]*?)\n\)/)[1].match(/'([^']+)'/g).map(v=>v.slice(1,-1));
+let conclusion='success',status='completed',tokenCalls=0,sent=[];
+const sha='a'.repeat(40),context={repo:{owner:'asura2367-boop',repo:'oneil-rs-scanner'},ref:'refs/heads/main',eventName:'workflow_run',runId:789,sha:'b'.repeat(40),payload:{workflow_run:{id:123}}};
+const github={async request(route,args){if(route.endsWith('/runs'))return{data:{workflow_runs:[{id:123}]}};if(route.endsWith('/jobs'))return{data:{jobs:[{id:456,name:'test',status,conclusion,completed_at:'2026-11-03T01:00:00Z'},{name:'observe',conclusion:'success'}]}};if(route.includes('/contents/')){assert.ok(expected.includes(args.path));assert.equal(args.ref,sha);const bytes=Buffer.from(args.path);return{data:{type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:crypto.createHash('sha1').update(Buffer.concat([Buffer.from('blob '+bytes.length+'\0'),bytes])).digest('hex')}};}return{data:{head_sha:sha,head_branch:'main',path:'.github/workflows/oneil_v519_live_engine_review.yml',run_attempt:1,status:'completed',event:'push',conclusion:'success'}};}};
+const core={async getIDToken(aud){tokenCalls++;assert.ok(aud.startsWith('https://oneil-control-desk.asura2367.chatgpt.site/api/release-evidence#sha256='));return 'fixture signed identity';},info(){}};
+const fetcher=async(url,args)=>{assert.equal(url,'https://oneil-control-desk.asura2367.chatgpt.site/api/release-evidence');assert.equal(args.redirect,'manual');assert.equal(args.headers['X-Oneil-Release-Attestation'],'fixture signed identity');sent.push(JSON.parse(args.body));return{ok:true};};
+(async()=>{await runScript(github,context,core,{env:{SITE_ACCESS:'fixture service access',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);assert.equal(sent[0].test_conclusion,'success');assert.deepEqual(Object.keys(sent[0].manifest.source_files),expected);assert.equal(sent[0].manifest.review_run_id,123);assert.equal(sent[0].issuer.run_id,789);assert.equal(sent[0].issuer.source_commit,'b'.repeat(40));
+conclusion='failure';await runScript(github,context,core,{env:{SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);assert.equal(sent[1].test_conclusion,'failure');
+status='in_progress';await assert.rejects(runScript(github,context,core,{env:{}},fetcher,require),/TEST_UNFINISHED/);assert.equal(tokenCalls,2);
+await assert.rejects(runScript(github,{...context,eventName:'pull_request'},core,{env:{}},fetcher,require),/CONTEXT_INVALID/);assert.equal(sent.length,2);
+console.log('PASS isolated publisher checks actual run/test completion, binds exact source files, sends failures as failures, excludes PRs, and only posts public verification evidence');
+})().catch(e=>{console.error(e);process.exitCode=1});

@@ -220,14 +220,3 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
               f.write('V5.19 runtime result\n\n```json\n'+json.dumps(r,ensure_ascii=False,indent=2)+'\n```\n')
           PY
-
-  release-evidence:
-    needs: [test, observe]
-    if: always() && github.event_name != 'pull_request' && needs.test.result != 'skipped'
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-    uses: ./.github/workflows/oneil_v519_release_attest.yml
-    secrets:
-      DASHBOARD_SITE_ACCESS_TOKEN: ${{ secrets.DASHBOARD_SITE_ACCESS_TOKEN }}
