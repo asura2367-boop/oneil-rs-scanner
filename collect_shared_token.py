@@ -6,7 +6,7 @@ from kis_live_v4_5_2 import _key, acquire_token, _persist, UTC, CacheBlocked
 from kis_live_v4_3 import guard
 
 
-def main(prepare_only=False):
+def main(prepare_only=False,prices_only=False):
     guard()
     if os.getenv('LIVE_ENABLED', 'false').lower()!='false' or os.getenv('KIS_ALLOW_ORDER','false').lower()!='false':
         raise RuntimeError('LIVE_DISABLED_GUARD')
@@ -19,7 +19,7 @@ def main(prepare_only=False):
         # Serialized short job; long collectors never hold this issuance lock.
         token,refreshed=acquire_token(_key(),dt.datetime.now(UTC),
             app_credentials=(os.getenv('KIS_APP_KEY',''),os.getenv('KIS_APP_SECRET','')),
-            min_validity=dt.timedelta(hours=1))
+            min_validity=dt.timedelta(minutes=100))
         if refreshed:_persist()
         if os.getenv('GITHUB_OUTPUT'):
             with open(os.environ['GITHUB_OUTPUT'],'a') as out:out.write('ready=true\n')
@@ -29,13 +29,17 @@ def main(prepare_only=False):
     from kis_live_v4_5_2 import required_cached_token
     token=required_cached_token();refreshed=False
     print('KIS COLLECTOR TOKEN CACHE_REUSED; token_requests=0',flush=True)
-    import build_data,build_investor
+    import build_data
     build_data.main(shared_token=token)
-    build_investor.main(shared_token=token)
+    if not prices_only:
+        import build_investor
+        build_investor.main(shared_token=token)
     print('KIS COLLECTORS DONE; token_requests='+str(int(refreshed))+'; orders_sent=0; LIVE_ENABLED=false', flush=True)
 
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser()
     parser.add_argument('--prepare-only',action='store_true')
-    main(prepare_only=parser.parse_args().prepare_only)
+    parser.add_argument('--prices-only',action='store_true')
+    args=parser.parse_args()
+    main(prepare_only=args.prepare_only,prices_only=args.prices_only)

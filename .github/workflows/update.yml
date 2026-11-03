@@ -1,6 +1,9 @@
 name: Update RS data and investor flow V9
 
 on:
+  push:
+    branches: [main]
+    paths: ['build_data.py']
   workflow_dispatch:
   schedule:
     - cron: '30 9 * * 1-5' # 18:30 KST weekdays
@@ -26,7 +29,7 @@ jobs:
     needs: session
     if: always() && (needs.session.result == 'success' || needs.session.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 100
     env:
       KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
       KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
@@ -35,9 +38,9 @@ jobs:
       KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
       LIVE_ENABLED: 'false'
       KIS_ALLOW_ORDER: 'false'
-      KIS_BATCH_SIZE: '100'
+      KIS_BATCH_SIZE: '3000'
       KIS_DAILY_REFRESH_LIMIT: '3000'
-      KIS_COLLECTION_SECONDS: '1800'
+      KIS_COLLECTION_SECONDS: '4800'
       KIS_FLOW_BATCH_SIZE: '250'
       KIS_REQUEST_PAUSE: '0.8'
       KIS_FLOW_PAUSE: '0.8'
@@ -59,8 +62,15 @@ jobs:
         run: |
           git fetch origin main
           git show FETCH_HEAD:data/live/kis_token_cache.enc.json > data/live/kis_token_cache.enc.json
-      - name: Collect prices and investor flow with single encrypted-cache token
-        run: python collect_shared_token.py
+      - name: Collect read-only prices; preserve scheduled investor-flow collection
+        env:
+          PRICE_REPAIR: ${{ github.event_name == 'push' }}
+        run: |
+          if [ "$PRICE_REPAIR" = 'true' ]; then
+            python collect_shared_token.py --prices-only
+          else
+            python collect_shared_token.py
+          fi
       - name: Commit collected read-only data
         if: always()
         run: |
