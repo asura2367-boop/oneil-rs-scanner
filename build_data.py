@@ -312,7 +312,7 @@ def main(shared_token=None):
         time.sleep(float(os.getenv('KIS_REQUEST_PAUSE','0.8')))
     # Persist cleanup even when API calls fail; don't discard other historical bars.
     if success or destination.exists():
-        existing=pd.concat(list(histories.values()),ignore_index=True)
+        if histories:existing=pd.concat(list(histories.values()),ignore_index=True)
         save_atomic(destination,existing)
     write_status(OUT/'collection_status.json', universe, existing, today, success, len(failures),
         expected=expected,attempted=attempted,remaining_batch=len(batch)-attempted,full_history_requests=full_history_requests)

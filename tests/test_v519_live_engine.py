@@ -1914,6 +1914,19 @@ class CoverageRepairTests(unittest.TestCase):
   prices.assert_called_once_with(shared_token='MEMORY_FIXTURE');flows.assert_not_called()
   issue.assert_not_called();persist.assert_not_called()
 
+ def test_empty_cache_and_failed_bootstrap_preserve_header_and_diagnostics(self):
+  import build_data as b,io,pandas as pd
+  with tempfile.TemporaryDirectory() as d:
+   root=pathlib.Path(d);p=root/'kis_daily_universe.csv'
+   pd.DataFrame(columns=['ticker','name','date','close','volume']).to_csv(p,index=False)
+   with patch.object(b,'OUT',root),patch.object(b,'load_universe',return_value=[('000001','a')]),\
+        patch.object(b,'confirmed_session',return_value=dt.date(2026,11,2)),\
+        patch.object(b,'fetch_incremental',side_effect=RuntimeError('fixture failure')),patch.object(b.time,'sleep'),\
+        patch.dict(os.environ,{'KIS_APP_KEY':'fixture','KIS_APP_SECRET':'fixture'}),patch('sys.stdout',new=io.StringIO()):
+    with self.assertRaisesRegex(RuntimeError,'성공 종목 0개'):b.main(shared_token='MEMORY_FIXTURE')
+   self.assertTrue(pd.read_csv(p).empty)
+   self.assertEqual(json.loads((root/'collection_status.json').read_text())['last_run_failures'],1)
+
 class NoInvestorFlowSelectionTests(unittest.TestCase):
  def test_builder_does_not_read_missing_invalid_or_negative_flow_files(self):
   from build_v4b_candidates import generate
