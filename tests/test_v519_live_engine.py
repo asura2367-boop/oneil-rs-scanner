@@ -768,6 +768,10 @@ class PostgresRuntimeTests(unittest.TestCase):
             return original(plan)
         self.broker.submit=submit
         with self.assertRaisesRegex(TradingBlocked,'UNCERTAIN') as caught:self.cycle()
+        diagnostic=failure_details(caught.exception)
+        self.assertEqual(diagnostic['submission_stage'],'SUBMIT')
+        self.assertEqual(diagnostic['submission_failure']['failure_kind'],'TIMEOUT')
+        self.assertNotIn('not logged',json.dumps(diagnostic))
         progress=caught.exception.execution_progress
         self.assertEqual(progress,{'orders_sent':None,'confirmed_orders_sent':1,'order_attempts':2})
         self.assertTrue(self.ledger.halted())
@@ -2227,3 +2231,30 @@ class EfficientReadPlanningTests(unittest.TestCase):
         events=[json.loads(line) for line in stream.getvalue().splitlines()]
         self.assertEqual([e['event'] for e in events],['READ_STAGE_STARTED','READ_STAGE_FINISHED'])
         self.assertNotIn('private payload',stream.getvalue())
+
+
+class SubmissionDiagnosticsTests(unittest.TestCase):
+    def test_original_transport_metadata_is_safe_and_does_not_grant_replay(self):
+        from urllib.error import HTTPError
+        original=HTTPError('https://private.test/?token=SECRET',503,'account SECRET',{'authorization':'SECRET'},None)
+        original.broker_api='CASH_ORDER';original.broker_attempts=1
+        blocked=TradingBlocked('SUBMISSION_UNCERTAIN_NO_RETRY')
+        blocked._submission_exception=original;blocked.submission_stage='SUBMIT'
+        result=failure_details(blocked)
+        self.assertEqual(str(blocked),'SUBMISSION_UNCERTAIN_NO_RETRY')
+        self.assertEqual(result['submission_stage'],'SUBMIT')
+        self.assertEqual(result['submission_failure']['http_status'],503)
+        self.assertEqual(result['submission_failure']['broker_api'],'CASH_ORDER')
+        self.assertNotIn('SECRET',json.dumps(result))
+        self.assertNotIn('orders_sent',result)
+    def test_pre_wire_code_is_allowlisted_without_claiming_not_sent(self):
+        blocked=TradingBlocked('SUBMISSION_UNCERTAIN_NO_RETRY')
+        blocked._submission_exception=TradingBlocked('FRESH_EXECUTABLE_BOOK_REQUIRED')
+        result=failure_details(blocked)
+        self.assertEqual(result['submission_failure']['failure_code'],'FRESH_EXECUTABLE_BOOK_REQUIRED')
+        self.assertNotIn('verified_not_sent',result)
+        blocked._submission_exception=ValueError('account SECRET');blocked.submission_stage='SECRET'
+        self.assertNotIn('SECRET',json.dumps(failure_details(blocked)))
+    def test_cyclic_diagnostic_exceptions_do_not_recurse(self):
+        a=TradingBlocked('a');b=ValueError('b');a._submission_exception=b;b._submission_exception=a
+        self.assertNotIn('submission_failure',failure_details(a)['submission_failure'])

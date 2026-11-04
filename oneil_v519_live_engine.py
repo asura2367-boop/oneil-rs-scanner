@@ -865,9 +865,11 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     order_time()
                     ident=ledger.reserve_plan(plan,now.date())  # commit BEFORE POST
                     result['order_attempts']+=1
+                    submission_stage='SEND_GUARD'
                     try:
                         cancelled=False
                         with ledger.send_guard():
+                            submission_stage='BEFORE_SUBMIT'
                             order_time()  # stop a batch that crosses the session boundary
                             # Real KIS does its final read inside the wire adapter;
                             # fixtures/other adapters are checked at the same boundary.
@@ -875,6 +877,7 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                                 if plan.side=='SELL' and not isinstance(broker,KisBroker) and not sell_plan_allowed(plan,broker.buy_control()):
                                     raise SellDisabledBeforeSend('SELL_CONTROL_OFF_OR_UNAVAILABLE')
                                 uncertain=True
+                                submission_stage='SUBMIT'
                                 response=broker.submit(plan)
                             except SellDisabledBeforeSend:
                                 uncertain=False
@@ -883,18 +886,23 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                         if cancelled:
                             result['pre_send_cancelled']=True
                             return alert_only([plan],sell_policy(broker.buy_control()))
+                        submission_stage='ACK_VALIDATE'
                         out=response.get('output') if isinstance(response,dict) else None
                         order_id=out.get('ODNO') if isinstance(out,dict) else None
                         if str(response.get('rt_cd'))!='0' or not isinstance(order_id,str) or not re.fullmatch('[0-9]{1,20}',order_id):
                             raise TradingBlocked('BROKER_ACK_INVALID')
+                        submission_stage='LEDGER_ACK'
                         ledger.ack(ident,order_id)
                         uncertain=False
                         result['orders_sent']+=1
                         result.update(status='ACKNOWLEDGED',gate='ALLOW')
                         display_plans.append(plan)
-                    except Exception:
+                    except Exception as exc:
                         ledger.halt()
-                        raise TradingBlocked('SUBMISSION_UNCERTAIN_NO_RETRY') from None
+                        blocked=TradingBlocked('SUBMISSION_UNCERTAIN_NO_RETRY')
+                        blocked._submission_exception=exc
+                        blocked.submission_stage=submission_stage
+                        raise blocked from None
                     if plan.side=='BUY':
                         spent+=(plan.quantity*plan.price*1005+999)//1000
                     # Read after submission even for a single order, so the private
@@ -1070,7 +1078,7 @@ def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss
         result['manual_buy_status']='BLOCKED';result['manual_buy_reason']=str(exc);return result
 
 
-def failure_details(exc):
+def failure_details(exc, *, _include_submission=True):
     """Public diagnostic metadata only: never exception text, locals or URLs."""
     from urllib.error import HTTPError, URLError
     kinds=(('HTTP_ERROR',HTTPError),('NETWORK_ERROR',URLError),
@@ -1098,6 +1106,21 @@ def failure_details(exc):
             frames.append({'file':file,'function':code.co_name,'line':tb.tb_lineno})
         tb=tb.tb_next
     data['failure_frames']=frames[-5:]
+    # Preserve the original failure without exposing exception text, broker
+    # response bodies, account identifiers or credentials. This is diagnostic
+    # evidence only; it NEVER changes uncertainty, halt or replay decisions.
+    if _include_submission:
+        original=getattr(exc,'_submission_exception',None)
+        if isinstance(original,Exception) and original is not exc:
+            data['submission_failure']=failure_details(original,_include_submission=False)
+        stage=getattr(exc,'submission_stage',None)
+        if stage in {'SEND_GUARD','BEFORE_SUBMIT','SUBMIT','ACK_VALIDATE','LEDGER_ACK'}:
+            data['submission_stage']=stage
+    if isinstance(exc,TradingBlocked) and str(exc) in {
+            'RELEASE_LOCKED_PENDING_OPERATOR_ACTIVATION','USER_APPROVAL_MISSING',
+            'FRESH_EXECUTABLE_BOOK_REQUIRED','EXECUTABLE_BOOK_REQUIRED',
+            'BOOK_SIZE_EXCEEDED','OUTSIDE_KRX_CONTINUOUS_SESSION','BROKER_ACK_INVALID'}:
+        data['failure_code']=str(exc)
     return data
 
 
