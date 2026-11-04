@@ -2130,3 +2130,37 @@ class PureRsSelectionTests(unittest.TestCase):
    found=scan_candidates(out,dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul')))
    self.assertEqual([r['ticker'] for r in found],['000020','000019','000018'])
    self.assertEqual(json.loads(diag.read_text())['selection_policy'],'RS_ONLY_V1')
+
+
+class ImmediateApprovalTests(unittest.TestCase):
+    def test_dispatch_is_bound_to_exact_saved_approval(self):
+        review=dict(schema_version=1,operator='asura2367-boop',approved_release=release_fingerprint(),
+                    source_commit='a'*40,review_run_id=123,revision=10,approved_at='2026-11-04T00:00:00+00:00')
+        flags={'GITHUB_ACTIONS':'true','GITHUB_REF':'refs/heads/main',
+               'GITHUB_REPOSITORY':'asura2367-boop/oneil-rs-scanner','OPERATION':'apply-approval',
+               'REQUESTED_RELEASE':review['approved_release'],'REQUESTED_APPROVAL_REVISION':'10'}
+        with patch.dict(os.environ,flags):
+            self.assertEqual(dashboard_release_env({'release':review}),review)
+            for changes in ({'REQUESTED_RELEASE':'b'*64},{'REQUESTED_APPROVAL_REVISION':'9'},
+                            {'GITHUB_REF':'refs/heads/other'},{'OPERATION':'activate'}):
+                with patch.dict(os.environ,changes):self.assertIsNone(dashboard_release_env({'release':review}))
+
+    def test_owner_apply_cannot_request_execution_or_fall_back_to_legacy_activation(self):
+        import sys,io
+        with tempfile.TemporaryDirectory() as directory:
+            for flags in (['--execute'],[]):
+                out=str(pathlib.Path(directory)/'result.json')
+                with patch.object(sys,'argv',['engine','--apply-owner-approval','--output',out]+flags),patch('oneil_v519_live_engine.dashboard_release_env',return_value=None),patch('sys.stdout',new_callable=io.StringIO):
+                    with self.assertRaises(SystemExit):runtime_main()
+                result=__import__('json').loads(pathlib.Path(out).read_text())
+                self.assertIn(result['reason'],['ACTIVATION_CANNOT_SUBMIT','OWNER_RELEASE_REVIEW_CHANGED'])
+                self.assertEqual(result['orders_sent'],0)
+
+    def test_workflow_apply_path_only_activates_with_bound_review(self):
+        workflow=(pathlib.Path(__file__).resolve().parents[1]/'.github/workflows/oneil_v519_live_engine_review.yml').read_text()
+        body=workflow.split('            apply-approval)')[1].split('            activate)')[0]
+        self.assertIn('--apply-owner-approval --acknowledge-live-risk',body)
+        self.assertNotIn('--execute',body)
+        self.assertNotIn('--activate ',body)
+        self.assertIn('REQUESTED_RELEASE: ${{ inputs.approved_release }}',workflow)
+        self.assertIn('REQUESTED_APPROVAL_REVISION: ${{ inputs.approval_revision }}',workflow)
