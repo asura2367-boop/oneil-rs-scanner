@@ -706,6 +706,8 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
     """Sequential candidate buys under one account lock and conservative cash caps.
 
     Each acknowledged buy must be fully reconciled before the next candidate.
+    Distinct initial managed exits advance only after full fills and reflected
+    balance reductions; residual quantities wait for a later run.
     Pending/unknown orders never gain an exception to the durable ledger guard.
     Enabled exits retain priority; explicit sell OFF records alerts and lets
     independently enabled buys continue. Sell proceeds are not
@@ -798,8 +800,9 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
             ledger.record_sell_alerts(exits,now.date())
             ledger.dashboard_state['sell_control']=latest
             ledger.dashboard_state['plans']=[]
-            result.update(status='SELL_ALERT_ONLY' if latest['connected'] else 'SELL_CONTROL_UNAVAILABLE',
+            result.update(status='ACKNOWLEDGED' if result['orders_sent'] else ('SELL_ALERT_ONLY' if latest['connected'] else 'SELL_CONTROL_UNAVAILABLE'),
                 sell_alert_count=len(exits),planned_buys=0,planned_sells=0)
+            if result['orders_sent']:result['batch_stop_reason']='SELL_CONTROL_OFF_OR_UNAVAILABLE'
             return result
         if result['planned_sells'] and not sell['connected']:
             return alert_only(plans,sell)  # Unknown control retains the safety block.
@@ -811,9 +814,11 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
             return result
         initial_remaining=allocation['remaining'];initial_stock_cap=allocation['per_stock']
         spent=0; attempted=set();display_plans=[];uncertain=False
+        exit_tickers={p.ticker for p in plans if p.side=='SELL'}
         try:
-            # At most one attempt per candidate; no waits, retries or random IDs.
-            for _ in range(max(1,len(candidates))):
+            # At most one attempt per candidate or initially eligible exit ticker.
+            # Sell throughput must not depend on the number of buy candidates.
+            for _ in range(max(1,len(candidates)+len(exit_tickers))):
                 order_time()
                 if ledger.halted():raise TradingBlocked('EMERGENCY_HALT_ACTIVE')
                 if not ledger.release_authorized(release_fingerprint()):
@@ -830,16 +835,22 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     if not sell_plan_allowed(plan,latest_control):
                         if not latest_sell['connected']:return alert_only(plans,latest_sell)
                         plans,allocation=select_plans(
-                            [] if manual_pending else [c for c in candidates if c['ticker'] not in attempted],snapshot,latest_control,1)
+                            [] if manual_pending or display_plans else [c for c in candidates if c['ticker'] not in attempted],snapshot,latest_control,1)
+                        plans=[p for p in plans if (p.side=='SELL' and p.ticker in exit_tickers-attempted) or
+                            (p.side=='BUY' and not display_plans)]
                         ledger.dashboard_state.update(plans=display_plans+plans,allocation=allocation)
-                        result['planned_sells']=0
+                        result['planned_sells']=sum(p.side=='SELL' for p in plans)
                         result['planned_buys']=sum(p.side=='BUY' for p in plans)
                         if not plans:
-                            if manual_pending:result['status']='MANUAL_QUEUE_PENDING'
+                            if manual_pending and not display_plans:result['status']='MANUAL_QUEUE_PENDING'
                             return result
                         plan=plans[0]
+                if plan.side=='BUY' and any(p.side=='SELL' for p in display_plans):
+                    result['batch_stop_reason']='EXIT_PRIORITY'
+                    return result
                 if plan.ticker in attempted:raise TradingBlocked('BATCH_DUPLICATE_CANDIDATE')
                 attempted.add(plan.ticker)
+                previous_quantity=snapshot['positions'].get(plan.ticker,{}).get('quantity',0)
                 fresh=plan.price;quantity=plan.quantity;fresh_reason=plan.reason
                 if isinstance(broker,KisBroker):
                     fresh=broker.execution_quote(plan.ticker,plan.side)
@@ -946,8 +957,33 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                         result['batch_stop_reason']='BALANCE_UPDATE_PENDING'
                         return result
                     if plan.side=='SELL':
-                        result['batch_stop_reason']='EXIT_PRIORITY'
-                        return result
+                        rows=ledger.rows('SELECT status,filled_quantity FROM v519_order_intents WHERE account_fingerprint=%s AND intent_id=%s',
+                            (ledger.fingerprint,ident))
+                        if len(rows)!=1 or rows[0]['status']!='FILLED' or rows[0]['filled_quantity']!=plan.quantity:
+                            result['batch_stop_reason']='EXIT_FILL_NOT_CONFIRMED'
+                            return result
+                        remaining_quantity=snapshot['positions'].get(plan.ticker,{}).get('quantity',0)
+                        if remaining_quantity>previous_quantity-plan.quantity:
+                            result['batch_stop_reason']='BALANCE_UPDATE_PENDING'
+                            return result
+                        if not exit_tickers-attempted:
+                            result['batch_stop_reason']='EXIT_BATCH_COMPLETED'
+                            return result
+                        # Full fill and balance reduction are prerequisites, not
+                        # proceeds available for buys. Keep every holding in the
+                        # snapshot, but only consider the original distinct exits.
+                        control=broker.buy_control()
+                        ledger.dashboard_state.update(buy_control=control,sell_control=sell_policy(control))
+                        if not sell_policy(control)['connected']:
+                            result['batch_stop_reason']='SELL_CONTROL_UNAVAILABLE'
+                            return result
+                        plans,allocation=select_plans([],snapshot,control,1)
+                        plans=[p for p in plans if p.side=='SELL' and p.ticker in exit_tickers-attempted]
+                        ledger.dashboard_state.update(plans=display_plans+plans,allocation=allocation)
+                        if not plans:
+                            result['batch_stop_reason']='EXIT_BATCH_NO_MORE_ELIGIBLE'
+                            return result
+                        continue
                 remaining_candidates=[c for c in candidates if c['ticker'] not in attempted]
                 if not remaining_candidates:
                     result['batch_stop_reason']='CANDIDATES_EVALUATED'
