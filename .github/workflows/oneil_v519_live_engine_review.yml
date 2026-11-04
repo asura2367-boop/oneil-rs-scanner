@@ -168,14 +168,18 @@ jobs:
         run: |
           rm -f data/live/dashboard.enc.json v5_19_report.json
           mkdir -p data/live
-          python oneil_v519_live_engine.py --release-info
+          release_info="$(python oneil_v519_live_engine.py --release-info)"
+          printf '%s\n' "$release_info"
+          release_configured="$(printf '%s' "$release_info" | python -c 'import json,sys; print("true" if json.load(sys.stdin).get("release_configured") is True else "false")')"
           case "$OPERATION" in
             observe) python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem ;;
             auto)
               # Schedule delays may start this job after trading closes.
               # Keep monitoring until 20:00 without enabling order transport.
               read -r weekday session_hhmm <<< "$(TZ=Asia/Seoul date '+%u %H%M')"
-              if [ -n "$APPROVED_RELEASE" ] && [ "$weekday" -le 5 ] && [ "$session_hhmm" -ge 900 ] && [ "$session_hhmm" -lt 1515 ]; then
+              # A stored approval for old source must not stop read-only account
+              # refresh. Exact source approval is still required for execution.
+              if [ "$release_configured" = true ] && [ "$weekday" -le 5 ] && [ "$session_hhmm" -ge 900 ] && [ "$session_hhmm" -lt 1515 ]; then
                 LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --run --execute --dashboard-public-key data/live/dashboard_public_key.pem
               else
                 python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem

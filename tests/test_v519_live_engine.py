@@ -172,15 +172,19 @@ class RuntimeRiskTests(unittest.TestCase):
 printf '%s\\n' "$TEST_SESSION"
 ''');date.chmod(0o755)
             python=commands/'python';python.write_text('''#!/bin/sh
+if [ "$1" = '-c' ]; then exec "$TEST_PYTHON" "$@"; fi
+if [ "$2" = '--release-info' ]; then
+  if [ "$APPROVED_RELEASE" = 'test' ]; then echo '{"release_configured":true}'; else echo '{"release_configured":false}'; fi
+fi
 printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE_KIS_ORDERS" >> "$TEST_CALLS"
 ''');python.chmod(0o755)
             log=root/'calls'
             for session,approved,expected in [('4 0859','test',False),('4 0900','test',True),
                     ('4 1514','test',True),('4 1515','test',False),('4 1910','test',False),
-                    ('6 1000','test',False),('4 1000','',False)]:
+                    ('6 1000','test',False),('4 1000','',False),('4 1000','stale-but-nonempty',False)]:
                 log.write_text('')
                 environment={**os.environ,'PATH':str(commands)+os.pathsep+os.environ['PATH'],
-                    'OPERATION':'auto','APPROVED_RELEASE':approved,'TEST_SESSION':session,'TEST_CALLS':str(log),
+                    'TEST_PYTHON':__import__('sys').executable,'OPERATION':'auto','APPROVED_RELEASE':approved,'TEST_SESSION':session,'TEST_CALLS':str(log),
                     'LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false','I_APPROVE_LIVE_KIS_ORDERS':''}
                 subprocess.run(['bash','-e','-c',script],cwd=root,env=environment,check=True,capture_output=True)
                 calls=log.read_text().splitlines();last=calls[-1].split('|')
@@ -2202,3 +2206,23 @@ class ExhaustedPlanningBudgetTests(unittest.TestCase):
         power=Mock(side_effect=AssertionError('unnecessary buying power'))
         plans,_=plan_orders([{'ticker':str(i).zfill(6),'rs':99} for i in range(1,250)],snap,quote,power)
         self.assertEqual(plans,[]);quote.assert_not_called();power.assert_not_called()
+
+
+class EfficientReadPlanningTests(unittest.TestCase):
+    def test_unaffordable_share_skips_power_but_keeps_cheaper_candidate(self):
+        snapshot=dict(cash=100000,invested=0,pending=set(),positions={},managed={})
+        calls=[]
+        plans,_=plan_orders([{'ticker':'000001','rs':99},{'ticker':'000002','rs':98}],snapshot,
+            lambda ticker,side:20000 if ticker=='000001' else 1000,
+            lambda ticker,price:(calls.append(ticker) or (100000,100)),max_buys=1)
+        self.assertEqual(calls,['000002'])
+        self.assertEqual([(p.ticker,p.quantity) for p in plans],[('000002',17)])
+    def test_stage_exception_is_not_suppressed_or_printed(self):
+        import io,contextlib,json
+        stream=io.StringIO()
+        with contextlib.redirect_stdout(stream),self.assertRaisesRegex(ValueError,'private payload'):
+            with read_stage('UNFILLED_ORDERS'):
+                raise ValueError('private payload')
+        events=[json.loads(line) for line in stream.getvalue().splitlines()]
+        self.assertEqual([e['event'] for e in events],['READ_STAGE_STARTED','READ_STAGE_FINISHED'])
+        self.assertNotIn('private payload',stream.getvalue())
