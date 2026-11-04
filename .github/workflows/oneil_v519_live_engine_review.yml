@@ -46,9 +46,6 @@ on:
         description: 'apply-approval 전용: 저장된 승인 기록 번호'
 permissions:
   contents: read
-concurrency:
-  group: v519-integrated-${{ inputs.operation == 'halt' && 'emergency-halt' || (github.event_name == 'pull_request' && github.ref || 'account') }}
-  cancel-in-progress: false
 jobs:
   test:
     if: inputs.operation != 'halt'
@@ -96,6 +93,18 @@ jobs:
           r=json.load(open('v5_19_report.json'))
           assert r['reason']=='RELEASE_LOCKED_PENDING_OPERATOR_ACTIVATION' and r['orders_sent']==0
           PY
+  source-proof:
+    needs: test
+    if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (needs.test.result == 'success' || needs.test.result == 'failure') && inputs.operation != 'halt'
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/oneil_v519_release_attest.yml
+    with:
+      early: true
+    secrets:
+      DASHBOARD_SITE_ACCESS_TOKEN: ${{ secrets.DASHBOARD_SITE_ACCESS_TOKEN }}
   session:
     needs: test
     if: github.event_name != 'pull_request' && needs.test.result == 'success' && inputs.operation != 'halt' && inputs.operation != 'migrate'
@@ -107,6 +116,10 @@ jobs:
       KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
       KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
   observe:
+    # Keep account operations serialized without queueing source tests/proof.
+    concurrency:
+      group: v519-integrated-${{ inputs.operation == 'halt' && 'emergency-halt' || (github.event_name == 'pull_request' && github.ref || 'account') }}
+      cancel-in-progress: false
     if: always() && github.event_name != 'pull_request' && (needs.test.result == 'success' || inputs.operation == 'halt') && (needs.session.result == 'success' || needs.session.result == 'skipped')
     needs: [test, session]
     permissions:
@@ -155,7 +168,6 @@ jobs:
         run: |
           rm -f data/live/dashboard.enc.json v5_19_report.json
           mkdir -p data/live
-          python oneil_v519_live_engine.py --release-review > data/live/release_review.json
           python oneil_v519_live_engine.py --release-info
           case "$OPERATION" in
             observe) python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem ;;
@@ -209,10 +221,6 @@ jobs:
               const raw=fs.readFileSync(path,'utf8'); const envelope=JSON.parse(raw);
               if(envelope.algorithm!=='RSA-OAEP-256+A256GCM'||!envelope.ciphertext||!envelope.wrapped_key)throw new Error('Invalid encrypted snapshot');
               await publish(path,raw,'Update encrypted V5.19 dashboard snapshot [skip ci]');
-            }
-            const reviewPath='data/live/release_review.json';
-            if(fs.existsSync(reviewPath)) {
-              await publish(reviewPath,fs.readFileSync(reviewPath,'utf8'),'Publish tested V5.19 source review [skip ci]');
             }
             let result={status:'NO_RESULT'};
             if(fs.existsSync('v5_19_report.json'))result=JSON.parse(fs.readFileSync('v5_19_report.json','utf8'));

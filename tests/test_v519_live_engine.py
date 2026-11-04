@@ -187,7 +187,7 @@ printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE
                 self.assertEqual('--execute' in last[0],expected,(session,calls))
                 self.assertEqual(last[1:3],['true','true'] if expected else ['false','false'])
                 self.assertEqual(last[3],'YES' if expected else '')
-                self.assertIn('--run',last[0]);self.assertEqual(len(calls),3)
+                self.assertIn('--run',last[0]);self.assertEqual(len(calls),2)  # source review publication moved to source-proof
 
     def test_failure_diagnostics_hide_http_secrets(self):
         from urllib.error import HTTPError

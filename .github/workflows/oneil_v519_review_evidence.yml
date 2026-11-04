@@ -23,7 +23,7 @@ jobs:
   publish:
     if: github.event_name == 'push' || (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main')
     permissions:
-      contents: read
+      contents: write
       actions: read
       id-token: write
     uses: ./.github/workflows/oneil_v519_release_attest.yml
