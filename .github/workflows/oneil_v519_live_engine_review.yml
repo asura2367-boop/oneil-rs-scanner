@@ -11,6 +11,8 @@ on:
       - 'oneil_v519_live_engine.py'
       - 'v519_pg_ledger.py'
       - 'tests/test_v519_live_engine.py'
+      - 'v519_no_order_review.py'
+      - 'tests/test_v519_no_order_review.py'
       - 'build_data.py'
       - 'build_investor.py'
       - 'build_v4b_candidates.py'
@@ -77,6 +79,7 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_v519_live_engine.py' -v
       - name: Existing KIS pagination and safety regression tests
         run: |
+          python -m unittest discover -s tests -p 'test_v519_no_order_review.py' -v
           python -m unittest discover -s tests -p 'test_v519_broker_recovery.py' -v
           python -m unittest discover -s tests -p 'test_v519_order_recovery.py' -v
           python -m unittest discover -s tests -p 'test_live_runner.py' -v
