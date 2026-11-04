@@ -25,5 +25,6 @@ earlyGithub.request=async(route,args)=>{if(route.endsWith('/runs/{run_id}'))retu
 conclusion='success';status='completed';
 await runScript(earlyGithub,earlyContext,core,{env:{EARLY_PROOF:'true',SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);
 assert.equal(sent.at(-1).run_status,'in_progress');assert.equal(sent.at(-1).workflow_conclusion,'pending');assert.equal(earlySent.length,1);assert.equal(earlySent[0].path,'data/live/release_review.json');assert.equal(JSON.parse(Buffer.from(earlySent[0].content,'base64')).review_run_id,123);
+conclusion='failure';await runScript(earlyGithub,earlyContext,core,{env:{EARLY_PROOF:'true',SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);assert.equal(sent.at(-1).test_conclusion,'failure');assert.equal(earlySent.length,2);
 console.log('PASS isolated publisher checks actual run/test completion, binds exact source files, sends failures as failures, excludes PRs, and only posts public verification evidence');
 })().catch(e=>{console.error(e);process.exitCode=1});

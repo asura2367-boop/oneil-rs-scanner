@@ -95,7 +95,7 @@ jobs:
           PY
   source-proof:
     needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.test.result == 'success' && inputs.operation != 'halt'
+    if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (needs.test.result == 'success' || needs.test.result == 'failure') && inputs.operation != 'halt'
     permissions:
       contents: write
       actions: read

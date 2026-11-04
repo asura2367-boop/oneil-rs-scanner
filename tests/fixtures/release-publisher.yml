@@ -56,7 +56,7 @@ jobs:
             const jwt=await core.getIDToken('https://oneil-control-desk.asura2367.chatgpt.site/api/release-evidence#sha256='+digest);
             const response=await fetch('https://oneil-control-desk.asura2367.chatgpt.site/api/release-evidence',{method:'POST',redirect:'manual',headers:{'OAI-Sites-Authorization':'Bearer '+process.env.SITE_ACCESS,'Content-Type':'application/json'},body:JSON.stringify({attestation:jwt,evidence:body}),signal:AbortSignal.timeout(30000)});
             if(!response.ok){let diagnostic='HTTP_'+response.status;try{const rejected=await response.json();if(/^[A-Z0-9_]{1,100}$/.test(rejected.diagnostic||''))diagnostic=rejected.diagnostic;}catch{}throw Error('EVIDENCE_PUBLISH_'+diagnostic);}
-            if(early && test.conclusion==='success'){
+            if(early){
               // The signed test proof is delivered before exposing its manifest.
               // Account/broker observation is independent and may still be running.
               const path='data/live/release_review.json';let sha;
