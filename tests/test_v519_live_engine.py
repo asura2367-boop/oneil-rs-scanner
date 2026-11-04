@@ -952,6 +952,38 @@ class PostgresRuntimeTests(unittest.TestCase):
             self.seed()
             isolated=PgRuntimeLedger(conn,'c'*64)
             self.assertEqual(isolated.pending(),[])
+    def prepare_managed_exit_batch(self):
+        self.prepare_exit()
+        ident=self.ledger.reserve_plan(OrderPlan('244960','BUY',3,10000,'rs','TEST'),self.now.date())
+        self.ledger.ack(ident,'000121');self.ledger.reconcile(self.ledger.pending()[0],'FILLED',3)
+        self.broker.positions['244960']={'quantity':10,'sellable':9,'average':'12000','cost':120000,'valuation':100000}
+        self.candidates=[]
+    def test_multiple_managed_exits_commit_reconcile_and_refresh_before_next(self):
+        self.prepare_managed_exit_batch();ManagedExitBatchTests.fill_exits(self)
+        original=self.broker.submit
+        def submit(plan):
+            pending=self.ledger.pending();self.assertEqual(len(pending),1)
+            self.assertEqual(pending[0]['status'],'SUBMISSION_UNKNOWN')
+            if self.broker.calls:
+                previous=self.conn.execute("SELECT status,filled_quantity FROM v519_order_intents WHERE side='SELL' AND ticker='144960'").fetchone()
+                self.assertEqual(previous,('FILLED',6))
+            return original(plan)
+        self.broker.submit=submit;result=self.cycle()
+        self.assertEqual([(p.ticker,p.quantity) for p in self.broker.calls],[('144960',6),('244960',3)])
+        self.assertEqual(result['orders_sent'],2);self.assertEqual(self.ledger.pending(),[])
+        self.assertEqual(self.ledger.managed(),{'144960':4})
+    def test_exit_partial_or_cancelled_fill_never_unlocks_next_ticker(self):
+        for cancel in (False,True):
+            self.setUp();self.prepare_managed_exit_batch();ManagedExitBatchTests.fill_exits(self,fill=2,cancel=cancel)
+            result=self.cycle()
+            self.assertEqual(len(self.broker.calls),1)
+            self.assertEqual(result['batch_stop_reason'],'EXIT_FILL_NOT_CONFIRMED' if cancel else 'PENDING_FILL_CONFIRMATION')
+            self.assertEqual(self.ledger.managed(),{'144960':8,'244960':3})
+    def test_exit_fill_without_reduced_balance_never_continues(self):
+        self.prepare_managed_exit_batch();ManagedExitBatchTests.fill_exits(self,balance=False)
+        result=self.cycle();self.assertEqual(result['batch_stop_reason'],'BALANCE_UPDATE_PENDING')
+        self.assertEqual(len(self.broker.calls),1);self.assertEqual(self.ledger.managed(),{'144960':4,'244960':3})
+
     def test_sell_is_durable_and_cannot_oversell(self):
         ident=self.seed(); self.ledger.ack(ident,'000122')
         self.ledger.reconcile(self.ledger.pending()[0],'FILLED',10)
@@ -2414,3 +2446,127 @@ class BlockedDashboardPublicationTests(unittest.TestCase):
             with self.assertRaisesRegex(TradingBlocked,'DASHBOARD_ACCOUNT_SNAPSHOT_MISSING'):
                 publish_dashboard_if_collected(SimpleNamespace(),{'status':'OBSERVED'},'unused-key','unused-path')
             write.assert_not_called()
+
+class ManagedExitBatchTests(unittest.TestCase):
+    def setUp(self):
+        self.now=dt.datetime(2026,11,4,10,tzinfo=ZoneInfo('Asia/Seoul'))
+        self.broker=BrokerFixture();self.candidates=[]
+        self.broker.positions={t:{'quantity':10,'sellable':6,'average':'12000','cost':120000,'valuation':100000} for t in ('000001','000002')}
+        class Ledger:
+            fingerprint='b'*64
+            def __init__(self):self.records={};self.owned={'000001':8,'000002':8};self.stopped=False
+            @contextmanager
+            def lock(self):yield
+            @contextmanager
+            def send_guard(self):
+                if self.stopped:raise TradingBlocked('EMERGENCY_HALT_ACTIVE')
+                yield
+            def halted(self):return self.stopped
+            def halt(self):self.stopped=True
+            def release_authorized(self,r):return True
+            def managed(self):return self.owned.copy()
+            def bought_today(self,d):return set()
+            def pending(self):return [r for r in self.records.values() if r['status'] not in ('FILLED','CANCELLED','REJECTED')]
+            def reserve_plan(self,p,d):
+                if self.pending():raise TradingBlocked('UNRESOLVED_ORDERS')
+                ident=str(len(self.records)+1)
+                self.records[ident]={'intent_id':ident,'ticker':p.ticker,'side':p.side,'quantity':p.quantity,'trading_day':d,'status':'SUBMISSION_UNKNOWN','broker_order_id':None,'filled_quantity':0}
+                return ident
+            def ack(self,i,n):self.records[i].update(status='ACKNOWLEDGED',broker_order_id=n)
+            def reconcile(self,r,state,filled):
+                self.owned[r['ticker']]-=filled-r['filled_quantity']
+                r.update(status=state,filled_quantity=filled)
+            def rows(self,sql,args):return [self.records[args[1]]] if args[1] in self.records else []
+            def record_sell_alerts(self,*args):pass
+            def void_unsent_sell(self,i):self.records[i]['status']='REJECTED'
+        self.ledger=Ledger()
+    def cycle(self):
+        return integrated_cycle(self.ledger,self.broker,self.candidates,execute=True,now=self.now,clock=lambda:self.now)
+    def fill_exits(self,*,fill=None,balance=True,cancel=False,after=None):
+        original=self.broker.submit
+        def submit(plan):
+            response=original(plan);qty=plan.quantity if fill is None else fill
+            self.broker.rows.setdefault(self.now.strftime('%Y%m%d'),[]).append(dict(odno=response['output']['ODNO'],ord_dt=self.now.strftime('%Y%m%d'),pdno=plan.ticker,sll_buy_dvsn_cd='01',ord_qty=str(plan.quantity),tot_ccld_qty=str(qty),rmn_qty=str(0 if cancel else plan.quantity-qty),cncl_yn='Y' if cancel else 'N'))
+            if balance:
+                pos=self.broker.positions[plan.ticker];pos['quantity']-=qty;pos['sellable']=min(pos['sellable'],pos['quantity'])
+            if after:after(plan)
+            return response
+        self.broker.submit=submit
+    def test_two_distinct_exits_with_no_buy_candidates_and_residual_not_retried(self):
+        self.fill_exits();result=self.cycle()
+        self.assertEqual([(p.ticker,p.quantity) for p in self.broker.calls],[('000001',6),('000002',6)])
+        self.assertEqual(result['orders_sent'],2);self.assertEqual(result['batch_stop_reason'],'EXIT_BATCH_COMPLETED')
+        self.assertEqual(self.ledger.managed(),{'000001':2,'000002':2})
+    def test_filled_exits_never_spend_proceeds_on_buys(self):
+        self.candidates=[{'ticker':'000003','rs':99}];self.fill_exits();self.cycle()
+        self.assertEqual([p.side for p in self.broker.calls],['SELL','SELL'])
+    def test_partial_pending_cancelled_or_stale_balance_stops_second(self):
+        for kwargs,reason in (({'fill':2},'PENDING_FILL_CONFIRMATION'),({'fill':0},'PENDING_FILL_CONFIRMATION'),({'fill':2,'cancel':True},'EXIT_FILL_NOT_CONFIRMED'),({'balance':False},'BALANCE_UPDATE_PENDING')):
+            self.setUp();self.fill_exits(**kwargs);result=self.cycle()
+            self.assertEqual(len(self.broker.calls),1);self.assertEqual(result['batch_stop_reason'],reason)
+    def test_unknown_send_halts_and_does_not_try_later_exit(self):
+        self.broker.failure=TimeoutError('fixture')
+        with self.assertRaises(TradingBlocked) as caught:self.cycle()
+        self.assertTrue(self.ledger.stopped);self.assertEqual(len(self.broker.calls),1)
+        self.assertIsNone(caught.exception.execution_progress['orders_sent'])
+    def test_second_order_unknown_retains_first_confirmed_count(self):
+        self.fill_exits();original=self.broker.submit
+        def submit(p):
+            if self.broker.calls:self.broker.failure=TimeoutError('fixture')
+            return original(p)
+        self.broker.submit=submit
+        with self.assertRaises(TradingBlocked) as caught:self.cycle()
+        self.assertEqual(caught.exception.execution_progress['confirmed_orders_sent'],1)
+        self.assertIsNone(caught.exception.execution_progress['orders_sent']);self.assertTrue(self.ledger.stopped)
+    def test_next_exit_uses_refreshed_sellable_holdings_and_quote(self):
+        def after(p):
+            if p.ticker=='000001':
+                self.broker.positions['000002']['quantity']=3;self.broker.positions['000002']['sellable']=2
+                self.broker.prices[('000002','SELL')]=9000
+        self.fill_exits(after=after);self.cycle()
+        self.assertEqual((self.broker.calls[1].quantity,self.broker.calls[1].price),(2,9000))
+    def test_halt_session_close_or_unknown_control_stops_remaining(self):
+        for change in ('halt','close','control'):
+            self.setUp();control=self.broker.buy_control()
+            def after(p):
+                if change=='halt':self.ledger.halt()
+                if change=='close':self.now=self.now.replace(hour=15,minute=15)
+                if change=='control':self.broker.buy_control=lambda:{**control,'sell':None}
+            self.fill_exits(after=after)
+            if change in ('halt','close'):
+                with self.assertRaises(TradingBlocked):self.cycle()
+            else:self.assertEqual(self.cycle()['batch_stop_reason'],'SELL_CONTROL_UNAVAILABLE')
+            self.assertEqual(len(self.broker.calls),1)
+    def test_sell_off_after_first_fill_never_falls_back_to_buy(self):
+        self.candidates=[{'ticker':'000003','rs':99}];control=self.broker.buy_control()
+        def after(p):self.broker.buy_control=lambda:{**control,'sell':{'enabled':False,'connected':True,'revision':2}}
+        self.fill_exits(after=after);result=self.cycle()
+        self.assertEqual([p.side for p in self.broker.calls],['SELL'])
+        self.assertEqual(result['batch_stop_reason'],'EXIT_BATCH_NO_MORE_ELIGIBLE')
+    def test_second_pre_send_cancel_preserves_first_acknowledgement(self):
+        self.fill_exits();control=self.broker.buy_control()
+        @contextmanager
+        def guard():
+            if len(self.ledger.records)==2:self.broker.buy_control=lambda:{**control,'sell':{'connected':True,'enabled':False,'revision':2}}
+            yield
+        self.ledger.send_guard=guard;result=self.cycle()
+        self.assertEqual(len(self.broker.calls),1);self.assertEqual(result['orders_sent'],1)
+        self.assertEqual(result['status'],'ACKNOWLEDGED');self.assertEqual(result['batch_stop_reason'],'SELL_CONTROL_OFF_OR_UNAVAILABLE')
+        self.assertEqual(self.ledger.records['2']['status'],'REJECTED');self.assertFalse(self.ledger.stopped)
+    def test_control_replan_before_first_send_cannot_expand_initial_exit_scope(self):
+        self.broker.positions['000002']['average']='10000'
+        original=self.broker.buy_control();count=0
+        def control():
+            nonlocal count
+            count+=1
+            if count>1:self.broker.prices[('000002','SELL')]=12000
+            return {**original,'sell':{'connected':True,'enabled':count==1,'revision':count}}
+        self.broker.buy_control=control;self.fill_exits();self.cycle()
+        self.assertEqual(self.broker.calls,[])
+    def test_new_exit_not_in_initial_set_waits_until_next_cycle(self):
+        self.broker.positions['000002']['average']='10000'
+        self.fill_exits(after=lambda p:self.broker.positions['000002'].update(average='12000'))
+        self.cycle();self.assertEqual([p.ticker for p in self.broker.calls],['000001'])
+    def test_unmanaged_positions_are_never_added_to_exit_scope(self):
+        self.ledger.owned.pop('000002');self.fill_exits();self.cycle()
+        self.assertEqual([p.ticker for p in self.broker.calls],['000001'])
