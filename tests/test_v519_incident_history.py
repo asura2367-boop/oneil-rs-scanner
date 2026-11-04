@@ -1,7 +1,7 @@
 import datetime as dt
 import hashlib
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 import oneil_v519_incident_history as m
 from oneil_v519_history_observe import fetch_page
@@ -69,7 +69,7 @@ class IncidentHistoryTests(unittest.TestCase):
             m.collect(Mock(side_effect=pages),"20261104",2)
 
     def test_read_reference_requires_read_only_and_unique_incident(self):
-        conn = Mock()
+        conn = MagicMock()
         cur = conn.cursor.return_value.__enter__.return_value
         cur.fetchone.return_value = ("on",)
         cur.fetchall.return_value = [(self.reference,)]
