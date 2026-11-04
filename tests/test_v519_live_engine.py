@@ -2570,3 +2570,120 @@ class ManagedExitBatchTests(unittest.TestCase):
     def test_unmanaged_positions_are_never_added_to_exit_scope(self):
         self.ledger.owned.pop('000002');self.fill_exits();self.cycle()
         self.assertEqual([p.ticker for p in self.broker.calls],['000001'])
+
+class CloseRuntimeRegressionTests(unittest.TestCase):
+    def run_close(self, observation, *, collected=False, scanner_failure=False, publication_failure=False, storage_failure=False):
+        import copy, io, sys
+        from contextlib import ExitStack
+        from unittest.mock import MagicMock
+        class Clock(dt.datetime):
+            @classmethod
+            def now(cls,tz=None):
+                return cls(2026,11,4,20,51,tzinfo=ZoneInfo('Asia/Seoul'))
+        ledger=MagicMock()
+        if storage_failure:ledger.finish_run.side_effect=OSError('PRIVATE_STORAGE_FIXTURE')
+        ledger.dashboard_state={'snapshot':{'cash':100,'equity':100,'valuation':0}} if collected else None
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            out=pathlib.Path(directory)/'result.json'
+            stack.enter_context(patch.object(sys,'argv',['engine','--close','--output',str(out),
+                '--dashboard-public-key','fixture-key','--dashboard-output',str(pathlib.Path(directory)/'encrypted.json')]))
+            stack.enter_context(patch.dict(os.environ,{'SUPABASE_DB_URL':'','LIVE_ENABLED':'false','KIS_ALLOW_ORDER':'false'}))
+            stack.enter_context(patch('oneil_v519_live_engine.dt.datetime',Clock))
+            stack.enter_context(patch('v519_pg_ledger.connect'))
+            stack.enter_context(patch('v519_pg_ledger.PgRuntimeLedger',return_value=ledger))
+            credentials=stack.enter_context(patch('kis_buying_power_readonly.credentials',return_value=('key','secret','account','01')))
+            broker=stack.enter_context(patch('oneil_v519_live_engine.KisBroker'))
+            cycle=stack.enter_context(patch('oneil_v519_live_engine.integrated_cycle',return_value=copy.deepcopy(observation)))
+            stack.enter_context(patch('oneil_v519_live_engine.scan_candidates',side_effect=ValueError('fixture') if scanner_failure else None,return_value=[]))
+            wire=stack.enter_context(patch('urllib.request.urlopen',side_effect=AssertionError('no network allowed')))
+            encrypt=stack.enter_context(patch('oneil_v519_live_engine.encrypt_dashboard',side_effect=OSError('PRIVATE_FIXTURE') if publication_failure else None))
+            if collected:
+                stack.enter_context(patch('oneil_v519_live_engine.dashboard_snapshot',return_value={'fresh_fixture':True}))
+            stack.enter_context(patch('sys.stdout',new_callable=io.StringIO))
+            with self.assertRaises(SystemExit) as stopped:runtime_main()
+            result=json.loads(out.read_text())
+            credentials.assert_called_once_with(read_only=True)
+            broker.assert_called_once_with(execution=False,operator_activation=False)
+            self.assertFalse(cycle.call_args.kwargs['execute'])
+            broker.return_value.submit.assert_not_called();wire.assert_not_called()
+            ledger.halt.assert_not_called();ledger.activate_release.assert_not_called()
+            ledger.reserve_plan.assert_not_called()
+            self.assertEqual(result['orders_sent'],0)
+            return result,ledger,encrypt,stopped.exception.code
+
+    def observed(self,status='OBSERVED'):
+        return {'status':status,'gate':'DENY','orders_sent':0,'order_attempts':0,
+                'recovery':{'matched':0,'unresolved':0}}
+
+    def test_close_preserves_unresolved_status_and_skips_missing_snapshot(self):
+        observation=self.observed('BLOCKED_UNRESOLVED_ORDERS')
+        observation['recovery']['unresolved']=1
+        result,ledger,encrypt,code=self.run_close(observation)
+        self.assertEqual(result['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(result['recovery'],observation['recovery'])
+        self.assertTrue(result['session_closed'])
+        self.assertEqual(result['dashboard_snapshot_status'],'NOT_COLLECTED_UNRESOLVED_ORDERS')
+        self.assertNotIn('reason',result);encrypt.assert_not_called()
+        stored=ledger.finish_run.call_args.args[1]
+        self.assertEqual(stored['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(stored['recovery'],observation['recovery'])
+        self.assertTrue(stored['session_closed'])
+        self.assertEqual(code,0)  # existing observer status contract; public status remains blocked
+
+    def test_successful_close_publishes_collected_snapshot(self):
+        for status in ('OBSERVED','SELL_ALERT_ONLY'):
+            with self.subTest(status=status):
+                result,ledger,encrypt,code=self.run_close(self.observed(status),collected=True)
+                self.assertEqual(result['status'],'DAILY_CLOSED');self.assertTrue(result['session_closed'])
+                self.assertEqual(code,0);encrypt.assert_called_once()
+                self.assertEqual(ledger.finish_run.call_args.args[1]['account_snapshot']['cash'],100)
+
+    def test_close_preserves_unavailable_sell_control_status(self):
+        result,_,_,_=self.run_close(self.observed('SELL_CONTROL_UNAVAILABLE'),collected=True)
+        self.assertEqual(result['status'],'SELL_CONTROL_UNAVAILABLE');self.assertTrue(result['session_closed'])
+
+    def test_close_does_not_mask_failed_scanner(self):
+        result,_,_,code=self.run_close(self.observed(),collected=True,scanner_failure=True)
+        self.assertEqual(result['status'],'OBSERVED');self.assertTrue(result['session_closed'])
+        self.assertEqual(result['scanner_status'],'BLOCKED_INVALID_OR_STALE_SOURCE');self.assertEqual(code,2)
+
+    def test_unexpected_missing_snapshot_still_fails_and_keeps_recovery(self):
+        result,ledger,encrypt,code=self.run_close(self.observed())
+        self.assertEqual(result['reason'],'DASHBOARD_ACCOUNT_SNAPSHOT_MISSING')
+        self.assertEqual(result['status'],'BLOCKED');self.assertEqual(code,2)
+        self.assertEqual(result['recovery'],self.observed()['recovery'])
+        self.assertTrue(result['session_closed']);encrypt.assert_not_called()
+        self.assertEqual(ledger.finish_run.call_args.args[1]['recovery'],result['recovery'])
+
+    def test_publication_error_preserves_only_safe_context(self):
+        result,ledger,_,code=self.run_close(self.observed(),collected=True,publication_failure=True)
+        self.assertEqual(code,2);self.assertEqual(result['status'],'BLOCKED')
+        self.assertEqual(result['recovery'],self.observed()['recovery']);self.assertTrue(result['session_closed'])
+        stored=ledger.finish_run.call_args.args[1]
+        self.assertEqual(stored['recovery'],result['recovery']);self.assertTrue(stored['session_closed'])
+        self.assertNotIn('PRIVATE_FIXTURE',json.dumps(result));self.assertNotIn('account_snapshot',result)
+        self.assertEqual(run_failure_context({'account_snapshot':'PRIVATE','orders_sent':8,'recovery':{'unresolved':1}}),{'recovery':{'unresolved':1}})
+
+    def test_session_marker_closes_monitoring_without_changing_safety_status(self):
+        from types import SimpleNamespace
+        state={'at':dt.datetime(2026,11,4,10,tzinfo=ZoneInfo('Asia/Seoul')),
+            'snapshot':{'positions':{},'managed':{},'cash':100,'equity':100,'valuation':0},
+            'buy_control':{},'allocation':{},'candidates':[],'plans':[]}
+        ledger=SimpleNamespace(fingerprint='b'*64,dashboard_state=state,rows=lambda *args:[],
+            halted=lambda:True,release_authorized=lambda _:False,sell_alerts=lambda:[])
+        result={'status':'SELL_CONTROL_UNAVAILABLE','session_closed':True}
+        snapshot=dashboard_snapshot(ledger,result)
+        self.assertFalse(snapshot['monitoring_open'])
+        self.assertEqual(snapshot['result']['status'],'SELL_CONTROL_UNAVAILABLE')
+        self.assertTrue(snapshot['halted']);self.assertFalse(snapshot['orders_enabled'])
+        self.assertTrue(dashboard_snapshot(ledger,{'status':'OBSERVED'})['monitoring_open'])
+        self.assertFalse(dashboard_snapshot(ledger,{'status':'DAILY_CLOSED'})['monitoring_open'])
+
+    def test_storage_error_preserves_safe_recovery_context(self):
+        observation=self.observed('BLOCKED_UNRESOLVED_ORDERS')
+        observation['recovery']['unresolved']=1
+        result,ledger,encrypt,code=self.run_close(observation,storage_failure=True)
+        self.assertEqual(code,2);self.assertEqual(result['status'],'BLOCKED')
+        self.assertEqual(result['recovery'],observation['recovery']);self.assertTrue(result['session_closed'])
+        self.assertNotIn('PRIVATE_STORAGE_FIXTURE',json.dumps(result));encrypt.assert_not_called()
+        self.assertEqual(ledger.finish_run.call_count,2)

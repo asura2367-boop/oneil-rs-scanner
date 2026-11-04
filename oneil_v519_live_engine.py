@@ -1167,6 +1167,13 @@ def publish_dashboard_if_collected(ledger,result,public_key,output):
     return True
 
 
+def run_failure_context(result):
+    # Preserve only safe observation metadata if publication/storage fails.
+    # Never copy account snapshots, broker payloads or inferred order outcomes.
+    return {key:result[key] for key in ('recovery','scanner_status','session_closed',
+                                      'dashboard_snapshot_status') if key in result}
+
+
 def failure_details(exc, *, _include_submission=True):
     """Public diagnostic metadata only: never exception text, locals or URLs."""
     from urllib.error import HTTPError, URLError
@@ -1380,7 +1387,7 @@ def dashboard_snapshot(ledger,result):
             'broker_receipt_observed':any(o['broker_order_id'] for o in orders),
             'broker_fill_recovery_observed':any(o['filled_quantity']>0 for o in orders),
             'restart_failure_drill_verified':False},
-        'monitoring_open':monitoring_open(state['at']) and result.get('status')!='DAILY_CLOSED',
+        'monitoring_open':monitoring_open(state['at']) and not result.get('session_closed',False) and result.get('status')!='DAILY_CLOSED',
         'buy_control':state['buy_control'],'risk_control':state.get('risk_control'),
         'sell_control':state.get('sell_control'),'sell_alerts':ledger.sell_alerts(),
         'monitor_hours':'09:00–20:00 KST','poll_minutes':20,'venue':'KRX',
@@ -1557,7 +1564,12 @@ def runtime_main():
                             else:
                                 result['scanner_status']='VALID'
                         if args.close:
-                            result['status']='DAILY_CLOSED'
+                            # Closing is a session marker, not evidence that
+                            # recovery or account observation succeeded.
+                            result['session_closed']=True
+                            if (result.get('status') in ('OBSERVED','SELL_ALERT_ONLY') and
+                                    result.get('scanner_status')=='VALID'):
+                                result['status']='DAILY_CLOSED'
                         private_record=dict(result)
                         if getattr(ledger,'dashboard_state',None):
                             snap=ledger.dashboard_state['snapshot']
@@ -1568,7 +1580,7 @@ def runtime_main():
                             if not publish_dashboard_if_collected(ledger,result,args.dashboard_public_key,args.dashboard_output):
                                 result['dashboard_snapshot_status']='NOT_COLLECTED_UNRESOLVED_ORDERS'
                     except Exception as exc:
-                        failed={'status':'BLOCKED','gate':'DENY','order_outcome':'CHECK_LEDGER',
+                        failed={**run_failure_context(result),'status':'BLOCKED','gate':'DENY','order_outcome':'CHECK_LEDGER',
                                 'orders_sent':None if args.execute else 0,**failure_details(exc),
                                 **getattr(exc,'execution_progress',{})}
                         ledger.finish_run(run_id,failed)
@@ -1576,7 +1588,7 @@ def runtime_main():
     except Exception as exc:
         # Never log raw DB/KIS exception strings or credential-bearing URLs.
         reason=str(exc) if isinstance(exc,TradingBlocked) else 'BROKER_OR_DATABASE_FAILURE'
-        result={'status':'BLOCKED','gate':'DENY','reason':reason,
+        result={**run_failure_context(result),'status':'BLOCKED','gate':'DENY','reason':reason,
                 'orders_sent':None if args.execute and release_is_approved() else 0,
                 **failure_details(exc),**getattr(exc,'execution_progress',{})}
         code=2
