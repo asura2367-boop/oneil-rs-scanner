@@ -1,8 +1,8 @@
 const fs=require('fs'),path=require('path'),assert=require('assert/strict'),crypto=require('crypto');
-const root=path.resolve(__dirname,'..'),yaml=fs.readFileSync(root+'/.github/workflows/oneil_v519_release_attest.yml','utf8');
+const root=path.resolve(__dirname,'..'),yaml=fs.readFileSync(path.join(__dirname,'fixtures/release-publisher.yml'),'utf8');
 const script=yaml.split('          script: |\n')[1].split('\n').map(l=>l.slice(12)).join('\n');
 const runScript=new (Object.getPrototypeOf(async function(){}).constructor)('github','context','core','process','fetch','require',script);
-const expected=fs.readFileSync(root+'/oneil_v519_live_engine.py','utf8').match(/RELEASE_FILES = \(([\s\S]*?)\n\)/)[1].match(/'([^']+)'/g).map(v=>v.slice(1,-1));
+const expected=[...fs.readFileSync(root+'/oneil_v519_live_engine.py','utf8').match(/RELEASE_FILES = \(([\s\S]*?)\n\)/)[1].matchAll(/'([^']+)'/g)].map(m=>m[1]);
 let conclusion='success',status='completed',tokenCalls=0,sent=[];
 const sha='a'.repeat(40),context={repo:{owner:'asura2367-boop',repo:'oneil-rs-scanner'},ref:'refs/heads/main',eventName:'workflow_run',runId:789,sha:'b'.repeat(40),payload:{workflow_run:{id:123}}};
 const github={async request(route,args){if(route.endsWith('/runs'))return{data:{workflow_runs:[{id:123}]}};if(route.endsWith('/jobs'))return{data:{jobs:[{id:456,name:'test',status,conclusion,completed_at:'2026-11-03T01:00:00Z'},{name:'observe',conclusion:'success'}]}};if(route.includes('/contents/')){assert.ok(expected.includes(args.path));assert.equal(args.ref,sha);const bytes=Buffer.from(args.path);return{data:{type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:crypto.createHash('sha1').update(Buffer.concat([Buffer.from('blob '+bytes.length+'\0'),bytes])).digest('hex')}};}return{data:{head_sha:sha,head_branch:'main',path:'.github/workflows/oneil_v519_live_engine_review.yml',run_attempt:1,status:'completed',event:'push',conclusion:'success'}};}};
@@ -13,5 +13,12 @@ await runScript(github,{...context,eventName:'push',payload:{}},core,{env:{SITE_
 conclusion='failure';await runScript(github,context,core,{env:{SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);assert.equal(sent[2].test_conclusion,'failure');
 status='in_progress';await assert.rejects(runScript(github,context,core,{env:{}},fetcher,require),/TEST_UNFINISHED/);assert.equal(tokenCalls,3);
 await assert.rejects(runScript(github,{...context,eventName:'pull_request'},core,{env:{}},fetcher,require),/CONTEXT_INVALID/);assert.equal(sent.length,3);
+const earlySent=[],earlyContext={...context,eventName:'push',runId:123,sha,payload:{}};
+const earlyGithub={...github,rest:{repos:{getContent:async()=>({data:{sha:'existing'}}),createOrUpdateFileContents:async p=>earlySent.push(p)}}};
+const originalRequest=github.request;
+earlyGithub.request=async(route,args)=>{if(route.endsWith('/runs/{run_id}'))return{data:{id:123,head_sha:sha,head_branch:'main',path:'.github/workflows/oneil_v519_live_engine_review.yml',run_attempt:1,status:'in_progress',event:'push',conclusion:null}};return originalRequest(route,args);};
+conclusion='success';status='completed';
+await runScript(earlyGithub,earlyContext,core,{env:{EARLY_PROOF:'true',SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);
+assert.equal(sent.at(-1).run_status,'in_progress');assert.equal(sent.at(-1).workflow_conclusion,'pending');assert.equal(earlySent.length,1);assert.equal(earlySent[0].path,'data/live/release_review.json');assert.equal(JSON.parse(Buffer.from(earlySent[0].content,'base64')).review_run_id,123);
 console.log('PASS isolated publisher checks actual run/test completion, binds exact source files, sends failures as failures, excludes PRs, and only posts public verification evidence');
 })().catch(e=>{console.error(e);process.exitCode=1});
