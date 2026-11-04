@@ -141,5 +141,119 @@ class ReviewTests(unittest.TestCase):
         ledger.conn.execute.assert_not_called()
 
 
+# Use only the isolated local PostgreSQL service supplied by CI, never live DB.
+import os
+
+
+@unittest.skipUnless(os.getenv('V519_TEST_DB_URL'), 'Local PostgreSQL test URL not supplied')
+class PostgresReviewTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import uuid
+        import psycopg
+        from urllib.parse import urlparse
+        from v519_pg_ledger import migrate_runtime
+        from v519_no_order_review import AUDIT_SCHEMA
+        cls.url = os.environ['V519_TEST_DB_URL']
+        if urlparse(cls.url).hostname not in ('localhost', '127.0.0.1'):
+            raise RuntimeError('TEST_DATABASE_MUST_BE_LOCAL')
+        cls.schema = 'no_order_test_' + uuid.uuid4().hex
+        cls.conn = psycopg.connect(cls.url, autocommit=True)
+        cls.conn.execute('CREATE SCHEMA ' + cls.schema)
+        cls.conn.execute('SET search_path TO ' + cls.schema)
+        migrate_runtime(cls.conn)
+        cls.conn.execute(AUDIT_SCHEMA)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.execute('DROP SCHEMA ' + cls.schema + ' CASCADE')
+        cls.conn.close()
+
+    def setUp(self):
+        ReviewTests.setUp(self)
+        self.conn.execute('TRUNCATE v519_no_order_reviews, v519_order_intents')
+        self.conn.execute('UPDATE v519_control SET halted=true')
+        self.conn.execute('''INSERT INTO v519_order_intents
+            (intent_id,account_fingerprint,trading_day,ticker,side,venue,quantity)
+            VALUES (%s,%s,%s,%s,'BUY','KRX',1)''',
+            (self.intent['intent_id'], self.intent['account_fingerprint'],
+             self.intent['trading_day'], self.intent['ticker']))
+        self.ledger = PgRuntimeLedger(self.conn, self.intent['account_fingerprint'])
+
+    def resolve(self):
+        return record_no_order_review(self.ledger, self.intent['intent_id'],
+                                      self.history, now=self.now, env={})
+
+    def assert_unresolved_and_unaudited(self):
+        self.assertEqual(self.ledger.pending()[0]['status'], 'SUBMISSION_UNKNOWN')
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM v519_no_order_reviews').fetchone()[0], 0)
+        self.assertTrue(self.ledger.halted())
+
+    def test_commit_preserves_halt_null_id_and_daily_unique_guard(self):
+        import psycopg
+        self.assertEqual(self.resolve()['orders_sent'], 0)
+        row = self.ledger.rows('SELECT * FROM v519_order_intents')[0]
+        self.assertEqual(row['status'], 'REJECTED')
+        self.assertIsNone(row['broker_order_id'])
+        self.assertFalse(row['verified_not_sent'])
+        self.assertTrue(self.ledger.halted())
+        self.assertEqual(self.ledger.bought_today(self.intent['trading_day']), {'000500'})
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM v519_no_order_reviews').fetchone()[0], 1)
+        with self.assertRaises(psycopg.errors.UniqueViolation):
+            self.conn.execute('''INSERT INTO v519_order_intents
+                (intent_id,account_fingerprint,trading_day,ticker,side,venue,quantity)
+                VALUES (%s,%s,%s,%s,'BUY','KRX',1)''',
+                ('d'*64, self.ledger.fingerprint, self.intent['trading_day'], '000500'))
+
+    def test_repeated_resolution_fails_without_duplicate_audit(self):
+        self.resolve()
+        with self.assertRaises(LedgerBlocked):
+            self.resolve()
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM v519_no_order_reviews').fetchone()[0], 1)
+
+    def test_zero_row_update_rolls_back_inserted_audit(self):
+        self.conn.execute('''CREATE FUNCTION skip_review_update() RETURNS trigger AS $$
+            BEGIN RETURN NULL; END; $$ LANGUAGE plpgsql''')
+        self.conn.execute('''CREATE TRIGGER skip_review_update BEFORE UPDATE ON v519_order_intents
+            FOR EACH ROW EXECUTE FUNCTION skip_review_update()''')
+        try:
+            with self.assertRaisesRegex(LedgerBlocked, 'NO_ORDER_RESOLUTION_NOT_APPLIED'):
+                self.resolve()
+            self.assert_unresolved_and_unaudited()
+        finally:
+            self.conn.execute('DROP TRIGGER skip_review_update ON v519_order_intents')
+            self.conn.execute('DROP FUNCTION skip_review_update()')
+
+    def test_audit_failure_preserves_unknown_intent(self):
+        import psycopg
+        self.conn.execute('''ALTER TABLE v519_no_order_reviews ADD CONSTRAINT deny_test_review
+            CHECK (reviewer <> 'operator')''')
+        try:
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                self.resolve()
+            self.assert_unresolved_and_unaudited()
+        finally:
+            self.conn.execute('ALTER TABLE v519_no_order_reviews DROP CONSTRAINT deny_test_review')
+
+    def test_other_runtime_session_blocks_review(self):
+        import psycopg
+        with psycopg.connect(self.url, autocommit=True) as other:
+            other.execute('SELECT pg_advisory_lock(%s)', (self.ledger.lock_key,))
+            try:
+                with self.assertRaisesRegex(LedgerBlocked, 'ACCOUNT_RUNTIME_ALREADY_RUNNING'):
+                    self.resolve()
+                self.assert_unresolved_and_unaudited()
+            finally:
+                other.execute('SELECT pg_advisory_unlock(%s)', (self.ledger.lock_key,))
+
+    def test_unhalted_account_cannot_be_resolved(self):
+        self.conn.execute('UPDATE v519_control SET halted=false')
+        with self.assertRaisesRegex(LedgerBlocked, 'EMERGENCY_HALT_REQUIRED'):
+            self.resolve()
+        self.assertFalse(self.ledger.halted())
+        self.assertEqual(len(self.ledger.pending()), 1)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM v519_no_order_reviews').fetchone()[0], 0)
+
+
 if __name__ == '__main__':
     unittest.main()
