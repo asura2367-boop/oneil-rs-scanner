@@ -702,7 +702,7 @@ def sell_plan_allowed(plan,control):
 
 
 def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
-                     stop_loss_pct=5, take_profit_pct=10, clock=None):
+                     stop_loss_pct=5, take_profit_pct=10, clock=None, defer_for_manual=True):
     """Sequential candidate buys under one account lock and conservative cash caps.
 
     Each acknowledged buy must be fully reconciled before the next candidate.
@@ -775,10 +775,21 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                 else:selected,budget=plan_orders(eligible,snap,broker.quote,broker.power,include_exits=False,**kwargs)
                 if not result['orders_sent'] and not any(p.side=='SELL' for p in selected):result['status']='SELL_ALERT_ONLY'
             return selected,budget
+        # Check owner intent before reading unrelated automatic-buy quotes.
+        # Exit planning still runs first, with the same holdings and controls.
+        manual_pending=False
+        if execute and defer_for_manual:
+            for request in control.get('manual_buys',[]):
+                try:
+                    manual_buy_request(request,now=clock(),fingerprint=ledger.fingerprint,release=release_fingerprint())
+                    manual_pending=True
+                    break
+                except TradingBlocked:
+                    continue
         # Read-only runs preview the next buy, just as execution does. Scanning
         # every later candidate here delayed account publication/activation.
         with read_stage('NEXT_PLAN'):
-            plans, allocation = select_plans(candidates,snapshot,control,1)
+            plans, allocation = select_plans([] if manual_pending else candidates,snapshot,control,1)
         ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control,'risk_control':risk,'sell_control':sell}
         result['planned_buys']=sum(p.side=='BUY' for p in plans)
         result['planned_sells']=sum(p.side=='SELL' for p in plans)
@@ -793,6 +804,10 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
         if result['planned_sells'] and not sell['connected']:
             return alert_only(plans,sell)  # Unknown control retains the safety block.
         if not execute:
+            return result
+        if manual_pending and not result['planned_sells']:
+            result.update(status='MANUAL_QUEUE_PENDING',planned_buys=0)
+            ledger.dashboard_state['plans']=[]
             return result
         initial_remaining=allocation['remaining'];initial_stock_cap=allocation['per_stock']
         spent=0; attempted=set();display_plans=[];uncertain=False
@@ -815,11 +830,13 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                     if not sell_plan_allowed(plan,latest_control):
                         if not latest_sell['connected']:return alert_only(plans,latest_sell)
                         plans,allocation=select_plans(
-                            [c for c in candidates if c['ticker'] not in attempted],snapshot,latest_control,1)
+                            [] if manual_pending else [c for c in candidates if c['ticker'] not in attempted],snapshot,latest_control,1)
                         ledger.dashboard_state.update(plans=display_plans+plans,allocation=allocation)
                         result['planned_sells']=0
                         result['planned_buys']=sum(p.side=='BUY' for p in plans)
-                        if not plans:return result
+                        if not plans:
+                            if manual_pending:result['status']='MANUAL_QUEUE_PENDING'
+                            return result
                         plan=plans[0]
                 if plan.ticker in attempted:raise TradingBlocked('BATCH_DUPLICATE_CANDIDATE')
                 attempted.add(plan.ticker)
@@ -978,7 +995,7 @@ def manual_buy_request(value, *, now, fingerprint, release):
         expires=dt.datetime.fromisoformat(value['expires_at'].replace('Z','+00:00'))
         local=now.astimezone(ZoneInfo('Asia/Seoul'))
         if (created.tzinfo is None or expires.tzinfo is None or not created<=now<expires or
-            not 0<(expires-created).total_seconds()<=1200 or value['trading_day']!=local.date().isoformat() or
+            not 0<(expires-created).total_seconds()<=2400 or value['trading_day']!=local.date().isoformat() or
             created.astimezone(local.tzinfo).date()!=local.date() or
             expires.astimezone(local.tzinfo).date()!=local.date() or
             expires.astimezone(local.tzinfo).time()>dt.time(15,15)):
@@ -1019,7 +1036,7 @@ def process_manual_buy(ledger,broker,requests,*,now,clock):
         live=control.get('manual_buys',[])
         request=next((r for r in requests if any(x.get('id')==r.get('id') for x in live if isinstance(x,dict))),None)
         request=manual_buy_request(request,now=current,fingerprint=ledger.fingerprint,release=release_fingerprint())
-        if control['revision']!=request['buy_revision'] or risk['revision']!=request['risk_revision']:raise TradingBlocked('MANUAL_SETTINGS_CHANGED')
+        if control['revision']!=request['buy_revision'] or risk['revision']!=request['risk_revision']:raise TradingBlocked('MANUAL_REQUEST_SETTINGS_CHANGED')
         if ledger.rows("SELECT intent_id FROM v519_order_intents WHERE account_fingerprint=%s AND signal=%s",(ledger.fingerprint,'owner:'+request['id'])):
             return {'status':'MANUAL_ALREADY_RECORDED','orders_sent':0,'order_attempts':0}
         snap=broker.snapshot();snap['managed']=ledger.managed();bought=ledger.bought_today(now.date())
@@ -1040,7 +1057,13 @@ def process_manual_buy(ledger,broker,requests,*,now,clock):
         ledger.dashboard_state.update(snapshot=snap,allocation=allocation,plans=[plan],at=current)
         try:
             with ledger.send_guard():
-                time_check();require_live_release()
+                require_live_release()
+                latest=broker.buy_control()
+                if (not latest.get('connected') or not latest.get('enabled') or latest.get('revision')!=request['buy_revision'] or
+                    not same_risk(risk,risk_policy(latest)) or (latest.get('release') or {}).get('approved_release')!=release_fingerprint() or
+                    not any(x==request for x in latest.get('manual_buys',[]))):raise TradingBlocked('MANUAL_SETTINGS_CHANGED')
+                if not ledger.release_authorized(release_fingerprint()):raise TradingBlocked('MANUAL_ACCOUNT_NOT_READY')
+                manual_buy_request(request,now=time_check(),fingerprint=ledger.fingerprint,release=release_fingerprint())
                 uncertain=True;response=broker.submit(plan)
                 out=response.get('output') if isinstance(response,dict) else None
                 order_id=out.get('ODNO') if isinstance(out,dict) else None
@@ -1065,18 +1088,37 @@ def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss
     state=getattr(ledger,'dashboard_state',None)
     requests=state.get('buy_control',{}).get('manual_buys',[]) if state else []
     if not execute or not requests or result.get('orders_sent') or result.get('planned_sells') or result.get('recovery',{}).get('unresolved'):return result
-    active=[]
-    for r in requests:
-        try:active.append(manual_buy_request(r,now=clock(),fingerprint=ledger.fingerprint,release=release_fingerprint()))
-        except TradingBlocked:pass
-    if not active:return result
-    try:
-        sent=process_manual_buy(ledger,broker,active,now=now,clock=clock)
-        result.update(sent);return result
-    except TradingBlocked as exc:
-        if getattr(exc,'execution_progress',None):raise
-        state['manual_buy_checks']=[{'id':active[0]['id'],'status':'BLOCKED','reason':str(exc)}]
-        result['manual_buy_status']='BLOCKED';result['manual_buy_reason']=str(exc);return result
+    checks=[]
+    # Only request-local failures may advance the queue. Unknown exceptions,
+    # unresolved orders, changed controls and account safety blocks stop the run.
+    local_blocks={'MANUAL_REQUEST_INVALID','MANUAL_REQUEST_IDENTITY_CHANGED',
+        'MANUAL_REQUEST_EXPIRED_OR_INVALID','HOLDING_CHANGED',
+        'OWNER_LIMIT_PRICE_EXCEEDED','MANUAL_BUY_LIMIT_EXCEEDED',
+        'ALREADY_BOUGHT_TODAY','BOOK_SIZE_EXCEEDED','MANUAL_REQUEST_SETTINGS_CHANGED'}
+    for request in requests:
+        request_id=request.get('id') if isinstance(request,dict) else None
+        try:
+            manual_buy_request(request,now=clock(),fingerprint=ledger.fingerprint,release=release_fingerprint())
+            sent=process_manual_buy(ledger,broker,[request],now=now,clock=clock)
+            checks.append({'id':request_id,'status':sent['status']})
+            state['manual_buy_checks']=checks
+            if sent['status']=='MANUAL_ALREADY_RECORDED':continue
+            result.update(sent)
+            result['manual_buy_status']=sent['status'];result.pop('manual_buy_reason',None)
+            return result  # Never send another order after an acknowledgement.
+        except TradingBlocked as exc:
+            if getattr(exc,'execution_progress',None):raise
+            checks.append({'id':request_id,'status':'BLOCKED','reason':str(exc)})
+            state['manual_buy_checks']=checks
+            result['manual_buy_status']='BLOCKED';result['manual_buy_reason']=str(exc)
+            if str(exc) not in local_blocks:return result
+    if result.get('status')=='MANUAL_QUEUE_PENDING':
+        # Every queued request was ineligible or already recorded. Re-enter the
+        # normal guarded path using fresh account/control evidence, no bypasses.
+        result=_automatic_cycle(ledger,broker,candidates,execute=execute,now=now,
+            stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,clock=clock,defer_for_manual=False)
+        ledger.dashboard_state['manual_buy_checks']=checks
+    return result
 
 
 def publish_dashboard_if_collected(ledger,result,public_key,output):

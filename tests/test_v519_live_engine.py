@@ -603,6 +603,37 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.broker.buy_control=lambda:{**control,'risk':risk}
         return control,risk
 
+    def manual_queue(self, requests):
+        control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'manual_buys':requests,'release':{'approved_release':release_fingerprint()}}
+    def owner_request(self,ticker='144960',ident='11111111-1111-4111-8111-111111111111'):
+        self.broker.positions[ticker]={'quantity':10,'sellable':10,'average':'10000','cost':100000,'valuation':100000}
+        self.broker.invested=sum(p['cost'] for p in self.broker.positions.values())
+        return {'id':ident,'ticker':ticker,'quantity':5,'limit_price':10000,'holding_quantity':10,
+            'buy_revision':1,'risk_revision':0,'account_ref':self.ledger.fingerprint,'approved_release':release_fingerprint(),
+            'trading_day':self.now.date().isoformat(),'created_at':self.now.isoformat(),'expires_at':(self.now+dt.timedelta(minutes=40)).isoformat()}
+    def test_manual_queue_real_ledger_skips_ineligible_and_commits_before_send(self):
+        first=self.owner_request();second=self.owner_request('000002','22222222-2222-4222-8222-222222222222')
+        first['limit_price']=9999;self.manual_queue([first,second]);self.candidates=[{'ticker':'000003','rs':98}]
+        original=self.broker.submit
+        def submit(plan):
+            rows=self.ledger.pending()
+            self.assertEqual(len(rows),1);self.assertEqual(rows[0]['status'],'SUBMISSION_UNKNOWN')
+            self.assertEqual(rows[0]['signal'],'owner:'+second['id'])
+            return original(plan)
+        self.broker.submit=submit
+        with patch('oneil_v519_live_engine.require_live_release'):result=self.cycle()
+        self.assertEqual(result['orders_sent'],1);self.assertEqual([p.ticker for p in self.broker.calls],['000002'])
+        with patch('oneil_v519_live_engine.require_live_release'):result=self.cycle()
+        self.assertEqual(result['status'],'BLOCKED_UNRESOLVED_ORDERS');self.assertEqual(len(self.broker.calls),1)
+    def test_fresh_owner_id_cannot_bypass_durable_daily_buy_key(self):
+        request=self.owner_request();self.manual_queue([request]);self.candidates=[]
+        ident=self.ledger.reserve_plan(OrderPlan('144960','BUY',5,10000,'owner:old-request','OWNER_AVERAGING'),self.now.date())
+        self.conn.execute("UPDATE v519_order_intents SET status='REJECTED',verified_not_sent=true WHERE intent_id=%s",(ident,))
+        with patch('oneil_v519_live_engine.require_live_release'):result=self.cycle()
+        self.assertEqual(self.broker.calls,[])
+        self.assertEqual(self.ledger.dashboard_state['manual_buy_checks'][0]['reason'],'ALREADY_BOUGHT_TODAY')
+
     def test_saved_owner_risk_controls_actual_quantity_and_snapshot(self):
         self.with_risk(60,10)
         result=self.cycle()
@@ -2049,7 +2080,7 @@ class ManualAveragingTests(unittest.TestCase):
         self.alloc={'remaining':500000,'per_stock':180000}
     def test_bound_identity_expiration_and_schema(self):
         self.assertEqual(manual_buy_request(self.req,now=self.now,fingerprint='a'*64,release='b'*64),self.req)
-        for update in ({'quantity':True},{'limit_price':0},{'holding_quantity':0},{'account_ref':'c'*64},{'approved_release':'c'*64},{'id':'bad'},{'expires_at':(self.now+dt.timedelta(minutes=21)).isoformat()},{'trading_day':'2026-11-03'}):
+        for update in ({'quantity':True},{'limit_price':0},{'holding_quantity':0},{'account_ref':'c'*64},{'approved_release':'c'*64},{'id':'bad'},{'expires_at':(self.now+dt.timedelta(minutes=41)).isoformat()},{'trading_day':'2026-11-03'}):
             with self.assertRaises(TradingBlocked):manual_buy_request({**self.req,**update},now=self.now,fingerprint='a'*64,release='b'*64)
         with self.assertRaises(TradingBlocked):manual_buy_request(self.req,now=self.now+dt.timedelta(minutes=20),fingerprint='a'*64,release='b'*64)
     def test_exact_quantity_price_exposure_and_cash(self):
@@ -2108,6 +2139,115 @@ class ManualAveragingTests(unittest.TestCase):
             with self.assertRaises(TradingBlocked):self.run_request(l,b)
             self.assertEqual(b.calls,[])
             self.snap['positions']['000001']['quantity']=10
+
+class ManualQueueIntegrationTests(ManualAveragingTests):
+    def fixtures(self):
+        ledger,broker=super().fixtures()
+        self.snap['positions']['000001']['average']='8000'
+        ledger.rows=lambda query,args: [r for r in ledger.records if r['signal']==args[1]]
+        return ledger,broker
+    def cycle(self,ledger,broker,execute=True):
+        with patch('oneil_v519_live_engine.require_live_release'),patch('oneil_v519_live_engine.release_fingerprint',return_value='b'*64):
+            return integrated_cycle(ledger,broker,[{'ticker':'000003','rs':98}],execute=execute,now=self.now,clock=lambda:self.now)
+    def queue(self,broker,requests):
+        control=broker.buy_control()
+        broker.buy_control=lambda:{**control,'manual_buys':requests}
+    def second(self):
+        return {**self.req,'id':'22222222-2222-4222-8222-222222222222','ticker':'000002'}
+    def add_second(self):
+        self.snap['positions']['000002']=self.snap['positions']['000001'].copy()
+    def test_owner_queue_precedes_automatic_buy_and_stops_after_one_send(self):
+        l,b=self.fixtures();self.add_second();self.queue(b,[self.req,self.second()])
+        result=self.cycle(l,b)
+        self.assertEqual(result['orders_sent'],1)
+        self.assertEqual([p.ticker for p in b.calls],['000001'])
+        self.assertEqual(b.calls[0].quantity,5)
+    def test_blocked_first_request_does_not_starve_second(self):
+        for update in ({'limit_price':7999},{'holding_quantity':11},{'buy_revision':0}):
+            l,b=self.fixtures();self.add_second();self.queue(b,[{**self.req,**update},self.second()])
+            result=self.cycle(l,b)
+            self.assertEqual(result['manual_buy_status'],'ACKNOWLEDGED');self.assertNotIn('manual_buy_reason',result)
+            self.assertEqual([p.ticker for p in b.calls],['000002'])
+            self.assertEqual(l.dashboard_state['manual_buy_checks'][0]['status'],'BLOCKED')
+    def test_recorded_first_request_does_not_starve_second(self):
+        l,b=self.fixtures();self.add_second();l.records.append({'signal':'owner:'+self.req['id']})
+        self.queue(b,[self.req,self.second()]);self.cycle(l,b)
+        self.assertEqual([p.ticker for p in b.calls],['000002'])
+    def test_account_halt_stops_queue_without_automatic_fallback(self):
+        l,b=self.fixtures();l.stopped=True;self.add_second();self.queue(b,[self.req,self.second()])
+        result=self.cycle(l,b)
+        self.assertEqual(b.calls,[]);self.assertEqual(result['manual_buy_reason'],'MANUAL_ACCOUNT_NOT_READY')
+    def test_unknown_first_submission_stops_everything(self):
+        l,b=self.fixtures();self.add_second();self.queue(b,[self.req,self.second()]);b.failure=TimeoutError('unknown')
+        with self.assertRaises(TimeoutError):self.cycle(l,b)
+        self.assertTrue(l.stopped);self.assertEqual(len(b.calls),1)
+    def test_all_request_local_blocks_allow_guarded_automatic_fallback(self):
+        l,b=self.fixtures();self.queue(b,[{**self.req,'limit_price':7999}])
+        result=self.cycle(l,b)
+        self.assertEqual([p.ticker for p in b.calls],['000003'])
+        self.assertEqual(l.dashboard_state['manual_buy_checks'][0]['reason'],'OWNER_LIMIT_PRICE_EXCEEDED')
+    def test_unrelated_automatic_quote_failure_does_not_starve_owner(self):
+        l,b=self.fixtures();quote=b.quote
+        def strict_quote(ticker,side):
+            if ticker=='000003':raise TradingBlocked('UNRELATED_QUOTE_UNAVAILABLE')
+            return quote(ticker,side)
+        b.quote=strict_quote;self.cycle(l,b)
+        self.assertEqual([p.ticker for p in b.calls],['000001'])
+    def test_exit_switched_off_preserves_owner_queue_priority(self):
+        l,b=self.fixtures();l.record_sell_alerts=lambda *args:None
+        self.snap['positions']['000001']['average']='10000'
+        original=b.buy_control();count=0
+        def control():
+            nonlocal count
+            count+=1
+            return {**original,'sell':{'connected':True,'enabled':count==1,'revision':count}}
+        b.buy_control=control
+        self.cycle(l,b)
+        self.assertEqual([p.ticker for p in b.calls],['000001'])
+    def test_exit_switched_off_and_blocked_owner_allows_guarded_auto_fallback(self):
+        l,b=self.fixtures();l.record_sell_alerts=lambda *args:None
+        self.snap['positions']['000001']['average']='10000'
+        original=b.buy_control();count=0
+        def control():
+            nonlocal count
+            count+=1
+            return {**original,'manual_buys':[{**self.req,'limit_price':7999}],
+                'sell':{'connected':True,'enabled':count==1,'revision':count}}
+        b.buy_control=control
+        self.cycle(l,b)
+        self.assertEqual([p.ticker for p in b.calls],['000003'])
+    def test_control_or_approval_change_during_send_guard_blocks_wire(self):
+        for change in ('withdraw','buy_off','risk','release','activation'):
+            l,b=self.fixtures();control=b.buy_control()
+            @contextmanager
+            def guard():
+                if change=='activation':l.release_authorized=lambda r:False
+                else:
+                    update={'withdraw':{'manual_buys':[]},'buy_off':{'enabled':False},
+                        'risk':{'risk':{**control['risk'],'revision':2}},'release':{'release':{'approved_release':'c'*64}}}[change]
+                    b.buy_control=lambda:{**control,**update}
+                yield
+            l.send_guard=guard
+            with self.assertRaises(TradingBlocked):self.run_request(l,b)
+            self.assertEqual(b.calls,[]);self.assertTrue(l.stopped)
+    def test_expiry_while_waiting_for_send_guard_does_not_submit(self):
+        l,b=self.fixtures()
+        @contextmanager
+        def guard():
+            self.now+=dt.timedelta(minutes=20)
+            yield
+        l.send_guard=guard
+        with self.assertRaises(TradingBlocked):self.run_request(l,b)
+        self.assertEqual(b.calls,[]);self.assertTrue(l.stopped)
+    def test_observe_never_consumes_queue(self):
+        l,b=self.fixtures();self.cycle(l,b,execute=False)
+        self.assertEqual(b.calls,[]);self.assertEqual(l.records,[])
+    def test_extended_new_request_survives_one_schedule_but_old_request_expires(self):
+        new={**self.req,'expires_at':(self.now+dt.timedelta(minutes=40)).isoformat()}
+        self.assertEqual(manual_buy_request(new,now=self.now+dt.timedelta(minutes=21),fingerprint='a'*64,release='b'*64),new)
+        for request,when in ((self.req,self.now+dt.timedelta(minutes=20)),(new,self.now+dt.timedelta(minutes=40))):
+            with self.assertRaises(TradingBlocked):manual_buy_request(request,now=when,fingerprint='a'*64,release='b'*64)
+
 
 class PureRsSelectionTests(unittest.TestCase):
  def test_rs_boundary_sort_and_no_top_ten_truncation(self):
