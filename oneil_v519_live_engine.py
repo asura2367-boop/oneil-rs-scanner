@@ -171,6 +171,7 @@ RELEASE_LIVE_APPROVED = False
 
 RELEASE_FILES = (
     'oneil_v519_live_engine.py','v519_pg_ledger.py','v519_pg_reconcile.py',
+    'v519_no_order_review.py',
     'v519_cash_policy.py','oneil_v519_live_runner.py','oneil_v519_history_observe.py',
     'oneil_v519_broker_recovery.py','oneil_v519_order_recovery.py',
     'kis_buying_power_readonly.py','kis_safety_v3.py','oneil_live_v5_9.py',

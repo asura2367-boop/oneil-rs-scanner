@@ -1,0 +1,29 @@
+name: V5.19 no-order review tests (OFFLINE)
+on:
+  pull_request:
+    paths:
+      - 'v519_no_order_review.py'
+      - 'v519_pg_ledger.py'
+      - 'tests/test_v519_no_order_review.py'
+      - '.github/workflows/v519-no-order-review-tests.yml'
+  push:
+    paths:
+      - 'v519_no_order_review.py'
+      - 'v519_pg_ledger.py'
+      - 'tests/test_v519_no_order_review.py'
+      - '.github/workflows/v519-no-order-review-tests.yml'
+permissions:
+  contents: read
+jobs:
+  offline-review-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest discover -s tests -p 'test_v519_no_order_review.py' -v
