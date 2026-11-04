@@ -1108,10 +1108,15 @@ def release_review_policy(value):
 def dashboard_release_env(control=None):
     """Resolve a human review for this schedule; never change GitHub variables."""
     if not (os.getenv('GITHUB_ACTIONS')=='true' and os.getenv('GITHUB_REF')=='refs/heads/main'
-            and os.getenv('GITHUB_REPOSITORY')=='asura2367-boop/oneil-rs-scanner' and os.getenv('OPERATION')=='auto'):
+            and os.getenv('GITHUB_REPOSITORY')=='asura2367-boop/oneil-rs-scanner' and os.getenv('OPERATION') in {'auto','apply-approval'}):
         return None
     review=release_review_policy((read_buy_control() if control is None else control).get('release'))
-    if review and review['approved_release']==release_fingerprint():return review
+    if review and review['approved_release']==release_fingerprint():
+        if os.getenv('OPERATION')=='apply-approval' and (
+                os.getenv('REQUESTED_RELEASE')!=review['approved_release'] or
+                os.getenv('REQUESTED_APPROVAL_REVISION')!=str(review['revision'])):
+            return None
+        return review
     return None
 
 
@@ -1281,6 +1286,7 @@ def runtime_main():
     modes.add_argument('--close',action='store_true')
     modes.add_argument('--broker-audit',action='store_true')
     modes.add_argument('--activate',action='store_true')
+    modes.add_argument('--apply-owner-approval',action='store_true')
     modes.add_argument('--release-info',action='store_true')
     modes.add_argument('--release-review',action='store_true')
     modes.add_argument('--dashboard-release-env',action='store_true')
@@ -1309,6 +1315,15 @@ def runtime_main():
         if args.release_info:
             print(json.dumps({'expected_release':release_fingerprint(),'release_configured':release_is_approved(),'orders_sent':0}))
             return
+        requested_review=None
+        if args.apply_owner_approval:
+            if args.execute:raise TradingBlocked('ACTIVATION_CANNOT_SUBMIT')
+            requested_review=dashboard_release_env()
+            if not requested_review:raise TradingBlocked('OWNER_RELEASE_REVIEW_CHANGED')
+            local=dt.datetime.now(ZoneInfo('Asia/Seoul'))
+            if local.weekday()>=5 or not dt.time(9)<=local.time().replace(tzinfo=None)<dt.time(15,15):
+                raise TradingBlocked('OUTSIDE_KRX_CONTINUOUS_SESSION')
+            args.activate=True
         if args.activate:
             if args.execute:raise TradingBlocked('ACTIVATION_CANNOT_SUBMIT')
             if not args.acknowledge_live_risk:raise TradingBlocked('OPERATOR_ACTIVATION_CONFIRMATION_REQUIRED')
@@ -1363,7 +1378,8 @@ def runtime_main():
                             now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
                             candidates=scan_candidates(args.source,now)
                             result=activate_live_account(ledger,broker,candidates,now=now,
-                                operator=args.operator,acknowledged=args.acknowledge_live_risk)
+                                operator=requested_review['operator'] if requested_review else args.operator,
+                                acknowledged=args.acknowledge_live_risk,dashboard_review=requested_review)
                         elif args.broker_audit:
                             now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
                             try:candidates=scan_candidates(args.source,now)

@@ -29,13 +29,21 @@ on:
     inputs:
       operation:
         type: choice
-        options: [observe, recover, halt, migrate, close, broker-audit, activate, trade]
+        options: [observe, recover, halt, migrate, close, broker-audit, activate, apply-approval, trade]
         default: observe
         description: 'observe=조회 / activate=소유자 활성화 / trade=수동 1회 거래'
       confirm_live_activation:
         type: boolean
         default: false
         description: '실거래 시작 동의: 첫 실주문·복구 실증 미완료, 기본 손절5%/익절10%, 자동매매 위험을 확인함'
+      approved_release:
+        type: string
+        default: ''
+        description: 'apply-approval 전용: 대시보드에 저장된 소스 확인값'
+      approval_revision:
+        type: string
+        default: ''
+        description: 'apply-approval 전용: 저장된 승인 기록 번호'
 permissions:
   contents: read
 concurrency:
@@ -118,6 +126,8 @@ jobs:
       APPROVED_RELEASE: ${{ vars.V519_APPROVED_RELEASE }}
       V519_APPROVED_RELEASE: ${{ vars.V519_APPROVED_RELEASE }}
       OPERATOR_CONFIRMED: ${{ inputs.confirm_live_activation }}
+      REQUESTED_RELEASE: ${{ inputs.approved_release }}
+      REQUESTED_APPROVAL_REVISION: ${{ inputs.approval_revision }}
       OPERATION: ${{ github.event.schedule == '0 11 * * 1-5' && 'close' || (github.event_name == 'schedule' && 'auto') || inputs.operation || 'observe' }}
     steps:
       - uses: actions/checkout@v4
@@ -138,7 +148,7 @@ jobs:
         if: github.event_name == 'push'
         run: python oneil_v519_live_engine.py --migrate
       - name: Resolve dashboard owner review without changing repository variables
-        if: env.OPERATION == 'auto'
+        if: env.OPERATION == 'auto' || env.OPERATION == 'apply-approval'
         run: python oneil_v519_live_engine.py --dashboard-release-env
       - name: Run existing integrated engine
         run: |
@@ -157,6 +167,12 @@ jobs:
               else
                 python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem
               fi ;;
+            apply-approval)
+              # Owner click requests activation checks only. This path cannot trade
+              # or clear halt, even if the same release is already activated.
+              [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
+              [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
+              LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --apply-owner-approval --acknowledge-live-risk --dashboard-public-key data/live/dashboard_public_key.pem ;;
             activate)
               [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
               [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
