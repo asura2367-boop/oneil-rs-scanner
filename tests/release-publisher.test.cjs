@@ -4,6 +4,11 @@ const script=yaml.split('          script: |\n')[1].split('\n').map(l=>l.slice(1
 const runScript=new (Object.getPrototypeOf(async function(){}).constructor)('github','context','core','process','fetch','require',script);
 const expected=[...fs.readFileSync(root+'/oneil_v519_live_engine.py','utf8').match(/RELEASE_FILES = \(([\s\S]*?)\n\)/)[1].matchAll(/'([^']+)'/g)].map(m=>m[1]);
 let conclusion='success',status='completed',tokenCalls=0,sent=[];
+const runtimeWorkflow=fs.readFileSync(root+'/.github/workflows/oneil_v519_live_engine_review.yml','utf8');
+assert.ok(!runtimeWorkflow.split('jobs:')[0].includes('concurrency:'));
+const sourceJob=runtimeWorkflow.split('  source-proof:')[1].split('  session:')[0];assert.ok(sourceJob.includes('needs: test'));assert.ok(!sourceJob.includes('needs: [test, session]'));assert.ok(!sourceJob.includes('KIS_APP'));assert.ok(sourceJob.includes('early: true'));
+assert.ok(runtimeWorkflow.split('  observe:')[1].includes('concurrency:'));
+assert.ok(!runtimeWorkflow.includes("const reviewPath='data/live/release_review.json'"));
 const sha='a'.repeat(40),context={repo:{owner:'asura2367-boop',repo:'oneil-rs-scanner'},ref:'refs/heads/main',eventName:'workflow_run',runId:789,sha:'b'.repeat(40),payload:{workflow_run:{id:123}}};
 const github={async request(route,args){if(route.endsWith('/runs'))return{data:{workflow_runs:[{id:123}]}};if(route.endsWith('/jobs'))return{data:{jobs:[{id:456,name:'test',status,conclusion,completed_at:'2026-11-03T01:00:00Z'},{name:'observe',conclusion:'success'}]}};if(route.includes('/contents/')){assert.ok(expected.includes(args.path));assert.equal(args.ref,sha);const bytes=Buffer.from(args.path);return{data:{type:'file',encoding:'base64',size:bytes.length,content:bytes.toString('base64'),sha:crypto.createHash('sha1').update(Buffer.concat([Buffer.from('blob '+bytes.length+'\0'),bytes])).digest('hex')}};}return{data:{head_sha:sha,head_branch:'main',path:'.github/workflows/oneil_v519_live_engine_review.yml',run_attempt:1,status:'completed',event:'push',conclusion:'success'}};}};
 const core={async getIDToken(aud){tokenCalls++;assert.ok(aud.startsWith('https://oneil-control-desk.asura2367.chatgpt.site/api/release-evidence#sha256='));return 'fixture signed identity';},info(){}};

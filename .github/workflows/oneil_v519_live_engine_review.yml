@@ -46,9 +46,6 @@ on:
         description: 'apply-approval 전용: 저장된 승인 기록 번호'
 permissions:
   contents: read
-concurrency:
-  group: v519-integrated-${{ inputs.operation == 'halt' && 'emergency-halt' || (github.event_name == 'pull_request' && github.ref || 'account') }}
-  cancel-in-progress: false
 jobs:
   test:
     if: inputs.operation != 'halt'
@@ -119,6 +116,10 @@ jobs:
       KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
       KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
   observe:
+    # Keep account operations serialized without queueing source tests/proof.
+    concurrency:
+      group: v519-integrated-${{ inputs.operation == 'halt' && 'emergency-halt' || (github.event_name == 'pull_request' && github.ref || 'account') }}
+      cancel-in-progress: false
     if: always() && github.event_name != 'pull_request' && (needs.test.result == 'success' || inputs.operation == 'halt') && (needs.session.result == 'success' || needs.session.result == 'skipped')
     needs: [test, session]
     permissions:
