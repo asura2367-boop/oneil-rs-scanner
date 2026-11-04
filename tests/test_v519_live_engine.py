@@ -1027,7 +1027,8 @@ class PostgresRuntimeTests(unittest.TestCase):
     def test_sell_off_observe_plans_buys_but_never_submits(self):
         self.sell_off_with_new_candidates()
         result=self.cycle(False)
-        self.assertEqual(result['planned_buys'],2);self.assertEqual(result['planned_sells'],0)
+        self.assertEqual(result['planned_buys'],1);self.assertEqual(result['planned_sells'],0)
+        self.assertEqual(self.ledger.dashboard_state['candidates'],self.candidates)
         self.assertEqual(self.broker.calls,[]);self.assertEqual(self.ledger.pending(),[])
         self.assertEqual(len(self.ledger.sell_alerts()),1)
 
