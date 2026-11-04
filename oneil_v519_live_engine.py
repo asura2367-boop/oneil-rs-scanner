@@ -12,6 +12,19 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from contextlib import contextmanager
+
+@contextmanager
+def read_stage(stage):
+    """Fixed stage names and duration only; never broker/account payloads."""
+    import time
+    started=time.monotonic()
+    print(json.dumps({'event':'READ_STAGE_STARTED','stage':stage}),flush=True)
+    try:
+        yield
+    finally:
+        print(json.dumps({'event':'READ_STAGE_FINISHED','stage':stage,
+                          'elapsed_seconds':round(time.monotonic()-started,3)}),flush=True)
 
 class TradingBlocked(ValueError): pass
 class SellDisabledBeforeSend(TradingBlocked): pass
@@ -265,6 +278,9 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
         price = quote(ticker, 'BUY')
         if type(price) is not int or price <= 0:
             raise TradingBlocked('PRICE_INVALID')
+        # Broker buying power cannot make a share fit a smaller hard cash cap.
+        if (price*1005+999)//1000 > min(remaining,b['per_stock']):
+            continue
         amount, broker_qty = power(ticker, price)
         money(amount); money(broker_qty)
         # ceiling(notional * 1.005) must fit ALL three cash limits.
@@ -426,11 +442,16 @@ class KisBroker:
         cash, valuation, equity = totals[0]
         # Cost and market exposure are both counted conservatively.
         invested = max(valuation, sum(max(p['cost'],p['valuation']) for p in positions.values()))
-        pending = unfilled_codes(self.key,self.secret,self.account,self.product,self.access)
+        with read_stage('UNFILLED_ORDERS'):
+            pending = unfilled_codes(self.key,self.secret,self.account,self.product,self.access)
         return {'cash':cash,'invested':invested,'positions':positions,'pending':pending,
                 'equity':equity,'valuation':valuation}
 
     def technical_signal(self,ticker):
+        with read_stage('CONFIRMED_TECHNICAL_HISTORY'):
+            return self._technical_signal(ticker)
+
+    def _technical_signal(self,ticker):
         # Only confirmed OHLC bars; missing data never disables the existing
         # percentage exits and never creates a guessed technical exit.
         try:
@@ -458,14 +479,15 @@ class KisBroker:
         if (dt.date.today()-dt.datetime.strptime(day,'%Y%m%d').date()).days > 85:
             raise TradingBlocked('HISTORY_TOO_OLD_MANUAL_RECONCILIATION')
         if day not in self.history_cache:
-            self.history_cache[day]=read_full_day(lambda date,fk,nk,again: fetch_page(self.key,self.secret,
-                self.account,self.product,self.access,date,fk,nk,again), day)
+            with read_stage('ORDER_HISTORY'):
+                self.history_cache[day]=read_full_day(lambda date,fk,nk,again: fetch_page(self.key,self.secret,
+                    self.account,self.product,self.access,date,fk,nk,again), day)
         return self.history_cache[day]
 
     def quote(self, ticker, side):
         from oneil_v519_live_runner import price_reference
         if not self.execution:
-            return price_reference(self.access,self.key,self.secret,ticker)
+            return self.reference_quote(ticker)
         return self.execution_quote(ticker,side)
 
     def execution_quote(self,ticker,side):
@@ -503,14 +525,16 @@ class KisBroker:
 
     def power(self, ticker, price):
         from oneil_v519_live_runner import buying_power
-        return buying_power(self.access,self.key,self.secret,self.account,self.product,ticker,price)
+        with read_stage('BUYING_POWER'):
+            return buying_power(self.access,self.key,self.secret,self.account,self.product,ticker,price)
 
     def buy_control(self):
         return read_buy_control()
 
     def reference_quote(self,ticker):
         from oneil_v519_live_runner import price_reference
-        return price_reference(self.access,self.key,self.secret,ticker)
+        with read_stage('REFERENCE_QUOTE'):
+            return price_reference(self.access,self.key,self.secret,ticker)
 
     def submit(self, plan):
         require_live_release()
@@ -702,8 +726,9 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
         return current
     def account_snapshot():
         snap=broker.snapshot()
-        snap['managed']=ledger.managed()
-        snap['bought_today']=ledger.bought_today(now.date())
+        with read_stage('LEDGER_HOLDINGS'):
+            snap['managed']=ledger.managed()
+            snap['bought_today']=ledger.bought_today(now.date())
         return snap
     with ledger.lock():
         today_history=broker.history(now.strftime('%Y%m%d'))
@@ -749,7 +774,10 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                 else:selected,budget=plan_orders(eligible,snap,broker.quote,broker.power,include_exits=False,**kwargs)
                 if not result['orders_sent'] and not any(p.side=='SELL' for p in selected):result['status']='SELL_ALERT_ONLY'
             return selected,budget
-        plans, allocation = select_plans(candidates,snapshot,control,1 if execute else None)
+        # Read-only runs preview the next buy, just as execution does. Scanning
+        # every later candidate here delayed account publication/activation.
+        with read_stage('NEXT_PLAN'):
+            plans, allocation = select_plans(candidates,snapshot,control,1)
         ledger.dashboard_state={'snapshot':snapshot,'plans':plans,'candidates':candidates,'allocation':allocation,'at':now,'buy_control':control,'risk_control':risk,'sell_control':sell}
         result['planned_buys']=sum(p.side=='BUY' for p in plans)
         result['planned_sells']=sum(p.side=='SELL' for p in plans)
