@@ -2164,3 +2164,31 @@ class ImmediateApprovalTests(unittest.TestCase):
         self.assertNotIn('--activate ',body)
         self.assertIn('REQUESTED_RELEASE: ${{ inputs.approved_release }}',workflow)
         self.assertIn('REQUESTED_APPROVAL_REVISION: ${{ inputs.approval_revision }}',workflow)
+
+
+class IncompleteRuntimeStatusTests(unittest.TestCase):
+    def test_cancelled_runtime_cannot_publish_migration_as_healthy(self):
+        import json,subprocess
+        workflow=(pathlib.Path(__file__).resolve().parents[1]/'.github/workflows/oneil_v519_live_engine_review.yml').read_text()
+        step=workflow.split('      - name: Publish encrypted private-dashboard snapshot')[1].split('      - name: Save sanitized result')[0]
+        script='\n'.join(line[12:] for line in step.split('          script: |\n')[1].splitlines())
+        js="""
+        const assert=require('node:assert/strict');
+        const script=SCRIPT;
+        const execute=new (Object.getPrototypeOf(async function(){}).constructor)('github','context','process','require',script);
+        (async()=>{
+          for(const outcome of ['cancelled','failure','']){
+            const sent=[];
+            const github={rest:{repos:{getContent:async()=>({data:{sha:'a'}}),createOrUpdateFileContents:async p=>sent.push(p)}}};
+            const fs={existsSync:p=>p==='v5_19_report.json',readFileSync:()=>JSON.stringify({status:'MIGRATED_HALTED_BY_DEFAULT',orders_sent:0})};
+            await execute(github,{repo:{owner:'fixture',repo:'fixture'},runId:1,eventName:'push'},{env:{OPERATION:'observe',ENGINE_OUTCOME:outcome}},n=>{assert.equal(n,'fs');return fs;});
+            const status=JSON.parse(Buffer.from(sent.find(p=>p.path.endsWith('dashboard_status.json')).content,'base64'));
+            assert.equal(status.conclusion,'failure');assert.equal(status.status,'RUNTIME_INCOMPLETE');
+          }
+        })().catch(e=>{console.error(e);process.exitCode=1});
+        """.replace('SCRIPT',json.dumps(script))
+        subprocess.run(['node','-e',js],check=True,capture_output=True,text=True)
+        runtime=workflow.split('      - name: Run existing integrated engine')[1].split('      - name: Publish encrypted')[0]
+        self.assertIn('rm -f data/live/dashboard.enc.json v5_19_report.json',runtime)
+        self.assertIn('ENGINE_OUTCOME: ${{ steps.engine_runtime.outcome }}',step)
+        self.assertIn("'orders_sent':None,'order_outcome':'CHECK_LEDGER'",workflow)

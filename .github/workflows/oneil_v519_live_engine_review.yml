@@ -151,8 +151,9 @@ jobs:
         if: env.OPERATION == 'auto' || env.OPERATION == 'apply-approval'
         run: python oneil_v519_live_engine.py --dashboard-release-env
       - name: Run existing integrated engine
+        id: engine_runtime
         run: |
-          rm -f data/live/dashboard.enc.json
+          rm -f data/live/dashboard.enc.json v5_19_report.json
           mkdir -p data/live
           python oneil_v519_live_engine.py --release-review > data/live/release_review.json
           python oneil_v519_live_engine.py --release-info
@@ -190,6 +191,8 @@ jobs:
           esac
       - name: Publish encrypted private-dashboard snapshot
         if: always()
+        env:
+          ENGINE_OUTCOME: ${{ steps.engine_runtime.outcome }}
         uses: actions/github-script@v7
         with:
           script: |
@@ -213,9 +216,10 @@ jobs:
             }
             let result={status:'NO_RESULT'};
             if(fs.existsSync('v5_19_report.json'))result=JSON.parse(fs.readFileSync('v5_19_report.json','utf8'));
+            const incomplete=process.env.ENGINE_OUTCOME!=='success';
             const blocked=String(result.status).includes('BLOCKED')||result.scanner_status==='BLOCKED_INVALID_OR_STALE_SOURCE';
             const status={schema_version:1,run_id:context.runId,updated_at:new Date().toISOString(),event:context.eventName,
-              conclusion:blocked||result.status==='NO_RESULT'?'failure':'success',status:result.status,
+              conclusion:incomplete||blocked||result.status==='NO_RESULT'?'failure':'success',status:incomplete?'RUNTIME_INCOMPLETE':result.status,
               url:`https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`};
             await publish('data/live/dashboard_status.json',JSON.stringify(status),'Update sanitized V5.19 runtime status [skip ci]');
       - name: Save sanitized result
@@ -232,7 +236,7 @@ jobs:
           python - <<'PY'
           import json,os,pathlib
           p=pathlib.Path('v5_19_report.json')
-          r=json.loads(p.read_text()) if p.exists() else {'status':'NO_RESULT','orders_sent':0}
+          r=json.loads(p.read_text()) if p.exists() else {'status':'NO_RESULT','orders_sent':None,'order_outcome':'CHECK_LEDGER'}
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
               f.write('V5.19 runtime result\n\n```json\n'+json.dumps(r,ensure_ascii=False,indent=2)+'\n```\n')
           PY
