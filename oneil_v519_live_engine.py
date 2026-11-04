@@ -253,6 +253,9 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
         if not rs.is_finite():raise TradingBlocked('RS_INVALID')
         return (-rs,str(c.get('ticker','')))
     for c in sorted(candidates,key=rank):
+        # No later candidate can fit once either hard cash cap is zero.
+        if remaining<=0 or b['per_stock']<=0:
+            break
         ticker = c['ticker']
         if not isinstance(ticker, str) or not CODE.fullmatch(ticker) or ticker in seen:
             raise TradingBlocked('CANDIDATE_INVALID')
@@ -340,10 +343,13 @@ class KisBroker:
             print(json.dumps(event),flush=True)
             time.sleep(delay)
         for attempt in range(1,attempts+1):
+            started=time.monotonic()
+            print(json.dumps({'event':'BROKER_REQUEST_STARTED','broker_api':api,'attempt':attempt}),flush=True)
             try:
                 with urllib.request.urlopen(request, timeout=15) as response:
                     body=json.load(response)
                     continuation=response.headers.get('tr_cont')
+                print(json.dumps({'event':'BROKER_REQUEST_FINISHED','broker_api':api,'attempt':attempt,'elapsed_seconds':round(time.monotonic()-started,3)}),flush=True)
             except HTTPError as exc:
                 broker_code=None
                 try:
@@ -1340,7 +1346,9 @@ def runtime_main():
             return
         if urlparse(os.getenv('SUPABASE_DB_URL','')).port==6543:
             raise TradingBlocked('SESSION_DATABASE_CONNECTION_REQUIRED')
+        print(json.dumps({'event':'RUNTIME_DATABASE_CONNECT_STARTED'}),flush=True)
         with connect() as db:
+            print(json.dumps({'event':'RUNTIME_DATABASE_CONNECTED'}),flush=True)
             db.autocommit=True
             if args.migrate:
                 # Migration is explicit, never silently change schema during trading.
@@ -1362,7 +1370,9 @@ def runtime_main():
                     _,_,account,product=credentials(read_only=not (args.execute or args.activate))
                     fingerprint=hashlib.sha256((account+'|'+product).encode()).hexdigest()
                     ledger=PgRuntimeLedger(db,fingerprint)
+                    print(json.dumps({'event':'RUNTIME_LEDGER_START'}),flush=True)
                     ledger.start_run(run_id)
+                    print(json.dumps({'event':'RUNTIME_LEDGER_READY'}),flush=True)
                     # Daily close is a time boundary, not an emergency halt.
                     # Emergency stops persist until an operator explicitly activates again.
                     try:

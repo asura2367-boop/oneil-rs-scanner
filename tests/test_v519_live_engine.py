@@ -2192,3 +2192,13 @@ class IncompleteRuntimeStatusTests(unittest.TestCase):
         self.assertIn('rm -f data/live/dashboard.enc.json v5_19_report.json',runtime)
         self.assertIn('ENGINE_OUTCOME: ${{ steps.engine_runtime.outcome }}',step)
         self.assertIn("'orders_sent':None,'order_outcome':'CHECK_LEDGER'",workflow)
+
+
+class ExhaustedPlanningBudgetTests(unittest.TestCase):
+    def test_zero_cap_never_requests_candidate_quotes_or_buying_power(self):
+        from unittest.mock import Mock
+        snap={'cash':0,'invested':0,'pending':False,'positions':{},'managed':{}}
+        quote=Mock(side_effect=AssertionError('unnecessary quote'))
+        power=Mock(side_effect=AssertionError('unnecessary buying power'))
+        plans,_=plan_orders([{'ticker':str(i).zfill(6),'rs':99} for i in range(1,250)],snap,quote,power)
+        self.assertEqual(plans,[]);quote.assert_not_called();power.assert_not_called()
