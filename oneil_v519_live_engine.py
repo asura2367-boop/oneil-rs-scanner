@@ -1078,6 +1078,16 @@ def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss
         result['manual_buy_status']='BLOCKED';result['manual_buy_reason']=str(exc);return result
 
 
+def publish_dashboard_if_collected(ledger,result,public_key,output):
+    # Unresolved orders return before account collection by design. Do not
+    # replace that safety result with a secondary missing-snapshot exception,
+    # or relabel an old account snapshot with a new collection timestamp.
+    if result.get('status')=='BLOCKED_UNRESOLVED_ORDERS' and not getattr(ledger,'dashboard_state',None):
+        return False
+    encrypt_dashboard(dashboard_snapshot(ledger,result),public_key,output)
+    return True
+
+
 def failure_details(exc, *, _include_submission=True):
     """Public diagnostic metadata only: never exception text, locals or URLs."""
     from urllib.error import HTTPError, URLError
@@ -1476,8 +1486,8 @@ def runtime_main():
                                 'equity':snap.get('equity'),'valuation':snap.get('valuation')}
                         ledger.finish_run(run_id,private_record)
                         if args.dashboard_public_key:
-                            snapshot=dashboard_snapshot(ledger,result)
-                            encrypt_dashboard(snapshot,args.dashboard_public_key,args.dashboard_output)
+                            if not publish_dashboard_if_collected(ledger,result,args.dashboard_public_key,args.dashboard_output):
+                                result['dashboard_snapshot_status']='NOT_COLLECTED_UNRESOLVED_ORDERS'
                     except Exception as exc:
                         failed={'status':'BLOCKED','gate':'DENY','order_outcome':'CHECK_LEDGER',
                                 'orders_sent':None if args.execute else 0,**failure_details(exc),

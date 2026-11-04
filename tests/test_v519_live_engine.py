@@ -2258,3 +2258,19 @@ class SubmissionDiagnosticsTests(unittest.TestCase):
     def test_cyclic_diagnostic_exceptions_do_not_recurse(self):
         a=TradingBlocked('a');b=ValueError('b');a._submission_exception=b;b._submission_exception=a
         self.assertNotIn('submission_failure',failure_details(a)['submission_failure'])
+
+class BlockedDashboardPublicationTests(unittest.TestCase):
+    def test_unresolved_orders_keep_safety_result_without_creating_fresh_account_data(self):
+        from types import SimpleNamespace
+        result={'status':'BLOCKED_UNRESOLVED_ORDERS','gate':'DENY','orders_sent':0,'recovery':{'unresolved':1}}
+        with patch('oneil_v519_live_engine.dashboard_snapshot') as read,patch('oneil_v519_live_engine.encrypt_dashboard') as write:
+            self.assertFalse(publish_dashboard_if_collected(SimpleNamespace(),result,'unused-key','unused-path'))
+            read.assert_not_called();write.assert_not_called()
+        self.assertEqual(result['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(result['recovery']['unresolved'],1)
+    def test_unexpected_missing_account_data_still_fails_closed(self):
+        from types import SimpleNamespace
+        with patch('oneil_v519_live_engine.encrypt_dashboard') as write:
+            with self.assertRaisesRegex(TradingBlocked,'DASHBOARD_ACCOUNT_SNAPSHOT_MISSING'):
+                publish_dashboard_if_collected(SimpleNamespace(),{'status':'OBSERVED'},'unused-key','unused-path')
+            write.assert_not_called()
