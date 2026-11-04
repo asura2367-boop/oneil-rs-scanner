@@ -1,2 +1,2 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
-2026-11-03,SELL,042510,라온시큐어,손절 신호 -5%,2026-11-03,17030.0,17012.97,69,1173894.93,,SELL: estimated; actual close can differ
+2026-11-04,BUY,055490,테이팩스,RS 95 + 수급/거래량/채널,2026-11-04,20550.0,20570.55,96,1974772.8,296.22,ESTIMATE ONLY; execution depends on next session close and available cash
