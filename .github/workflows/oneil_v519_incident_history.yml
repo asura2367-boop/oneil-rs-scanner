@@ -1,11 +1,5 @@
 name: Incident history evidence (NO ORDERS)
 on:
-  # Temporary one-off post-merge observation. Remove after the marked run.
-  push:
-    branches: [main]
-    paths:
-      - 'oneil_v519_incident_history.py'
-      - '.github/workflows/oneil_v519_incident_history.yml'
   pull_request:
     paths:
       - 'oneil_v519_incident_history.py'
@@ -31,18 +25,14 @@ jobs:
           python-version: '3.11'
       - run: python -m unittest discover -s tests -p test_v519_incident_history.py -v
   observe:
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && github.run_attempt == 1 &&
-        contains(github.event.head_commit.message, '[incident-evidence-20261104-once-42]')))
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 6
     env:
       LIVE_ENABLED: 'false'
       KIS_ALLOW_ORDER: 'false'
-      INCIDENT_DAY: ${{ github.event_name == 'push' && '2026-11-04' || inputs.day }}
+      INCIDENT_DAY: ${{ inputs.day }}
       KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
       KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
       KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
