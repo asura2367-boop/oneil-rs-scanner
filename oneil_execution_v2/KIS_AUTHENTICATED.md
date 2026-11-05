@@ -1,5 +1,9 @@
 # Authenticated KIS read-source foundation: inactive, synthetic-only
 
+This document describes the original dependency-injected source module. Optional
+Windows-only implementations now exist separately in [KIS_WINDOWS_AUTH.md](KIS_WINDOWS_AUTH.md);
+none is registered in a runtime. The original interfaces and policy blocks remain unchanged.
+
 Based on corrected public-spec source `73d0693`. `kis_authenticated.py` adds a
 credential-provider and authenticated GET-client **interface**, in-memory bearer
 lifecycle, bounded read retries and capture pagination. It does not implement a

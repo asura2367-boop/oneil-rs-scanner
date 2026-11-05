@@ -8,8 +8,10 @@ coordinator `b10eb02`, reconciliation Worker composition `13e130f`, and concrete
 inactive HTTPS client `3787323`. The original component histories remain intact.
 No legacy trading code is imported. These components are **not an end-to-end
 operational host**: the supervised SQLite core is permanently halted, while the
-control coordinator requires the separate PostgreSQL core. The HTTPS client is
-credential-free and unwired. See [INTEGRATION.md](../deploy/windows/INTEGRATION.md)
+control coordinator requires the separate PostgreSQL core. The original HTTPS client is
+credential-free and unwired. Optional Windows-local credential/token/authenticated
+GET components now exist separately, also unwired and synthetic-tested only; see
+[KIS_WINDOWS_AUTH.md](../oneil_execution_v2/KIS_WINDOWS_AUTH.md). See [INTEGRATION.md](../deploy/windows/INTEGRATION.md)
 for exact verification and gaps. Never relax policy/runtime gates or use fixture-
 only mode as an operational fallback. ZIP MANIFEST.json identifies the exact
 final source commit.

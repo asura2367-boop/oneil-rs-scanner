@@ -9,7 +9,7 @@ was accessed. No actual network/DNS/TCP/TLS requests were made.
 Base `e107bae`; preserved source tips `b10eb02`, `13e130f`, `3787323`,
 `e5c4c24`, `4f3fa28` and `73d0693`. Public-spec and inactive authenticated
 read-source documentation are included in the required package inventory.
-`python tools/run_monitor_v2_tests.py`: **818 Python + 33 Node = 851 tests**,
+`python tools/run_monitor_v2_tests.py`: **905 Python + 33 Node = 938 tests**,
 zero failures and zero skips. Every execution, control, monitor, policy and runtime
 offline module is discovered once. The 37 PostgreSQL cases remain a separate,
 unrun acceptance gate; they are not counted as passes or hidden skips.
@@ -41,14 +41,30 @@ use named SQL-core, HTTP/process and provider doubles with local SQLite journals
 
 The source adds 61 synthetic, socket-forbidden credential lifecycle, cancellable
 GET retry, rate/cooldown, pagination, redaction and fail-closed admission tests.
-It supplies only injected provider/client contracts; no Windows secret loader,
-token issuer or authenticated HTTP implementation is provided. The existing
+That baseline supplied injected provider/client contracts. The later optional
+Windows-local implementations are described below. The existing
 credential-free HTTPS client and all production/runtime wiring remain unchanged.
 Independent review reran all 271 KIS tests and an adversarial frozen-clock bearer
 reuse probe; token resurrection, cleanup and persistent-auth-failure findings
 were fixed before the final pass. No remaining blocker was found for this
 inactive scope. These checks do not establish authenticated provenance or live
 semantic evidence. See [KIS_AUTHENTICATED.md](../../oneil_execution_v2/KIS_AUTHENTICATED.md).
+
+## Optional Windows-local credential and token implementation
+
+Separate, inactive source extends `1132dc1` with exact-scope expiring local
+permissions, Windows Credential Manager app-pair storage, a one-permission tokenP
+issuer and an independently validated authenticated GET client. Native API and
+all network operations are replaced by synthetic test doubles. No consent UI or
+runtime is connected. Independent review found permission polling and frozen-UTC
+transit expiry gaps; regression fixes are verified before the final package.
+See [KIS_WINDOWS_AUTH.md](../../oneil_execution_v2/KIS_WINDOWS_AUTH.md) for exact
+limits and the separate acceptance gates. No real secret or broker operation was
+performed. The new implementation adds 87 tests: permission 9, store/provider 20,
+authenticated HTTPS 38 and token/complete composition 20.
+Independent review reran the 904-case aggregate before the final cleanup-time
+regression, then reviewed that final change and passed all 20 token tests. The
+final 905-case aggregate passed again after that change, with all 33 Node tests.
 
 ## Separate acceptance gates, not run
 
@@ -57,7 +73,7 @@ semantic evidence. See [KIS_AUTHENTICATED.md](../../oneil_execution_v2/KIS_AUTHE
   proxy or prior-denial workaround was used.
 - Native Windows/PowerShell locks, process/sleep/reboot/power-loss and ACL tests.
 - Actual DNS/TCP/TLS, broker authentication, recorded responses and current policy
-  evidence. Concrete HTTPS has no credentials or production wiring.
+  evidence. Concrete authenticated HTTPS is inactive with no real credentials or production wiring.
 - Actual browser HTTPS hosting/login/session delivery. Same-process WSGI dashboard
   control now reaches the real supervised SQLite simulation runtime, but no
   listener was opened and no production identity provider is available.

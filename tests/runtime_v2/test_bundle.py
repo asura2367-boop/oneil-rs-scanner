@@ -22,6 +22,11 @@ KIS_EVIDENCE_FILES = {
     "tests/policy_v2/test_kis_pipeline.py",
 }
 INTEGRATED_FILES = {
+    'oneil_execution_v2/kis_local_authorization.py', 'oneil_execution_v2/kis_windows_credentials.py',
+    'oneil_execution_v2/kis_authenticated_https.py', 'oneil_execution_v2/kis_token_issuer.py',
+    'oneil_execution_v2/KIS_WINDOWS_AUTH.md',
+    'tests/execution_v2/test_kis_local_authorization.py', 'tests/execution_v2/test_kis_windows_credentials.py',
+    'tests/execution_v2/test_kis_authenticated_https.py', 'tests/execution_v2/test_kis_token_issuer.py',
     'oneil_execution_v2/kis_authenticated.py', 'oneil_execution_v2/KIS_AUTHENTICATED.md',
     'tests/execution_v2/test_kis_authenticated.py',
     'oneil_execution_v2/kis_https.py', 'oneil_execution_v2/KIS_HTTPS.md',

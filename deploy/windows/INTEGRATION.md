@@ -62,18 +62,18 @@ native Windows or real PostgreSQL execution evidence.
    pass. No Windows service or scheduler was installed. Unknown orphaned-child
    ownership and cross-journal crashes still require fail-closed recovery. See
    [SIMULATION_HOST.md](../../oneil_runtime_v2/SIMULATION_HOST.md).
-3. **Concrete HTTPS exists but is inactive and unauthenticated.** The standard-
-   library client implements verified TLS/SNI, direct fixed-origin GET, bounded
-   DNS/streaming and no redirects/proxies/retries. All validation used mocks; no
-   real network request occurred. Credentials, token handling and runtime wiring
-   are absent. Successful replies require bounded Content-Length; chunked and
-   close-delimited success are unsupported. See [KIS_HTTPS.md](../../oneil_execution_v2/KIS_HTTPS.md).
-4. **Fast multipage history is deliberately incomplete.** The current history
-   parser requests a second page immediately, while the default shared limiter
-   permits only one start per second and does not sleep/retry. Their direct
-   composition fails closed with `KIS_HISTORY_TRANSPORT_OR_PARSE_ERROR` after one
-   request. A reviewed caller-paced traversal/capture layer is still needed; the
-   limiter was not relaxed to disguise this gap.
+3. **Credential and authenticated HTTPS implementations exist but are inactive.**
+   The unchanged credential-free client and optional Windows Credential Manager,
+   tokenP issuer and authenticated GET client have synthetic-only tests. There
+   is no human-consent UI, real credential, runtime wiring, native validation or
+   broker verification. Successful replies require bounded Content-Length JSON.
+   See [KIS_WINDOWS_AUTH.md](../../oneil_execution_v2/KIS_WINDOWS_AUTH.md).
+4. **Bounded authenticated pagination exists only as an inactive source.** The
+   credential-free direct traversal remains fail-fast at rate limits. The
+   authenticated source adds pacing/cancellation/bounded retries and history/
+   balance pagination, but no runtime consumes it and a refreshed token requires
+   new explicit local issuance permission. Mock traversal does not establish
+   actual complete broker history.
 5. **KIS-to-policy authority is missing.** Complete shapes do not establish
    authenticated origin, coherent snapshot/fill causality, settled exact-order
    buying power, managed ownership, daily account loss/commitments, executable
