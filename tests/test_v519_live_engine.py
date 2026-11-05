@@ -3090,3 +3090,69 @@ class ManualDiagnosticTests(ManualQueueIntegrationTests):
         self.assertEqual(caught.exception.execution_progress['order_attempts'],1)
         self.assertTrue(l.stopped);self.assertEqual(len(b.calls),1)
         self.assertNotIn('PRIVATE',json.dumps(failure_details(caught.exception)))
+
+
+class FiveMinuteScheduleTests(unittest.TestCase):
+    """Validate timing/storage policy without starting a workflow or account call."""
+    def setUp(self):
+        self.root=pathlib.Path(__file__).resolve().parents[1]
+        self.workflow=(self.root/'.github/workflows/oneil_v519_live_engine_review.yml').read_text()
+        schedule=self.workflow.split('  schedule:\n',1)[1].split('  workflow_dispatch:',1)[0]
+        self.crons=re.findall(r"- cron: '([^']+)'",schedule)
+
+    def test_disjoint_ticks_cover_every_five_minutes_then_close(self):
+        self.assertEqual(self.crons,[
+            '0,20,40 0-10 * * 1-5',
+            '5,10,15,25,30,35,45,50,55 0-10 * * 1-5',
+            '0 11 * * 1-5',
+        ])
+        ticks=[]
+        for cron in self.crons[:2]:
+            minute,hour,day,month,weekday=cron.split()
+            self.assertEqual((hour,day,month,weekday),('0-10','*','*','1-5'))
+            ticks.extend((h+9)*60+int(m) for h in range(11) for m in minute.split(','))
+        self.assertEqual(len(ticks),len(set(ticks)))
+        self.assertEqual(sorted(ticks),list(range(9*60,20*60,5)))
+        self.assertEqual(len(ticks),132)
+        self.assertIn("github.event.schedule == '0 11 * * 1-5' && 'close'",self.workflow)
+
+    def test_extra_ticks_do_not_add_metered_artifact_uploads(self):
+        step=self.workflow.split('      - name: Save sanitized result\n',1)[1].split('      - name:',1)[0]
+        condition=re.search(r'^        if: (.+)$',step,re.M).group(1)
+        self.assertEqual(condition,"always() && (github.event_name != 'schedule' || github.event.schedule == '0,20,40 0-10 * * 1-5' || github.event.schedule == '0 11 * * 1-5')")
+        self.assertIn('retention-days: 14',step)
+        self.assertNotIn(self.crons[1],condition)
+        for step_name in ('Publish encrypted private-dashboard snapshot','Record workflow summary'):
+            body=self.workflow.split('      - name: '+step_name+'\n',1)[1]
+            self.assertTrue(body.startswith('        if: always()\n'))
+
+    def test_serialized_account_and_emergency_halt_are_preserved(self):
+        observe=self.workflow.split('  observe:\n',1)[1]
+        self.assertIn("group: v519-integrated-${{ inputs.operation == 'halt' && 'emergency-halt' || (github.event_name == 'pull_request' && github.ref || 'account') }}",observe)
+        self.assertIn('      cancel-in-progress: false',observe)
+        self.assertIn("(needs.test.result == 'success' || inputs.operation == 'halt')",observe)
+        self.assertIn("(needs.session.result == 'success' || needs.session.result == 'skipped')",observe)
+
+    def test_extra_ticks_keep_exact_release_and_actual_time_guards(self):
+        self.assertIn('.github/workflows/oneil_v519_live_engine_review.yml',RELEASE_FILES)
+        self.assertFalse(RELEASE_LIVE_APPROVED)
+        self.assertIn('python -m unittest discover -s tests -p \'test_v519_live_engine.py\' -v',self.workflow)
+        auto=self.workflow.split('            auto)\n',1)[1].split('            apply-approval)',1)[0]
+        for guard in ('[ "$release_configured" = true ]','[ "$weekday" -le 5 ]',
+                      '[ "$session_hhmm" -ge 900 ]','[ "$session_hhmm" -lt 1520 ]',
+                      '[ "$session_hhmm" -ge 1600 ]','[ "$session_hhmm" -lt 2000 ]'):
+            self.assertIn(guard,auto)
+        self.assertIn('V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --run --execute',auto)
+        self.assertIn('python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem',auto)
+        self.assertNotIn('--resume-halt',auto)
+        self.assertNotIn('--activate',auto)
+
+    def test_only_standard_public_repository_runners_are_used(self):
+        paths=('.github/workflows/oneil_v519_live_engine_review.yml',
+               '.github/workflows/kis_live_v4_5_2.yml',
+               '.github/workflows/oneil_v519_release_attest.yml',
+               '.github/workflows/oneil_v519_review_evidence.yml')
+        for path in paths:
+            runners=re.findall(r'^\s+runs-on: (.+)$',(self.root/path).read_text(),re.M)
+            self.assertTrue(runners,path)
+            self.assertEqual(set(runners),{'ubuntu-latest'},path)
