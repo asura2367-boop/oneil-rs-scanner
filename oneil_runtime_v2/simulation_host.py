@@ -33,7 +33,11 @@ from .supervisor import ACCOUNT, InstanceLock, SupervisorState, safe_path
 
 CONFIG = 'simulation-host.json'
 MODE = 'LOCAL_SQLITE_SIMULATION_ONLY'
-ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
+ASSETS = {'/logout.html': ('logout.html', 'text/html; charset=utf-8'),
+          '/logout.mjs': ('logout.mjs', 'text/javascript; charset=utf-8'),
+          '/pair.html': ('pair.html', 'text/html; charset=utf-8'),
+          '/pair.mjs': ('pair.mjs', 'text/javascript; charset=utf-8'),
+          '/': ('index.html', 'text/html; charset=utf-8'),
           '/simulation.mjs': ('simulation.mjs', 'text/javascript; charset=utf-8'),
           '/simulation.css': ('simulation.css', 'text/css; charset=utf-8')}
 

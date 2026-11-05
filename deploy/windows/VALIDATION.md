@@ -1,15 +1,40 @@
-# Supervised runtime assembly: offline validation record
+# Recovered runtime assembly: offline validation record
 
 Date: 2026-11-05. Linux cloud workspace, Python 3.12.14, Node 24.22.1,
 Git 2.52.0. No native Windows machine, production PostgreSQL or real KIS account
-was accessed. No actual network/DNS/TCP/TLS requests were made.
+was accessed. No broker network/DNS/TCP/TLS request was made by these tests.
+GitHub access was used to recover and preserve the source, separately from the
+network-free application checks.
 
 ## Source and current aggregate
+
+The current verified starting point is published draft
+`0f1512df0d95a2ab09a0e10a50dbede8f717d910`. Recovery independently reran its
+905 Python and 33 Node checks. Unpublished successor source was unavailable;
+the polling and local dashboard described below are new implementations, not
+recovered missing commits. The old unpublished aggregate is not used as evidence.
+
+Current `python tools/run_monitor_v2_tests.py`: **945 Python + 44 Node = 989 tests**,
+zero failures and zero skips. All offline suites are discovered once, and all
+public source/test/documentation files are required by the source ZIP inventory.
+The 37 PostgreSQL integration cases remain an explicit, unrun acceptance gate.
+
+New verification adds 27 polling tests and 13 local-dashboard tests, plus 11 Node
+pairing/logout tests. Polling tests use the actual authenticated read source with
+synthetic provider/client responses for seven fixed streams, shared deadlines,
+pagination/retry cancellation, source cleanup and event-coordinated cross-thread
+stop races. Dashboard tests use real isolated SQLite composition for one-use
+pairing, cookie/CSRF/logout/expiry, clean restart and failure handling. Wire/TLS,
+Windows checks and browser behavior are doubles, not native/network acceptance.
+Independent review identified and fixed deadline propagation, request parsing,
+failure classification, restart and pre-dispatch deadline issues before packaging.
+
+## Earlier source verification
 
 Base `e107bae`; preserved source tips `b10eb02`, `13e130f`, `3787323`,
 `e5c4c24`, `4f3fa28` and `73d0693`. Public-spec and inactive authenticated
 read-source documentation are included in the required package inventory.
-`python tools/run_monitor_v2_tests.py`: **905 Python + 33 Node = 938 tests**,
+The earlier published aggregate was **905 Python + 33 Node = 938 tests**,
 zero failures and zero skips. Every execution, control, monitor, policy and runtime
 offline module is discovered once. The 37 PostgreSQL cases remain a separate,
 unrun acceptance gate; they are not counted as passes or hidden skips.
@@ -74,9 +99,9 @@ final 905-case aggregate passed again after that change, with all 33 Node tests.
 - Native Windows/PowerShell locks, process/sleep/reboot/power-loss and ACL tests.
 - Actual DNS/TCP/TLS, broker authentication, recorded responses and current policy
   evidence. Concrete authenticated HTTPS is inactive with no real credentials or production wiring.
-- Actual browser HTTPS hosting/login/session delivery. Same-process WSGI dashboard
-  control now reaches the real supervised SQLite simulation runtime, but no
-  listener was opened and no production identity provider is available.
+- Actual browser HTTPS hosting/login/session delivery. The optional explicit
+  local host source supplies simulation-only console pairing and logout, but no
+  listener/TLS handshake was run and no production identity provider is available.
 - Legacy execution exclusion, production identity, installation, deployment and
   user-controlled real operation. No real order or financial action was taken.
 

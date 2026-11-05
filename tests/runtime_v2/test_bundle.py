@@ -22,6 +22,14 @@ KIS_EVIDENCE_FILES = {
     "tests/policy_v2/test_kis_pipeline.py",
 }
 INTEGRATED_FILES = {
+    'oneil_runtime_v2/local_dashboard.py', 'oneil_runtime_v2/windows_storage.py',
+    'oneil_runtime_v2/LOCAL_DASHBOARD.md',
+    'oneil_runtime_v2/web/pair.html', 'oneil_runtime_v2/web/pair.mjs',
+    'oneil_runtime_v2/web/logout.html', 'oneil_runtime_v2/web/logout.mjs',
+    'tests/runtime_v2/test_local_dashboard.py',
+    'tests/monitor_v2/local-pairing.test.mjs',
+    'oneil_execution_v2/kis_polling.py', 'oneil_execution_v2/KIS_POLLING.md',
+    'tests/execution_v2/test_kis_polling.py',
     'oneil_execution_v2/kis_local_authorization.py', 'oneil_execution_v2/kis_windows_credentials.py',
     'oneil_execution_v2/kis_authenticated_https.py', 'oneil_execution_v2/kis_token_issuer.py',
     'oneil_execution_v2/KIS_WINDOWS_AUTH.md',

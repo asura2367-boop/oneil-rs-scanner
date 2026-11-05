@@ -34,6 +34,7 @@ REQUIRED_FILES = TOOLS | {
         'kis_authenticated.py', 'KIS_AUTHENTICATED.md',
         'kis_local_authorization.py', 'kis_windows_credentials.py', 'kis_authenticated_https.py',
         'kis_token_issuer.py', 'KIS_WINDOWS_AUTH.md',
+        'kis_polling.py', 'KIS_POLLING.md',
         'store.py', 'worker.py', 'schema.sql', 'README.md', 'KIS_ADAPTER.md', 'recovery.py', 'RECOVERY.md')
 } | {
     'oneil_control_v2/' + name for name in (
@@ -52,6 +53,8 @@ REQUIRED_FILES = TOOLS | {
     'oneil_runtime_v2/' + name for name in (
         '__init__.py', 'health.py', 'journal.py', 'preflight.py', 'restart.py',
         'windows_clock.py', 'simulation_store.py', 'simulation_host.py', 'SIMULATION_HOST.md',
+        'local_dashboard.py', 'windows_storage.py', 'LOCAL_DASHBOARD.md',
+        'web/pair.html', 'web/pair.mjs', 'web/logout.html', 'web/logout.mjs',
         'web/index.html', 'web/simulation.mjs', 'web/simulation.css', 'worker_child.py', 'rehearsal_store.py', 'supervisor.py', 'observer_child.py', 'intent.py', 'state.py', 'orchestrator.py', 'ownership.py', 'ORCHESTRATION.md', 'COMPOSITION.md', 'README.md')
 } | {
     'tests/execution_v2/' + name for name in (
@@ -59,6 +62,7 @@ REQUIRED_FILES = TOOLS | {
         'test_kis_https.py', 'test_kis_authenticated.py',
         'test_kis_local_authorization.py', 'test_kis_windows_credentials.py',
         'test_kis_authenticated_https.py', 'test_kis_token_issuer.py',
+        'test_kis_polling.py',
         'kis_evidence_fixtures.py', 'test_postgres.py',
         'test_simulator.py', 'test_worker.py', 'test_recovery.py')
 } | {
@@ -71,7 +75,9 @@ REQUIRED_FILES = TOOLS | {
     'tests/policy_v2/test_policy_import.py', 'tests/policy_v2/test_policy_planner.py',
     'tests/policy_v2/test_policy_store_boundary.py', 'tests/policy_v2/test_kis_pipeline.py',
     'tests/runtime_v2/test_simulation_store.py', 'tests/runtime_v2/test_simulation_host.py',
+    'tests/runtime_v2/test_local_dashboard.py',
     'tests/monitor_v2/simulation-dashboard.test.mjs',
+    'tests/monitor_v2/local-pairing.test.mjs',
     'tests/runtime_v2/test_supervisor.py', 'tests/runtime_v2/test_worker_composition.py', 'tests/runtime_v2/test_bundle.py', 'tests/runtime_v2/test_health.py',
     'tests/runtime_v2/test_windows_io.py', 'tests/runtime_v2/test_orchestrator.py', 'tests/runtime_v2/test_ownership.py',
     'deploy/windows/RUNBOOK.md', 'deploy/windows/VALIDATION.md',

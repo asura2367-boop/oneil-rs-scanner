@@ -1,33 +1,68 @@
 # Draft offline rebuild v2
 
-This branch preserves an isolated rebuild for offline review and simulation. It is not a release, deployment, activation, account migration, or authorization to place orders.
+This branch preserves isolated source for offline review and simulation. It is
+not a release, deployment, activation, account migration, or authorization to
+place orders. Live `policy_evidence()` and `submit()` remain blocked.
 
-## Preserved source
+## Verified recovery and new source
 
-All 128 rebuild source, test, and documentation files are byte-identical to local source commit `d01a181ec1baf969c95b523f56a291bfcadd80da`. Earlier sources `1132dc1`, `73d0693`, `4f3fa28`, `e5c4c24`, and `b2661f0` remain preserved.
+This update starts from published draft
+`0f1512df0d95a2ab09a0e10a50dbede8f717d910`, which preserved 128 source/test/document
+files from source `d01a181ec1baf969c95b523f56a291bfcadd80da`. Its 905 Python and 33
+Node tests were rerun after recovery. Later unpublished work was unavailable
+following workspace replacement. The following changes are newly implemented
+against the verified publication, not claimed recovery of missing commits:
 
-This update adds optional, inactive Windows Credential Manager source, exact-scope expiring local permission guards, a separately permissioned one-attempt token issuer, and a validated authenticated HTTPS GET client. These are callable source components, not a configured credential store, consent UI, service or live data feed. No runtime, dashboard, worker or policy factory activates them. All credential and network tests use synthetic values and mocked Windows/network APIs.
+- An inactive, explicit finite seven-stream KIS read poller with shared absolute
+  deadlines, pacing, cancellation-safe progress, once-per-run holiday reads and
+  orderly source cleanup. Its sanitized output never becomes trading evidence.
+- Explicit Windows-only simulation `init`, `check` and `run-dashboard` commands;
+  bounded single-threaded HTTPS on literal 127.0.0.1; one-use 120-second console
+  pairing; 15-minute Secure/HttpOnly sessions and CSRF-protected logout.
+- Read-only local fixed-volume and private DACL/ancestor checks, clean explicit
+  restart, fail-closed failure reporting and browser interruption/repeat fences.
 
-The token issuer has only the exact official real/demo tokenP endpoints. A broker token may have rights beyond these local GET restrictions; it is not described as a broker-enforced read-only token. Actual credential access/storage, token issuance and transmission require separately obtained user consent. No such operation was performed.
-
-The existing draft includes supervised SQLite simulation, dashboard/control lifecycle, strict policy/Worker composition, offline recovery, bounded read-only evidence contracts and fail-closed public KIS schema profiles. Unknown broker schemas and live semantic evidence remain blockers.
-
-The branch remains based on repository main at `880b48859aa351a1a20202cbe8fd25c1a61d28d3`. Existing production code, workflows, dashboard state, account data and live settings were not changed. Legacy files remain only as inherited repository context.
+Credentials/token/GET implementations remain inactive and separately permissioned.
+No runtime, dashboard or worker activates KIS access. A broker token can have
+rights beyond local GET restrictions; it is not a broker-enforced read-only token.
+No actual credential access, storage, token issuance or transmission occurred.
+The new simulation host requires explicit local trusted TLS inputs and does not
+install certificates, alter trust, set ACLs, create services or schedule itself.
 
 ## Verification
 
-- Exact-source network-free aggregate: 905 Python tests and 33 Node tests passed, zero failures or skips.
-- The new source adds 87 mocked tests for permissions, credential storage/provider behavior, authenticated HTTPS, token issuance and composition.
-- Source additions were scanned for common credential patterns and private-data artifacts. Account, app-key, app-secret and bearer test values are explicitly synthetic.
-- All 89 inherited GitHub Actions workflow definitions remain unchanged. This publication uses `[skip ci]` and no pull request, avoiding legacy workflow execution.
-- Tests include isolated SQLite and a Linux simulation subprocess. Windows credential APIs, DNS/TCP/TLS and broker responses are mocked.
+- Exact network-free aggregate: **945 Python and 44 Node tests passed**, zero
+  failures or skips. The package requires all 139 public rebuild files.
+- Independent review checked polling deadlines/cancellation and local host
+  lifecycle/security boundaries. Findings were fixed and covered by regressions.
+- Tests include actual isolated SQLite, OS locks and Linux subprocess simulation.
+  DNS/TCP/TLS, Windows APIs, broker responses and browser DOM are mocked.
+- Common secret/private-artifact patterns were checked before publication. Test
+  identities and app-key/app-secret/bearer values are synthetic.
+- All 89 inherited GitHub Actions workflows remain unchanged. Publication uses
+  `[skip ci]` and no pull request to avoid legacy workflow execution. Remote CI
+  is not claimed as run or passing; local aggregate results are the evidence.
 
 ## Open acceptance gates
 
-Native Windows identity/Credential Manager behavior, a trusted human-consent and secret-entry UI, real authenticated broker schemas/provenance, machine-wide quota and legacy-execution exclusion, semantic evidence, PostgreSQL durability/concurrency, native Windows restart/power-loss behavior, production identity and deployment review remain open.
+Native Windows identity/DACL/fixed-volume behavior, trusted certificate and real
+browser flow, sleep/reboot/power-loss, PostgreSQL durability/concurrency, trusted
+human consent and secret entry, actual authenticated broker schema/provenance,
+semantic evidence, machine-wide quota/legacy exclusion, production identity and
+deployment review remain open. Storage preflight is a snapshot, not protection
+against hostile same-user/admin changes or every filesystem TOCTOU race.
 
-No real secret was retrieved, stored or transmitted. No KIS request, token issuance, credential configuration, installation, deployment, activation or real order was performed for publication. Green offline tests and source publication do not authorize these actions or establish production readiness. Live `policy_evidence()` and `submit()` remain blocked.
+Repository main, production workflows, dashboard state, account data and live
+settings were not changed by this update. Legacy files remain inherited context.
+No real KIS request, credential configuration, installation, deployment,
+activation or real order was performed. Green offline tests and source
+publication do not establish production readiness.
 
-Do not run legacy trading workflows from this branch, merge it, deploy it, or connect production credentials as part of this review. No live order transport is supplied by this rebuild.
+Do not run legacy trading workflows from this branch, merge it, deploy it, or
+connect production credentials as part of review. No live order transport is
+supplied by this rebuild.
 
-Start with [Windows-local authentication boundaries](oneil_execution_v2/KIS_WINDOWS_AUTH.md), [the simulation host](oneil_runtime_v2/SIMULATION_HOST.md), [the integration guide](deploy/windows/INTEGRATION.md), and [the validation record](deploy/windows/VALIDATION.md).
+Start with [the local simulation console](oneil_runtime_v2/LOCAL_DASHBOARD.md),
+[bounded inactive polling](oneil_execution_v2/KIS_POLLING.md),
+[the integration guide](deploy/windows/INTEGRATION.md), and
+[the validation record](deploy/windows/VALIDATION.md).

@@ -398,21 +398,29 @@ class KisAuthenticatedReadSource:
                     raise _Fault('KIS_AUTH_READ_FAILED') from None
                 budget.wait(min(5.0, self._policy.base_delay_seconds * (2 ** (attempts - 1))))
 
-    def _run(self, operation, cancellation):
+    def _run(self, operation, cancellation, deadline_monotonic=None, deadline_clock=None):
         _check(type(cancellation) is Cancellation, 'KIS_AUTH_CANCELLATION_INVALID')
         _check(self._lock.acquire(blocking=False), 'KIS_AUTH_OPERATION_BUSY')
         try:
             _check(not self._closed, 'KIS_AUTH_SOURCE_CLOSED')
             budget = _Budget(self._monotonic, self._utc, self._policy.operation_seconds, cancellation)
+            if deadline_monotonic is not None:
+                _check(deadline_clock is self._clock and
+                       _number(deadline_monotonic, 0, 1e15), 'KIS_AUTH_CLOCK_INVALID')
+                budget.deadline = min(budget.deadline, deadline_monotonic)
+                budget.check()
+            elif deadline_clock is not None:
+                raise _Fault('KIS_AUTH_CLOCK_INVALID')
             result = operation(budget)
             budget.check()
             return result
         finally:
             self._lock.release()
 
-    def _public(self, operation, cancellation):
+    def _public(self, operation, cancellation, deadline_monotonic=None, deadline_clock=None):
         try:
-            return self._run(operation, Cancellation() if cancellation is None else cancellation)
+            return self._run(operation, Cancellation() if cancellation is None else cancellation,
+                             deadline_monotonic, deadline_clock)
         except _Fault as exc:
             # Only internal fixed codes, not exceptions supplied by dependencies.
             if len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] in _CODES:
@@ -421,10 +429,13 @@ class KisAuthenticatedReadSource:
         except Exception:
             raise Blocked('KIS_AUTH_READ_FAILED') from None
 
-    def capture(self, recipe: RequestRecipe, *, cancellation=None) -> OfflineRead:
-        return self._public(lambda budget: self._capture(recipe, budget), cancellation)
+    def capture(self, recipe: RequestRecipe, *, cancellation=None, deadline_monotonic=None,
+                deadline_clock=None) -> OfflineRead:
+        return self._public(lambda budget: self._capture(recipe, budget), cancellation,
+                            deadline_monotonic, deadline_clock)
 
-    def history(self, query: HistoryQuery, *, cancellation=None, max_pages=20, max_rows=2000):
+    def history(self, query: HistoryQuery, *, cancellation=None, max_pages=20, max_rows=2000,
+                deadline_monotonic=None, deadline_clock=None):
         """Return only fully parsed traversal captures; no partial result escapes."""
         def operation(budget):
             _check(type(query) is HistoryQuery and query.binding == self._binding,
@@ -444,9 +455,10 @@ class KisAuthenticatedReadSource:
             budget.check()
             _check(observation.complete is True, 'KIS_AUTH_HISTORY_INCOMPLETE')
             return tuple(reads)
-        return self._public(operation, cancellation)
+        return self._public(operation, cancellation, deadline_monotonic, deadline_clock)
 
-    def balance(self, query: BalanceQuery, *, cancellation=None, max_pages=20, max_rows=2000):
+    def balance(self, query: BalanceQuery, *, cancellation=None, max_pages=20, max_rows=2000,
+                deadline_monotonic=None, deadline_clock=None):
         """Bounded cursor traversal with full existing balance validation at end."""
         def operation(budget):
             _check(type(query) is BalanceQuery and query.binding == self._binding,
@@ -486,7 +498,7 @@ class KisAuthenticatedReadSource:
                 _check(key != ('', '') and key not in seen, 'KIS_AUTH_CURSOR_LOOP')
                 seen.add(key)
             raise _Fault('KIS_AUTH_PAGE_LIMIT')
-        return self._public(operation, cancellation)
+        return self._public(operation, cancellation, deadline_monotonic, deadline_clock)
 
     def close(self):
         if not self._lock.acquire(blocking=False):

@@ -2,9 +2,21 @@
 
 This is an integrated **offline development source**, not an operational trading
 application. No host was installed, no Windows machine was used, no credential or
-production database was read, and no network request or real order was sent.
+production database was read, and no broker network request or real order was sent.
 
-## Preserved source histories
+## Recovered publication and source history
+
+The current work starts from the verified published draft
+`0f1512df0d95a2ab09a0e10a50dbede8f717d910`, whose 128 rebuild files preserve
+source `d01a181ec1baf969c95b523f56a291bfcadd80da` byte for byte. A clean recovery
+reran 905 Python and 33 Node tests, with zero failures or skips. Later unpublished
+work was unavailable after the workspace was replaced. The subsequent polling
+and local-dashboard changes in this source are newly implemented and reviewed;
+they are not claimed to be a recovery of the missing commits or their results.
+
+The identifiers below describe earlier source provenance, not additional Git
+ancestors of this published draft. The published history preserves the reviewed
+file content separately from those original local commits.
 
 Current assembly baseline: `e107bae`, preserving all prior evidence, control,
 transport and supervisor histories described by that commit. This assembly adds:
@@ -13,12 +25,11 @@ transport and supervisor histories described by that commit. This assembly adds:
 - Supervised strict Worker/reconciliation composition: `13e130f`.
 - Concrete inactive credential-free HTTPS GET client: `3787323`.
 
-All original commits remain ancestors, without duplicate cherry-picks. The only
-textual conflict in this assembly was this readiness document. The shared runtime
-orchestrator retains both fresh supervised lease attach/quiesce and scoped intent
-registration; independent review checked their combined semantics. Aggregate
-and inventory regressions caught missing HTTPS test/source entries; those entries
-are now required. The ZIP manifest identifies the final exact source commit.
+The earlier assembly retained fresh supervised lease attach/quiesce and scoped
+intent registration. Its independent review checked their combined semantics.
+Aggregate and inventory regressions caught missing HTTPS test/source entries;
+those entries are required. The ZIP manifest identifies the final exact source
+commit of each new package.
 
 ## What has been demonstrated offline
 
@@ -55,12 +66,18 @@ native Windows or real PostgreSQL execution evidence.
    and WSGI dashboard. Real SQLite/OS-lock and actual child-process tests cover
    exact authenticated simulation commands. No PostgreSQL mock is used in these
    tests. Production identity stays unavailable and no session exists by default.
-2. **Browser transport and identity delivery still require an authorized host.**
-   No listener is started or socket restriction bypassed. The default child has no
-   identity issuer; in-process injection/dispatch hooks require a separately
-   reviewed HTTPS embedding host. WSGI/Node tests are not a real browser login/TLS
-   pass. No Windows service or scheduler was installed. Unknown orphaned-child
-   ownership and cross-journal crashes still require fail-closed recovery. See
+2. **Optional local browser hosting source exists; native acceptance is open.**
+   The explicit Windows-only `init`, `check` and `run-dashboard` commands add a
+   single-threaded HTTPS simulation host bound to literal `127.0.0.1`. It requires
+   explicit local TLS files, private-storage checks and a console, and supplies a
+   one-use 120-second pairing code, 15-minute Secure/HttpOnly session cookie and
+   explicit logout. It never supplies production identity or activates broker
+   access. The default worker child still starts no listener. No listener was
+   opened, certificate installed, trust changed or socket restriction bypassed
+   during development. WSGI/wire/Node doubles are not a native Windows or real
+   browser/TLS pass. No service or scheduler was installed. Unknown ownership
+   and cross-journal crashes still require fail-closed recovery. See
+   [LOCAL_DASHBOARD.md](../../oneil_runtime_v2/LOCAL_DASHBOARD.md) and
    [SIMULATION_HOST.md](../../oneil_runtime_v2/SIMULATION_HOST.md).
 3. **Credential and authenticated HTTPS implementations exist but are inactive.**
    The unchanged credential-free client and optional Windows Credential Manager,
@@ -68,12 +85,16 @@ native Windows or real PostgreSQL execution evidence.
    is no human-consent UI, real credential, runtime wiring, native validation or
    broker verification. Successful replies require bounded Content-Length JSON.
    See [KIS_WINDOWS_AUTH.md](../../oneil_execution_v2/KIS_WINDOWS_AUTH.md).
-4. **Bounded authenticated pagination exists only as an inactive source.** The
+4. **Bounded authenticated pagination and polling remain inactive source.** The
    credential-free direct traversal remains fail-fast at rate limits. The
    authenticated source adds pacing/cancellation/bounded retries and history/
-   balance pagination, but no runtime consumes it and a refreshed token requires
-   new explicit local issuance permission. Mock traversal does not establish
-   actual complete broker history.
+   balance pagination. A separately constructed, caller-started finite poller
+   now sequences the seven fixed read streams, propagates one absolute deadline,
+   captures holiday only once and suppresses success after cancellation. It
+   exposes sanitized progress counters only, not policy evidence or account data.
+   No runtime consumes it and a refreshed token requires new explicit local
+   issuance permission. Mock traversal does not establish actual complete broker
+   history. See [KIS_POLLING.md](../../oneil_execution_v2/KIS_POLLING.md).
 5. **KIS-to-policy authority is missing.** Complete shapes do not establish
    authenticated origin, coherent snapshot/fill causality, settled exact-order
    buying power, managed ownership, daily account loss/commitments, executable
