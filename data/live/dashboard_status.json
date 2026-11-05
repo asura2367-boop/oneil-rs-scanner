@@ -1,1 +1,1 @@
-{"schema_version":1,"run_id":41975997898,"updated_at":"2026-11-05T05:47:13.895Z","event":"workflow_dispatch","conclusion":"failure","status":"RUNTIME_INCOMPLETE","url":"https://github.com/asura2367-boop/oneil-rs-scanner/actions/runs/41975997898"}
+{"schema_version":1,"run_id":41977277306,"updated_at":"2026-11-05T05:58:59.733Z","event":"push","conclusion":"failure","status":"BLOCKED_UNRESOLVED_ORDERS","url":"https://github.com/asura2367-boop/oneil-rs-scanner/actions/runs/41977277306"}
