@@ -100,7 +100,7 @@ class EveningInputsTests(unittest.TestCase):
 class EveningBrokerTests(unittest.TestCase):
     def setUp(self):
         self.now=at(17)
-        self.info={'pdno':'005930','scty_grp_id_cd':'ST','mket_id_cd':'STK','tr_stop_yn':'N'}
+        self.info={'pdno':'00000A005930','prdt_type_cd':'300','scty_grp_id_cd':'ST','mket_id_cd':'STK','tr_stop_yn':'N'}
         self.status={'stck_shrn_iscd':'005930','temp_stop_yn':'N','short_over_yn':'N',
             'sltr_yn':'N','iscd_stat_cls_code':'55'}
         self.book={'aspr_acpt_hour':'170000','askp1':'10000','bidp1':'9990',
@@ -152,6 +152,36 @@ class EveningBrokerTests(unittest.TestCase):
         with frozen(self.now),patch.object(runner,'api',side_effect=ValueError('fixture rejection')) as api:
             with self.assertRaises(ValueError):self.broker.power('005930',10000)
         self.assertEqual(api.call_count,1)
+
+    def test_stock_info_uses_exact_documented_product_identity(self):
+        self.assertEqual(self.quote(),10000)
+        for product,kind in [('005930','300'),('00000A005931','300'),
+            ('WRONGA005930','300'),('00000A005930','301'),('00000A005930',None)]:
+            self.info.update(pdno=product,prdt_type_cd=kind)
+            with self.assertRaisesRegex(engine.TradingBlocked,'AFTER_MARKET_INSTRUMENT_UNVERIFIED'):self.quote()
+            self.assertEqual(self.broker.quote_evidence,{})
+
+    def test_public_metadata_diagnostics_never_relax_gate_or_expose_identity(self):
+        self.info['tr_stop_yn']=''
+        with self.assertRaisesRegex(engine.TradingBlocked,'AFTER_MARKET_INSTRUMENT_UNVERIFIED'):self.quote()
+        evidence=self.broker.after_market_evidence
+        self.assertEqual(evidence,{'stock_info_response_present':True,'stock_identity_matches':True,'product_type':'300',
+            'security_group':'ST','market':'STK','instrument_halt':''})
+        self.assertNotIn('005930',str(evidence));self.assertEqual(self.broker.quote_evidence,{})
+        self.info['mket_id_cd']='unexpected private payload'
+        with self.assertRaises(engine.TradingBlocked):self.quote()
+        self.assertEqual(self.broker.after_market_evidence['market'],'INVALID')
+        self.assertNotIn('private',str(self.broker.after_market_evidence))
+
+    def test_audit_reports_only_sanitized_public_metadata_on_denial(self):
+        self.broker.snapshot=lambda:{'positions':{'005930':{}}}
+        self.broker.history=lambda day:[]
+        self.info.pop('tr_stop_yn')
+        with frozen(self.now):result=engine.audit_broker_evidence(self.broker,[],now=self.now,lookback_days=1)
+        self.assertEqual(result['after_market_evidence']['instrument_halt'],None)
+        self.assertFalse(result['after_market_path_verified'])
+        self.assertEqual(result['orders_sent'],0);self.assertEqual(result['order_attempts'],0)
+        self.assertFalse(any(k.get('post') for _,_,_,k in self.calls))
 
     def test_unknown_instrument_evidence_never_certifies_quote(self):
         for key in ('pdno','scty_grp_id_cd','mket_id_cd','tr_stop_yn'):

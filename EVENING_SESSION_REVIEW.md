@@ -64,7 +64,10 @@ for the changed release; this change does not activate trading.
   https://www.truefriend.com/main/customer/notice/Notice.jsp?cmd=TF04ga000002&num=47532
 - KIS order-cash schema (updated 2026-09-14):
   https://apiportal.koreainvestment.com/api/apis/guide/property/aade4c72-5fb7-418a-9ff2-254b4d5f0ceb
-- Instrument metadata and eligibility:
+- Instrument metadata and eligibility (domestic response product ID is exactly
+  `00000A` + short ticker, with product type `300`; a bare ticker or arbitrary
+  suffix is not accepted):
+  https://apiportal.koreainvestment.com/api/apis/public/detail?accessUrl=%2Fuapi%2Fdomestic-stock%2Fv1%2Fquotations%2Fsearch-stock-info
   https://apiportal.koreainvestment.com/api/apis/guide/property/da0485b5-31f1-4c62-a3d4-294a4311ad39
 - Current-price status classifications:
   https://apiportal.koreainvestment.com/api/apis/guide/property/07802512-4f49-4486-91b4-1050b6f5dc9d
