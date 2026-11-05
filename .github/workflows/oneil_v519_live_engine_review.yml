@@ -48,6 +48,14 @@ on:
         type: string
         default: ''
         description: 'apply-approval 전용: 저장된 승인 기록 번호'
+      resume_halt:
+        type: boolean
+        default: false
+        description: 'apply-approval 전용: 소유자가 비상정지 해제·거래 활성화를 명시적으로 요청함'
+      expected_halt_revision:
+        type: string
+        default: ''
+        description: 'apply-approval 전용: 대시보드에서 확인한 비상정지 상태 확인값'
 permissions:
   contents: read
 jobs:
@@ -147,6 +155,8 @@ jobs:
       OPERATOR_CONFIRMED: ${{ inputs.confirm_live_activation }}
       REQUESTED_RELEASE: ${{ inputs.approved_release }}
       REQUESTED_APPROVAL_REVISION: ${{ inputs.approval_revision }}
+      RESUME_HALT: ${{ inputs.resume_halt }}
+      EXPECTED_HALT_REVISION: ${{ inputs.expected_halt_revision }}
       OPERATION: ${{ github.event.schedule == '0 11 * * 1-5' && 'close' || (github.event_name == 'schedule' && 'auto') || inputs.operation || 'observe' }}
     steps:
       - uses: actions/checkout@v4
@@ -174,6 +184,9 @@ jobs:
         run: |
           rm -f data/live/dashboard.enc.json v5_19_report.json
           mkdir -p data/live
+          if [ "$RESUME_HALT" = 'true' ] || [ -n "$EXPECTED_HALT_REVISION" ]; then
+            [ "$OPERATION" = 'apply-approval' ] && [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ] && [ "$RESUME_HALT" = 'true' ] && [[ "$EXPECTED_HALT_REVISION" =~ ^[0-9a-f]{64}$ ]] || { echo 'Invalid owner halt resume request'; exit 2; }
+          fi
           release_info="$(python oneil_v519_live_engine.py --release-info)"
           printf '%s\n' "$release_info"
           release_configured="$(printf '%s' "$release_info" | python -c 'import json,sys; print("true" if json.load(sys.stdin).get("release_configured") is True else "false")')"
@@ -192,10 +205,14 @@ jobs:
               fi ;;
             apply-approval)
               # Owner click requests activation checks only. This path cannot trade
-              # or clear halt, even if the same release is already activated.
+              # and clears halt only for a distinct explicit, revision-bound owner request.
               [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
               [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
-              LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --apply-owner-approval --acknowledge-live-risk --dashboard-public-key data/live/dashboard_public_key.pem ;;
+              resume_args=()
+              if [ "$RESUME_HALT" = 'true' ]; then
+                resume_args=(--resume-halt --expected-halt-revision "$EXPECTED_HALT_REVISION")
+              fi
+              LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --apply-owner-approval --acknowledge-live-risk "${resume_args[@]}" --dashboard-public-key data/live/dashboard_public_key.pem ;;
             activate)
               [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
               [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
