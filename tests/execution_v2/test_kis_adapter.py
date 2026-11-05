@@ -24,7 +24,7 @@ def row(**changes):
         'orgn_odno': '0000000000', 'pdno': '005930', 'sll_buy_dvsn_cd': '02',
         'excg_id_dvsn_Cd': 'KRX', 'ord_dvsn_cd': '00', 'ord_qty': '2',
         'ord_unpr': '10000', 'tot_ccld_qty': '0', 'rmn_qty': '2',
-        'cnc_cfrm_qty': '0', 'rjct_qty': '0', 'cncl_yn': 'N',
+        'cncl_cfrm_qty': '0', 'rjct_qty': '0', 'cncl_yn': 'N',
     }
     result.update(changes)
     return result
@@ -64,6 +64,31 @@ class KisAdapterTests(unittest.TestCase):
                     self.assertEqual(params['EXCG_ID_DVSN_CD'], 'KRX')
                     self.assertNotIn('request_123', params.values())
                     self.assertFalse(self.transport.read_history.called)
+
+    def test_portal_cancellation_field_is_explicit_and_sample_alias_rejected(self):
+        observation = normalize_history_row(row(cncl_cfrm_qty='2'), self.query)
+        self.assertEqual(observation.cancelled_quantity, 2)
+        self.assertEqual(observation.cancellation_quantity_field, 'cncl_cfrm_qty')
+        self.assertEqual(observation.response_profile, 'KIS_PUBLIC_PORTAL_2026_11_05')
+        for alias in ('cnc_cfrm_qty', 'CNC_CFRM_QTY'):
+            for value in ('0', '2', '3'):
+                with self.subTest(alias=alias, value=value), self.assertRaisesRegex(Blocked, 'SCHEMA_CONFLICT'):
+                    normalize_history_row(row(cncl_cfrm_qty='2', **{alias: value}), self.query)
+        sample_only = row(); sample_only['cnc_cfrm_qty'] = sample_only.pop('cncl_cfrm_qty')
+        with self.assertRaisesRegex(Blocked, 'SCHEMA_CONFLICT'):
+            normalize_history_row(sample_only, self.query)
+        missing = row(); del missing['cncl_cfrm_qty']
+        with self.assertRaises(Blocked):
+            normalize_history_row(missing, self.query)
+
+    def test_cancellation_field_casing_collision_and_incomplete_history_block(self):
+        raw = row(CNCL_CFRM_QTY='0')
+        with self.assertRaisesRegex(Blocked, 'AMBIGUOUS_FIELD'):
+            normalize_history_row(raw, self.query)
+        self.transport.read_history.return_value = page([row(cnc_cfrm_qty='0')])
+        history = self.adapter.history(self.query)
+        self.assertFalse(history.complete)
+        self.assertEqual(history.orders, ())
 
     def test_recipes_are_immutable_and_parameter_copies_are_independent(self):
         prepared = self.prepared(); copy = prepared.recipe.wire_parameters()
@@ -281,7 +306,7 @@ class KisAdapterTests(unittest.TestCase):
     def test_quantities_and_amendment_identity_preserved_without_status_guess(self):
         # No asserted conservation rule across revisions, no terminal promotion.
         observed = normalize_history_row(row(orgn_odno='0000000009', ord_qty='2',
-                                             tot_ccld_qty='1', cnc_cfrm_qty='2', rmn_qty='0',
+                                             tot_ccld_qty='1', cncl_cfrm_qty='2', rmn_qty='0',
                                              cncl_yn='Y', rjct_qty='1'), self.query)
         self.assertEqual((observed.filled_quantity, observed.cancelled_quantity,
                           observed.rejected_quantity, observed.remaining_quantity), (1,2,1,0))

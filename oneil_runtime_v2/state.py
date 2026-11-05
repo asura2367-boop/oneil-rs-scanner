@@ -247,17 +247,28 @@ class RuntimeState:
                 (phase, plan.restart_count, now+plan.delay_seconds if plan.delay_seconds else None, lease.account))
             return plan
 
-    def save_intent(self, request_id, admission):
+    def save_intent(self, request_id, admission, *, lease=None):
         require(type(request_id) is str and 1 <= len(request_id) <= 128, 'POLICY_REQUEST_ID_INVALID')
         data, digest = encode_intent(admission)
         order = admission.proposal.order
-        with self.transaction():
+        def save():
             row = self.conn.execute('SELECT * FROM intent WHERE request_id=?', (request_id,)).fetchone()
             if row is not None:
                 require((row['account'],row['order_digest'],row['data'],row['digest']) ==
                         (order.account,order.digest,data,digest), 'POLICY_INTENT_IMMUTABLE')
             else:
                 self.conn.execute('INSERT INTO intent VALUES(?,?,?,?,?)', (request_id,order.account,order.digest,data,digest))
+        if lease is None:
+            with self.transaction():
+                save()
+        else:
+            # Coordinator already holds the runtime-first ownership transaction.
+            # Never nest BEGIN or silently fall back to an unscoped write.
+            require(type(lease) is RuntimeLease and self._scope == lease
+                    and self.conn.in_transaction and order.account == lease.account,
+                    'RUNTIME_ADMISSION_SCOPE_REQUIRED')
+            self._lease(lease)
+            save()
         return digest
 
     def load_intent(self, request_id, *, account, order_digest, current_context):

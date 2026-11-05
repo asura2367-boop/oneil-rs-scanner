@@ -22,7 +22,8 @@ def inspect(root):
                 'oneil_execution_v2/worker.py', 'oneil_execution_v2/store.py',
                 'oneil_monitor_v2/host.py', 'oneil_runtime_v2/health.py',
                 'oneil_runtime_v2/orchestrator.py', 'oneil_runtime_v2/state.py',
-                'oneil_runtime_v2/intent.py',
+                'oneil_runtime_v2/intent.py', 'oneil_runtime_v2/worker_child.py',
+                'oneil_runtime_v2/rehearsal_store.py',
                 'oneil_policy_v2/admission.py', 'oneil_policy_v2/policy.py',
                 'oneil_policy_v2/planner.py', 'oneil_policy_v2/evidence.py')
     if any(not (root / part).is_file() for part in required):

@@ -29,10 +29,13 @@ SUFFIXES = {'.py', '.md', '.sql', '.mjs', '.html', '.css', '.ps1'}
 REQUIRED_FILES = TOOLS | {
     'oneil_execution_v2/' + name for name in (
         '__init__.py', 'api.py', 'broker.py', 'domain.py', 'kis_adapter.py',
+        'kis_evidence.py', 'KIS_EVIDENCE.md', 'kis_transport.py', 'KIS_TRANSPORT.md',
+        'kis_https.py', 'KIS_HTTPS.md', 'KIS_PUBLIC_SPEC.md',
         'store.py', 'worker.py', 'schema.sql', 'README.md', 'KIS_ADAPTER.md', 'recovery.py', 'RECOVERY.md')
 } | {
     'oneil_control_v2/' + name for name in (
-        '__init__.py', 'app.py', 'bridge.py', 'state.py', 'README.md')
+        '__init__.py', 'app.py', 'bridge.py', 'state.py', 'policy.py',
+        'POLICY_COORDINATOR.md', 'README.md')
 } | {
     'oneil_monitor_v2/' + name for name in (
         '__init__.py', 'host.py', 'read_model.py', 'README.md',
@@ -41,25 +44,35 @@ REQUIRED_FILES = TOOLS | {
 } | {
     'oneil_policy_v2/' + name for name in (
         '__init__.py', 'admission.py', 'evidence.py', 'planner.py', 'policy.py',
-        'README.md', 'ADMISSION.md')
+        'README.md', 'ADMISSION.md', 'kis_pipeline.py', 'KIS_PIPELINE.md')
 } | {
     'oneil_runtime_v2/' + name for name in (
         '__init__.py', 'health.py', 'journal.py', 'preflight.py', 'restart.py',
-        'windows_clock.py', 'intent.py', 'state.py', 'orchestrator.py', 'ownership.py', 'ORCHESTRATION.md', 'README.md')
+        'windows_clock.py', 'simulation_store.py', 'simulation_host.py', 'SIMULATION_HOST.md',
+        'web/index.html', 'web/simulation.mjs', 'web/simulation.css', 'worker_child.py', 'rehearsal_store.py', 'supervisor.py', 'observer_child.py', 'intent.py', 'state.py', 'orchestrator.py', 'ownership.py', 'ORCHESTRATION.md', 'COMPOSITION.md', 'README.md')
 } | {
     'tests/execution_v2/' + name for name in (
-        'test_domain.py', 'test_kis_adapter.py', 'test_postgres.py',
+        'test_domain.py', 'test_kis_adapter.py', 'test_kis_evidence.py', 'test_kis_transport.py',
+        'test_kis_https.py',
+        'kis_evidence_fixtures.py', 'test_postgres.py',
         'test_simulator.py', 'test_worker.py', 'test_recovery.py')
 } | {
     'tests/control_v2/test_api.py', 'tests/control_v2/test_bridge.py',
+    'tests/control_v2/test_policy_flow.py', 'tests/control_v2/test_component_integration.py',
+    'tests/control_v2/test_runtime_policy_flow.py',
     'tests/monitor_v2/client.test.mjs', 'tests/monitor_v2/support.py',
     'tests/monitor_v2/test_integration.py', 'tests/monitor_v2/test_projection.py',
     'tests/policy_v2/policy_support.py', 'tests/policy_v2/test_policy_admission.py',
     'tests/policy_v2/test_policy_import.py', 'tests/policy_v2/test_policy_planner.py',
-    'tests/policy_v2/test_policy_store_boundary.py',
-    'tests/runtime_v2/test_bundle.py', 'tests/runtime_v2/test_health.py',
+    'tests/policy_v2/test_policy_store_boundary.py', 'tests/policy_v2/test_kis_pipeline.py',
+    'tests/runtime_v2/test_simulation_store.py', 'tests/runtime_v2/test_simulation_host.py',
+    'tests/monitor_v2/simulation-dashboard.test.mjs',
+    'tests/runtime_v2/test_supervisor.py', 'tests/runtime_v2/test_worker_composition.py', 'tests/runtime_v2/test_bundle.py', 'tests/runtime_v2/test_health.py',
     'tests/runtime_v2/test_windows_io.py', 'tests/runtime_v2/test_orchestrator.py', 'tests/runtime_v2/test_ownership.py',
     'deploy/windows/RUNBOOK.md', 'deploy/windows/VALIDATION.md',
+    'deploy/windows/Start-OfflineRehearsal.ps1', 'deploy/windows/run_offline.py',
+    'deploy/windows/SUPERVISOR.md',
+    'deploy/windows/INTEGRATION.md',
 }
 DEVICES = {'CON', 'PRN', 'AUX', 'NUL'} | {f'{p}{i}' for p in ('COM', 'LPT') for i in range(1, 10)}
 

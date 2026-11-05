@@ -15,6 +15,7 @@ from .domain import Blocked, KST, Order, SessionPermit, aware, require
 
 CASH_PATH = '/uapi/domestic-stock/v1/trading/order-cash'
 HISTORY_PATH = '/uapi/domestic-stock/v1/trading/inquire-daily-ccld'
+HISTORY_RESPONSE_PROFILE = 'KIS_PUBLIC_PORTAL_2026_11_05'
 
 
 def _text(value, pattern, code):
@@ -267,6 +268,15 @@ class NativeHistoryOrder:
     order_code: str
     cancellation_flag: str
 
+    @property
+    def response_profile(self):
+        # Parser contract label, not an authenticated provenance claim.
+        return HISTORY_RESPONSE_PROFILE
+
+    @property
+    def cancellation_quantity_field(self):
+        return 'cncl_cfrm_qty'
+
 
 def normalize_history_row(raw, query: HistoryQuery) -> NativeHistoryOrder:
     """Strict normalizer of broker-reported fields, with no terminal-state inference.
@@ -288,7 +298,11 @@ def normalize_history_row(raw, query: HistoryQuery) -> NativeHistoryOrder:
     require(venue == query.venue, 'KIS_HISTORY_VENUE_UNVERIFIED')
     quantity = _number(row.get('ord_qty')); price = _number(row.get('ord_unpr'), 1_000_000_000_000)
     filled = _number(row.get('tot_ccld_qty')); remaining = _number(row.get('rmn_qty'))
-    cancelled = _number(row.get('cnc_cfrm_qty')); rejected = _number(row.get('rjct_qty'))
+    # The official portal schema/dataclass uses cncl_cfrm_qty. The GitHub
+    # display sample misspells this as cnc_cfrm_qty. Do not alias or let both
+    # spellings silently select an accounting quantity, even when values agree.
+    require('cnc_cfrm_qty' not in row, 'KIS_HISTORY_CANCELLATION_SCHEMA_CONFLICT')
+    cancelled = _number(row.get('cncl_cfrm_qty')); rejected = _number(row.get('rjct_qty'))
     require(quantity > 0, 'KIS_INVALID_ORDER_QUANTITY')
     require(row.get('cncl_yn') in ('Y', 'N'), 'KIS_CANCEL_FLAG_UNVERIFIED')
     original = row.get('orgn_odno')

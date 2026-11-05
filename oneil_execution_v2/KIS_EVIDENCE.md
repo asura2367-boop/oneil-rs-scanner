@@ -3,13 +3,22 @@
 **Not a live integration or activation gate.** `kis_evidence.py` is a pure parser
 and offline GET-recipe builder. It accepts caller-supplied transcripts, never
 sends a request, reads credentials, opens a database/socket, or changes account
-state. No production, policy planner, runtime factory or worker imports it.
-`policy_evidence()` and `submit()` always raise `Blocked`.
+state. The offline diagnostic composition in `oneil_policy_v2/kis_pipeline.py`
+now imports it, but never promotes observations into policy evidence. Its policy
+source entrypoint blocks the associated worker request before any attempt.
+No production runtime or live transport is installed. `policy_evidence()` and
+`submit()` always raise `Blocked`. See [composition contract](../oneil_policy_v2/KIS_PIPELINE.md).
 
 The implementation starts at local base `3a017e8`. Official source was reviewed
 2026-11-05 at `koreainvestment/open-trading-api` commit
 `d8c7f7936793f85dc1e9c364ba5dc66832353f8c`. This is a pinned contract review, not a
 claim that current live responses or exchange schedules were tested.
+
+A public portal review on 2026-11-05 found material conflicts with those samples.
+The named `KIS_PUBLIC_PORTAL_2026_11_05` profile supersedes the buying-power,
+sellable and holiday recipes/shapes described below. See
+[KIS_PUBLIC_SPEC.md](KIS_PUBLIC_SPEC.md) for the exact conflicts and sources.
+This profile is a documentation contract, not proof of actual runtime behavior.
 
 ## What is implemented
 
@@ -17,7 +26,8 @@ claim that current live responses or exchange schedules were tested.
   outcomes for account balances, buying power, sellable shares, current price,
   raw session-related fields and holiday records.
 - Exact request matching, including account/product, endpoint, environment TR ID,
-  ticker, inquiry price/mode, venue selector and cursor/filter preservation.
+  ticker, inquiry mode, venue selector and supported cursor/filter preservation.
+  Mode-01 buying power has no wire-price binding.
 - String-only exact integer/Decimal parsing. No float conversion, silent rounding,
   missing-number defaults, numeric coercion, duplicate-case key acceptance or
   partial-result promotion.
@@ -78,10 +88,15 @@ Sources: [request and pagination](https://github.com/koreainvestment/open-tradin
 `max_buy_amt/qty` are distinct observations. The latter are not substituted for
 no-receivables quantities. `psbl_qty_calc_unpr` retains exact decimal precision.
 
-Only inquiry code `01` is supported. Official documentation warns that `00`
+Only inquiry code `01` is supported. Its portal contract requires blank
+`ORD_UNPR`; `BuyingPowerQuery.price_krw` and the parsed `inquiry_price_krw` must
+be None. A positive contextual price is rejected instead of ignored or labeled
+price-bound. The sample positive-price recipe is not accepted.
+Official documentation warns that `00`
 does not reflect instrument margin rates for the described full-buy quantity
 inquiry. This inquiry recipe does NOT change any order to a market order and
-does not establish a limit-order authorization or final capacity. CMA and
+does not establish a limit-order authorization or final capacity. No-receivables
+capacity is not renamed settled-cash-only. CMA and
 overseas inclusion are explicitly N. Venue-specific eligibility is not asserted.
 
 Sources: [request and quantity warning](https://github.com/koreainvestment/open-trading-api/blob/d8c7f7936793f85dc1e9c364ba5dc66832353f8c/examples_llm/domestic_stock/inquire_psbl_order/inquire_psbl_order.py),
@@ -90,14 +105,17 @@ Sources: [request and quantity warning](https://github.com/koreainvestment/open-
 ### Sellable shares
 
 `/uapi/domestic-stock/v1/trading/inquire-psbl-sell`, real `TTTC8408R`. No demo
-TR ID is invented. A single supplied response must contain exactly one matching
-`pdno` row; `cblc_qty` and `ord_psbl_qty` remain separate.
+TR ID is invented. The explicit portal-schema offline profile accepts one
+`output1` object with matching `pdno`; `cblc_qty` and `ord_psbl_qty` stay separate.
+The portal's own prose and GitHub sample instead use `output`. The parser does
+not fall back to that alias or accept both. Array shapes are also rejected.
 
-The official sample shows M continuation with N on the next request, without
-cursor parameters. It does NOT verify a terminal enum. This initial supported
-subset only records a single D/E-marked candidate response, explicitly keeps
-`traversal_complete=False`, and refuses M/F or unknown/missing markers instead of
-repeating an unverified pagination flow. A parsed quantity cannot authorize a sale.
+Both portal header sections state that continuation is unsupported. Missing or
+blank `tr_cont` is accepted; every nonblank value, including D/E and M/F, blocks.
+The transport rejects these headers before reading the body and never recurses.
+`traversal_complete=False` and explicit `unresolved_contracts` remain because
+actual body-key/response behavior has not been established from recordings.
+A parsed portal fixture cannot authorize a sale.
 
 Sources: [request/pagination sample](https://github.com/koreainvestment/open-trading-api/blob/d8c7f7936793f85dc1e9c364ba5dc66832353f8c/examples_llm/domestic_stock/inquire_psbl_sell/inquire_psbl_sell.py),
 [response labels](https://github.com/koreainvestment/open-trading-api/blob/d8c7f7936793f85dc1e9c364ba5dc66832353f8c/examples_llm/domestic_stock/inquire_psbl_sell/chk_inquire_psbl_sell.py).
@@ -145,23 +163,24 @@ Sources: [book/session-related labels](https://github.com/koreainvestment/open-t
 
 ### Holiday records
 
-`/uapi/domestic-stock/v1/quotations/chk-holiday`, `CTCA0903R`. The executable
-sample TR ID is used rather than its docstring's `TCA0903R`. BASS_DT and the
-unsuffixed `CTX_AREA_FK/NK` parameters remain stable across the supplied chain;
-M/F continues with N. The sample recommends preferably one call per day. No
-requests, cache refresh or monitoring are scheduled here.
+`/uapi/domestic-stock/v1/quotations/chk-holiday`, real-only `CTCA0903R`.
+The public portal profile fixes `CTX_AREA_FK` and `CTX_AREA_NK` to blank strings
+and `tr_cont` to blank. These cursor fields have documented capacity 20, but
+nonblank values are unsupported, not accepted up to that capacity. Nonblank
+response continuation/cursors, including D/E and M/F, are rejected. Exactly one
+supplied response and one `output` object are accepted. The sample's list and
+recursive cursor behavior are explicitly unsupported documentary conflicts.
 
-Explicit base date and business/trading/opening/settlement flags remain separate.
-The exact requested date must be present, valid and unique; missing days are not
-generated from weekdays. The weekday code is preserved without interpreting its
-enum. A trading day and an opening-day Y flag do not establish intraday or
-exchange-specific permission or exceptional schedules.
+Base date and business/trading/opening/settlement flags remain separate. The exact
+requested date must be present and valid; missing days are not generated from
+weekdays. Weekday syntax is the portal's 01–07 code, preserved as reported and not
+used to manufacture flags. An opening-day Y is only day-level information, not
+intraday or exchange-specific permission or an exceptional-schedule proof.
 
-The source's non-M/F fallback does not establish terminal completeness. D/E are
-accepted only as the supported **candidate stopping markers**, with
-`traversal_complete=False` regardless. Blank/unknown markers and truncated/looping
-chains fail. No server page count or date horizon is asserted; max_pages/max_rows
-are local resource bounds, not KIS limits.
+`traversal_complete=False`, `session_permitted=False` and explicit unresolved
+contracts remain. No server horizon or list limit is invented. The portal asks
+preferably once daily; the restricted transport keeps its conservative 24-hour
+cap with no continuation exception. No requests or refresh are scheduled here.
 
 Sources: [request, continuation and frequency guidance](https://github.com/koreainvestment/open-trading-api/blob/d8c7f7936793f85dc1e9c364ba5dc66832353f8c/examples_llm/domestic_stock/chk_holiday/chk_holiday.py),
 [calendar field labels](https://github.com/koreainvestment/open-trading-api/blob/d8c7f7936793f85dc1e9c364ba5dc66832353f8c/examples_llm/domestic_stock/chk_holiday/chk_chk_holiday.py).
@@ -170,7 +189,7 @@ Sources: [request, continuation and frequency guidance](https://github.com/korea
 
 Before any production evidence bridge, independently verify authenticated
 account/product/environment/venue response binding; sanitized recorded payloads;
-exchange timestamps and freshness; terminal markers for sellable/calendar;
+exchange timestamps and freshness; actual sellable/calendar body shapes and nonpaginated behavior;
 cash settlement and final order-capacity semantics; account-wide daily P&L and
 buy totals; managed holdings and external-order reservations; fill watermarks and
 causal consistency; exceptional calendars, KRX/NXT session codes, eligible symbols,
@@ -186,13 +205,10 @@ worker's exact broker-type restriction and production-off guards are unchanged.
 python -m unittest discover -s tests/execution_v2 -p test_kis_evidence.py -v
 ```
 
-49 tests pass, including all six fixture paths with socket creation forbidden.
-They cover missing/malformed values, pagination/cursor changes, mixed accounts,
-stale/future/cross-midnight capture windows, duplicates, precision, separate cash
-semantics, unknown session/holiday status, and refusal of policy conversion or
-live submission. No production connection or DB/socket test was attempted.
-
-The focused regression set also passes: 87 KIS boundary tests (38 existing +
-49 new), 21 domain tests, 8 simulator tests and 20 recovery tests: **136 passed,
-zero skipped**. Python compilation and `git diff --check` pass. This does not
-include PostgreSQL, browser/socket, Windows-host or live-KIS validation.
+The synthetic tests cover all six fixture paths with socket creation forbidden,
+missing/malformed values, cursor changes, mixed accounts, stale/future/cross-midnight
+captures, precision, separate cash semantics and refusal of policy conversion or
+submission. Public-portal regressions add canonical-only cancellation quantity,
+blank-price inquiry, rejected sample aliases/arrays/continuations, and preserved
+contract-conflict flags. See KIS_PUBLIC_SPEC.md for final review/test results.
+No production connection or DB/socket integration test was attempted.

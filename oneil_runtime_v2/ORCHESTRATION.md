@@ -71,6 +71,29 @@ controls. Startup core halt/resume may invalidate prior queued control revisions
 reconstruction never upgrades their old approval to the new revision. Such requests
 remain blocked/expired and need a new explicit exact order confirmation.
 
+## Authenticated control composition
+
+`SimulationPolicyCoordinator(..., runtime=runtime)` now supports this exact started
+runtime, worker, store and account. It captures the original guard/state/lease and
+rejects replacement or omitted runtime binding. The coordinator does not call
+start, restore, resume or activate. A runtime must already be ACTIVE_SIMULATION at
+the independently approved core revision for proposal/preview/refresh/confirmation.
+
+Confirmed dispatch holds runtime ownership before core advisory/row locks. The
+new explicit `scope_lease` registration path verifies the pending exact order,
+writes original intent in the already-held runtime transaction, and registers the
+current policy source. Scoped archive writes require a matching account, current
+lease, active scope and transaction; they never silently start another transaction.
+Health, revision, exact policy/order and owner confirmation are checked again after
+archive work. Normal Worker admission and its later checks are unchanged.
+
+Core and runtime commits remain separate. Post-enqueue errors or uncertain scope
+exits poison the captured guard and attempt both runtime/core halts, retaining the
+command/proposal UNKNOWN fences. A failed command-receipt write also triggers this
+halt. Cleanup failure never clears poison. Archive-without-request is inert;
+request-without-archive cannot restore. This is tested with scripted failures, not
+PostgreSQL or OS process/power-loss proof. See the control coordinator contract.
+
 ## Ownership and lifecycle limits
 
 The same state file coordinates the named `V2_SIMULATION` and `LEGACY_SIMULATION`
@@ -83,7 +106,11 @@ heartbeat timeout or code-version label cannot establish that guarantee.
 
 A stale heartbeat never releases ownership. `record_exit` may only be called by a
 trusted supervisor that has actually observed the exact owner's process exit.
-There is no Windows supervisor implementation or OS exit verifier in this package.
+The separate [offline supervisor rehearsal](../deploy/windows/SUPERVISOR.md)
+observes the exit of its own fixed child only. It now attaches this runtime to
+a verified fresh supervisor lease and runs a permanently halted, reconciliation-only
+Worker with isolated SQLite/simulator dependencies; see [COMPOSITION.md](COMPOSITION.md).
+It still cannot verify an orphan after supervisor crash.
 After hard kill, the old owner remains claimed until that externally verified
 recovery exists. Do not fabricate exit confirmation, clear the owner or delete the
 journal to start another worker.

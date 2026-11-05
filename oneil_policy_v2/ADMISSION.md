@@ -39,10 +39,15 @@ connection is added.
    explicit archive with separately supplied current contexts. It never restores
    current health, activation, broker balances or owner authorization.
 
-These construction steps are not a complete browser or runtime integration. An
-owner command that has no registered policy admission bundle cannot execute under
-the default worker. No program currently converts arbitrary browser fields into
-trusted policy evidence or automatically confirms proposals.
+The standalone `oneil_control_v2.SimulationPolicyCoordinator` now composes these
+steps for authenticated, exact `policy_order` previews/confirmations with a strict
+Worker. Its trusted host supplies evidence and plans proposals; no browser field
+becomes trusted evidence and no proposal is automatically confirmed. The core
+bridge refuses raw orders. See `../oneil_control_v2/POLICY_COORDINATOR.md`. An explicit
+started SimulationRuntime can also be bound; its independent owner activation,
+health, runtime-first ownership locks and immutable intent archive remain required.
+An owner command without a registered bundle still cannot execute under the default
+worker, and HTTP confirmation never activates the runtime.
 
 ## Mandatory final checks
 
@@ -113,3 +118,13 @@ PostgreSQL commits, locking or concurrency. The updated socket-free validator ca
 be run only where PostgreSQL binaries already exist. No denied listener operation
 may be retried or worked around. No real orders, production settings, schedules,
 credentials, paid services, GitHub publication or live activation were touched.
+
+## KIS transcript composition fails closed
+
+The optional `SimulationPolicySource.register_kis_offline` entrypoint now composes
+seven supplied KIS transcript streams for diagnostics. It blocks that request ID
+before parsing and invalidates any prior synthetic registration; even successful
+parsing cannot create a PolicyContext. Missing authenticated provenance, session,
+eligibility, P&L, managed ownership and causal account proof remain explicit. The
+normal Worker and final gate reject this source before an attempt. See
+[KIS_PIPELINE.md](KIS_PIPELINE.md) for the exact scope and test limitations.

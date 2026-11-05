@@ -94,6 +94,21 @@ class SimulationRuntime:
         clock = self.clock()
         require(type(clock) is ClockSample and clock.valid(), 'CLOCK_INVALID')
         lease = self.state.start(self.account, now=clock.utc, owner_request=owner_request)
+        return self.attach_supervised(lease)
+
+    def attach_supervised(self, lease):
+        """Bind a trusted supervisor-created fresh lease; never release it here.
+
+        The process host must verify its durable launch receipt and hold its child
+        instance lock. This method alone is not process identity/authentication.
+        """
+        require(self.guard is None and type(lease) is RuntimeLease
+                and lease.account == self.account and lease.engine == 'V2_SIMULATION',
+                'FRESH_SUPERVISED_LEASE_REQUIRED')
+        row = self.state._lease(lease)
+        require(row['phase'] == 'RECONCILING' and row['health'] is None
+                and row['reconciled_at'] is None and row['activation_revision'] is None,
+                'FRESH_SUPERVISED_LEASE_REQUIRED')
         self.guard = SimulationRuntimeGuard(self.state, lease, self.clock, policy=self.health_policy)
         self.worker.runtime_guard = self.guard
         self.worker.store.bind_runtime_guard(self.guard)
@@ -106,14 +121,16 @@ class SimulationRuntime:
             raise
         return lease
 
-    def register_intent(self, request_id, admission):
+    def register_intent(self, request_id, admission, *, scope_lease=None):
         require(self.guard is not None, 'RUNTIME_NOT_STARTED')
+        require(scope_lease is None or scope_lease == self.guard.lease,
+                'RUNTIME_OWNERSHIP_LOST')
         row = self.worker.store.get(self.account, request_id)
         require(row['account'] == self.account and row['attempts'] == 0
                 and row['state'] in ('QUEUED','VALIDATING')
                 and Order.from_payload(row['payload']) == admission.proposal.order,
                 'POLICY_ORDER_MISMATCH')
-        self.state.save_intent(str(request_id), admission)
+        self.state.save_intent(str(request_id), admission, lease=scope_lease)
         self.worker.policy_source.register(request_id, admission)
 
     def restore_pending(self, current_contexts):
@@ -198,9 +215,13 @@ class SimulationRuntime:
                 self.guard.check(self.worker.store.now(), require_active=False)
                 self.state.activate_simulation(self.guard.lease, owner, expected_control_revision)
 
-    def stop(self):
+    def quiesce(self, reason='OWNER_STOPPED_RUNTIME'):
+        """Halt work but leave exact process-exit accounting to its supervisor."""
         require(self.guard is not None, 'RUNTIME_NOT_STARTED')
-        self._halt('OWNER_STOPPED_RUNTIME')
+        self._halt(reason)
+
+    def stop(self):
+        self.quiesce()
         return self.state.record_exit(self.guard.lease, exit_code=0, now=self.clock().utc, explicit_stop=True)
 
     def run(self, stop_event, sample_provider, *, poll_seconds=1.0):

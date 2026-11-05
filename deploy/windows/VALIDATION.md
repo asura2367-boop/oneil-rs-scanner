@@ -1,76 +1,70 @@
-# Combined offline validation record
+# Supervised runtime assembly: offline validation record
 
 Date: 2026-11-05. Linux cloud workspace, Python 3.12.14, Node 24.22.1,
-Git 2.52.0; no Windows PC accessed.
+Git 2.52.0. No native Windows machine, production PostgreSQL or real KIS account
+was accessed. No actual network/DNS/TCP/TLS requests were made.
 
-## Combined source provenance
+## Source and current aggregate
 
-Common baseline: `5fd6730`. Original commits preserved without cherry-pick
-duplicates: policy import/planning `eebd0b8`, strict worker policy admission
-`74ca1369`, Windows operations foundation `904c216d`. The combined branch adds
-aggregate/runtime coverage, complete required package inventory, timezone
-preflight and explicit UTF-8/ASCII transport corrections. The exact packaged
-commit is embedded in MANIFEST.json; do not infer it from an earlier component ZIP.
+Base `e107bae`; preserved source tips `b10eb02`, `13e130f`, `3787323`,
+`e5c4c24` and `4f3fa28`. The public-spec documentation is included in the
+required package inventory.
+`python tools/run_monitor_v2_tests.py`: **757 Python + 33 Node = 790 tests**,
+zero failures and zero skips. Every execution, control, monitor, policy and runtime
+offline module is discovered once. The 37 PostgreSQL cases remain a separate,
+unrun acceptance gate; they are not counted as passes or hidden skips.
 
-## Verified offline on Linux
+Independent integration review verified preservation and combined orchestrator
+semantics, and passed 93 focused cases: runtime coordinator 24, supervised Worker
+composition 17, mocked concrete HTTPS 52. No merge-blocking safety defect was found.
 
-- `python tools/run_monitor_v2_tests.py`: **368 Python + 29 Node = 397 tests
-  passed without skips**. This includes core, control, monitor, policy, runtime,
-  archive-integrity and Windows-locale regression tests.
-- Independent read-only review found missing Windows IANA timezone prerequisites
-  and locale-default Korean HTML/JSON handling. Both were corrected. UTF-8 mock
-  generation is tested with CP949 defaults; the API fixture emits ASCII-safe JSON.
-- Preflight returns intentional exit 2, `ready_to_trade: false`, and explicitly
-  reports Windows/suspend-clock unverified and psycopg absent.
-- With system timezone lookup disabled and Python site packages excluded,
-  preflight also reports `KST_TIMEZONE_DATA_MISSING`, without importing the core.
-- Archive verifier requires the complete fixed implementation/test inventory,
-  including policy admission and both separate PostgreSQL test tools. Missing
-  components are rejected even when the archive's own hashes match.
-- Added 33 network-free tests for runtime lifecycle, durable backoff/stop, immutable
-  original-intent restoration, explicit owner-only simulation activation, unknown
-  order preservation, healthy active reconciliation beyond the freshness window,
-  core/host clock disagreement, last-boundary staleness, sleep after committed
-  admission, state-write failure, cooperative fence contention and bound-store
-  callback omission. These use SQLite plus a scripted core, not PostgreSQL proof.
-- Independent final runtime review reran **368 Python + 29 Node**, zero skips,
-  and found no blocking issue within the documented simulation-only boundary.
-  The active reconciliation timestamp defect found during review was fixed;
-  control-revision changes and observed core halt invalidate runtime activation.
-- Earlier component review also fixed unsafe Windows archive path aliases and
-  repeated incident-row growth. Those regressions remain included.
+Cross-component regressions also cover concrete HTTPS code with all network
+primitives mocked, seven parsed GET captures through transport and policy
+pipeline, and an explicitly runtime-confirmed request remaining blocked without
+an attempt. Older malformed refresh/UNKNOWN tombstone/discovery/inventory cases
+remain included. The test inventory caught the initially omitted HTTPS source
+and test entries, which are now required in both aggregate and package.
 
-The aggregate command does not discover the 37 `test_postgres.py` cases; this is
-an explicit separate acceptance gate, not a skip hidden in the count. No
-PostgreSQL listener, single-user validator or database workaround was run for
-this combined release.
+The new simulation host adds 12 actual SQLite store tests, 25 host/lifecycle tests
+and four Node dashboard race tests. An actual supervisor/child process completes
+explicit simulation session injection, WSGI core resume, separate runtime activation,
+exact proposal confirmation, one strict simulated ACK, checkpoint and durable stop.
+Core transactions are real SQLite, not SQL doubles. Synthetic market/identity and
+clock inputs are explicit; no broker or network capability is inferred.
 
-## Not verified or not implemented
+The earlier supervised composition suite includes one real Linux Python subprocess with
+synthetic clocks and isolated SQLite, verifying reconciliation and durable stop.
+It is not a Windows/PowerShell, broker, PostgreSQL or power-loss test. Other paths
+use named SQL-core, HTTP/process and provider doubles with local SQLite journals.
 
-Native Windows/PowerShell, actual Task Scheduler, installed service/supervisor,
-native sleep/reboot/power-loss, Internet/KIS probes, real PostgreSQL, ACL/security
-changes, credentials or authentication, live broker, financial actions and
-deployment. The in-process SimulationRuntime now persists lifecycle/restart
-budget, restores original archived intent only with explicit current contexts, and
-holds a cooperative SQLite ownership lock through guarded simulation admission
-and submit. It is not an OS supervisor or automatic process recovery service.
-Health integration is exercised with a scripted core and optional bound-store
-hooks, not real PostgreSQL. Actual legacy/new-engine shared account exclusion,
-trusted runtime evidence providers, HTTPS/session issuer and production database
-roles remain open acceptance gates.
+## Separate acceptance gates, not run
 
-Scripted-store tests cover policy admission logic, not PostgreSQL durability,
-transaction isolation or actual Windows process recovery. They do not prove
-production readiness. No dependency or paid service was installed or provisioned.
+- Real PostgreSQL/psycopg transactions, locking, concurrency, DDL and crash tests.
+  Required binaries/driver are absent; no installation, listener, socket retry,
+  proxy or prior-denial workaround was used.
+- Native Windows/PowerShell locks, process/sleep/reboot/power-loss and ACL tests.
+- Actual DNS/TCP/TLS, broker authentication, recorded responses and current policy
+  evidence. Concrete HTTPS has no credentials or production wiring.
+- Actual browser HTTPS hosting/login/session delivery. Same-process WSGI dashboard
+  control now reaches the real supervised SQLite simulation runtime, but no
+  listener was opened and no production identity provider is available.
+- Legacy execution exclusion, production identity, installation, deployment and
+  user-controlled real operation. No real order or financial action was taken.
 
-## Archive verification
+Read [INTEGRATION.md](INTEGRATION.md), [COMPOSITION.md](../../oneil_runtime_v2/COMPOSITION.md)
+and [KIS_HTTPS.md](../../oneil_execution_v2/KIS_HTTPS.md) for exact scope, including
+Content-Length-only success framing and the fail-closed multipage pacing gap.
 
-The source archive exports its embedded exact Git commit. Dependencies are not
-bundled. Verify MANIFEST.json and compare the overall SHA-256 with a separately
-trusted release record before manual extraction. Integrity does not authenticate
-the publisher or establish code safety.
+## Package verification
 
-The build fixes timestamps, ordering and modes. Byte reproducibility is checked
-with the same Python/zlib toolchain; cross-version compression identity is not
-claimed. Rebuilding from extracted files alone requires recovering the exact Git
-commit because the builder exports Git objects and refuses a dirty worktree.
+The source builder exports a clean exact Git commit. All current public source,
+tests and documentation are required. Two builds with the same Python/zlib
+must be byte-identical; the external verification record supplies final commit,
+SHA-256, size and extracted-test results. Dependencies are not bundled. Integrity
+is not publisher authentication or operational readiness. Cross-version
+compression identity is not promised.
+
+Preflight runs without opening a network connection, reports Windows and psycopg
+unverified/missing, and always exits 2 with ready_to_trade false. With system
+IANA timezone lookup and site packages disabled, it reports missing KST data
+without crashing. A Windows environment usually needs trusted tzdata setup.

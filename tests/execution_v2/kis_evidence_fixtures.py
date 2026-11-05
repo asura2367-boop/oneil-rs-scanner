@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from oneil_execution_v2.kis_adapter import AccountBinding, KisResponse
 from oneil_execution_v2.kis_evidence import (
-    BalanceQuery, BuyingPowerQuery, HolidayQuery, MarketQuery, OfflineRead, SellableQuery,
+    BalanceQuery, BuyingPowerQuery, HolidayQuery, MarketQuery, OfflineRead, SellableQuery, PORTAL_PROFILE,
     prepare_balance_query, prepare_buying_power_query, prepare_holiday_query,
     prepare_market_query, prepare_sellable_query,
 )
@@ -20,7 +20,7 @@ ACCOUNT = 'a' * 64
 BINDING = AccountBinding(ACCOUNT, 'real', '00000000', '00')
 DAY = '2026-11-05'
 BALANCE = BalanceQuery(BINDING, DAY)
-BUYING_POWER = BuyingPowerQuery(BINDING, DAY, '005930', 10000)
+BUYING_POWER = BuyingPowerQuery(BINDING, DAY, '005930')
 SELLABLE = SellableQuery(BINDING, DAY, '005930')
 MARKET = MarketQuery('real', DAY, '005930', 'KRX')
 HOLIDAY = HolidayQuery(DAY)
@@ -48,10 +48,10 @@ BOOK = {
     'output2': {'antc_mkop_cls_code': 'SYNTHETIC_UNKNOWN'},
 }
 CALENDAR = {'bass_dt': '20261105', 'bzdy_yn': 'Y', 'tr_day_yn': 'Y',
-            'opnd_yn': 'Y', 'sttl_day_yn': 'Y', 'wday_dvsn_cd': '5'}
+            'opnd_yn': 'Y', 'sttl_day_yn': 'Y', 'wday_dvsn_cd': '05'}
 
 
-def read(recipe, body, *, marker='D', started_at=None, received_at=None, status=200):
+def read(recipe, body, *, marker='', started_at=None, received_at=None, status=200):
     return OfflineRead(recipe, KisResponse(status, deepcopy({'rt_cd': '0', **body}), {'tr_cont': marker}),
                        started_at or NOW-timedelta(seconds=2), received_at or NOW-timedelta(seconds=1))
 
@@ -70,15 +70,16 @@ class SyntheticCase:
     query: object
     reads: tuple[OfflineRead, ...]
     synthetic: bool = True
-    source_commit: str = 'd8c7f7936793f85dc1e9c364ba5dc66832353f8c'
+    source_commit: str | None = 'd8c7f7936793f85dc1e9c364ba5dc66832353f8c'
+    contract_profile: str = 'KIS_GITHUB_SAMPLE_D8C7F793'
 
 
 def cases() -> tuple[SyntheticCase, ...]:
     return (
         SyntheticCase('balance', BALANCE, (balance_read(),)),
-        SyntheticCase('buying_power', BUYING_POWER, (read(prepare_buying_power_query(BUYING_POWER), {'output': POWER}),)),
-        SyntheticCase('sellable', SELLABLE, (read(prepare_sellable_query(SELLABLE), {'output': SELL}),)),
+        SyntheticCase('buying_power', BUYING_POWER, (read(prepare_buying_power_query(BUYING_POWER), {'output': POWER}),), source_commit=None, contract_profile=PORTAL_PROFILE),
+        SyntheticCase('sellable', SELLABLE, (read(prepare_sellable_query(SELLABLE), {'output1': SELL}),), source_commit=None, contract_profile=PORTAL_PROFILE),
         SyntheticCase('price', MARKET, (read(prepare_market_query(MARKET), {'output': PRICE}),)),
         SyntheticCase('session', MARKET, (read(prepare_market_query(MARKET, book=True), BOOK),)),
-        SyntheticCase('holidays', HOLIDAY, (read(prepare_holiday_query(HOLIDAY), {'output': [CALENDAR]}),)),
+        SyntheticCase('holidays', HOLIDAY, (read(prepare_holiday_query(HOLIDAY), {'output': CALENDAR}),), source_commit=None, contract_profile=PORTAL_PROFILE),
     )

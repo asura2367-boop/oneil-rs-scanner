@@ -1,5 +1,11 @@
 # KIS adapter boundary: offline recipes and read-only normalization
 
+Public portal correction, 2026-11-05: history cancellation-confirmed quantity now
+uses canonical `cncl_cfrm_qty`; conflicting sample `cnc_cfrm_qty` is rejected, not
+aliased. This changes no identity or terminal-state inference. See
+[the focused source review](KIS_PUBLIC_SPEC.md) for official links and the related
+blank-price/nonpagination corrections.
+
 This is **not a live KIS integration**. It is an additive implementation alongside
 an isolated simulation core. No KIS request, credential lookup, production database
 read/write, order, deployment, or activation was performed for this work.

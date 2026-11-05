@@ -74,6 +74,18 @@ render every exact preview field, mode, warning and expiry and send the returned
 reference only after that user's explicit confirmation. Financial/live activation
 is outside this package and requires a separately reviewed user-controlled flow.
 
+## Strict policy command path
+
+The core bridge now requires the server-owned `SimulationPolicyCoordinator`.
+Its `policy_order` preview/confirm path installs the exact `PolicyAdmission` before
+releasing the shared Worker account lock. Manual keys use `policy-manual-<request_id>`.
+The raw-order path described by the original boundary fixture contract is rejected
+by the core bridge. See [the coordinator contract](POLICY_COORDINATOR.md) for host
+composition, immutable intent, proposal-wide crash fencing and remaining gates.
+Runtime-aware composition requires the explicit, already-started exact runtime;
+its separate owner activation, health, archive and runtime-first locks remain
+mandatory. HTTP confirmation never activates or resumes it.
+
 ## HTTP contract
 
 All requests require a valid session cookie, trusted HTTPS and exact Host. No
@@ -83,10 +95,13 @@ redirects, permissive CORS, raw exception text or raw account fingerprint.
 - `GET /api/v2/status` requires `monitor.read`. Returns `monitor.v1` projection,
   `source=AUTHENTICATED_SIMULATION_CORE`, read-only and all UI controls disabled.
 - `POST /api/v2/previews` requires `simulation.command`. Body has `action` and
-  `expected_revision`. `action=order` additionally requires `order` with exactly
-  ticker, side, venue, quantity, limit_price and expires_at. The server supplies
-  account and current policy version. `action=resume_simulation` has no order.
-- `POST /api/v2/commands`, order/resume: exactly `action`, `confirmation_id` and
+  `expected_revision`. `action=policy_order` additionally requires a server-issued
+  `proposal_id`; order, evidence and policy fields come only from the trusted host.
+  `action=resume_simulation` has no order. Raw `action=order` is refused by the core bridge.
+- `POST /api/v2/previews`, `activate_runtime`: exactly action and expected_revision.
+  The server binds the preview to the runtime epoch/lease; a separate exact
+  confirmation activates only that simulation runtime after core resume.
+- `POST /api/v2/commands`, policy_order/resume/activate_runtime: exactly `action`, `confirmation_id` and
   `content_digest`, copied from the displayed preview.
 - `POST /api/v2/commands`, halt: exactly `action=halt`, `expected_revision`.
 - `POST /api/v2/commands`, pending cancellation: exactly `action=cancel_pending`,
@@ -114,9 +129,12 @@ otherwise idempotent retry; make a new nonce, not a new idempotency key.
 
 ## Core and monitor integration
 
-`CoreSimulationBackend(existing_store)` accepts only the current `PostgresStore`,
-which already restricts databases to `oneil_v2_*` and SIMULATION. Its constructor
-opens no connection. Each serving thread must use its own core connection, created
+`CoreSimulationBackend(existing_store)` accepts the exact `PostgresStore` or the
+fixed-account `SQLiteSimulationStore` from the explicitly initialized local
+simulation host. The SQLite path uses real durable transactions and OS locks, not
+a PostgreSQL substitute; see `../oneil_runtime_v2/SIMULATION_HOST.md`. PostgresStore
+restricts databases to `oneil_v2_*` and SIMULATION. Bridge construction opens no
+connection. Each serving thread must use its own core connection, created
 on that thread. Do not share the bridge between threads or use transaction-pooling
 proxies. A reviewed host/factory must compose `ControlAPI`, `ControlState`, that
 thread's bridge and the real `project_status` callable.
@@ -139,8 +157,9 @@ The journal and core use separate databases and cannot commit atomically togethe
 The service does **not** claim exactly-once delivery or execution. A committed
 STARTED command may mean the core was never called, did commit, or returned before
 journal completion failed. It stays unknown without time-based reset or resend.
-The core's confirmation reference is its stable order idempotency key as a second
-fence, but this API does not use it to guess/retry an ambiguous effect.
+The coordinator's immutable proposal/manual intent key is the core's stable
+idempotency key. A proposal-wide tombstone also fences new HTTP keys and previews.
+Neither fence is used to guess/retry an ambiguous effect.
 
 A reviewed operator recovery workflow must inspect both journals and correlate
 exact identity before recording an outcome. No reset/delete/force-retry HTTP API is
@@ -171,7 +190,8 @@ python -m unittest discover -s tests/control_v2 -v
 python -m compileall -q oneil_control_v2
 ```
 
-Current result: **69 network-free tests pass**. They cover session expiry/revocation,
+The original boundary suite has **69 network-free tests**; additional coordinator
+flow tests are documented in [the coordinator contract](POLICY_COORDINATOR.md). They cover session expiry/revocation,
 strict auth/CSRF/origin/body handling, exact order fields, single-use/expired/tampered
 confirmation, action mismatch, stable idempotency, replay after restart, durable
 SQLite concurrency, session revocation during admission, rate limiting, delayed

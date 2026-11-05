@@ -5,7 +5,6 @@ registration. Supplied request/response transcripts are UNAUTHENTICATED data.
 Parsing one never creates policy AccountEvidence, MarketEvidence or SessionPermit.
 See KIS_EVIDENCE.md for the pinned official sources and deliberately missing facts.
 """
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -21,6 +20,7 @@ PRICE_PATH = '/uapi/domestic-stock/v1/quotations/inquire-price'
 BOOK_PATH = '/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn'
 HOLIDAY_PATH = '/uapi/domestic-stock/v1/quotations/chk-holiday'
 SOURCE_COMMIT = 'd8c7f7936793f85dc1e9c364ba5dc66832353f8c'
+PORTAL_PROFILE = 'KIS_PUBLIC_PORTAL_2026_11_05'
 MAX_MONEY = 9_999_999_999_999_999
 T = TypeVar('T')
 # Only fixed codes may leave the parser, including if a caller-supplied Mapping
@@ -46,6 +46,8 @@ KIS_SELLABLE_QUANTITY_INCONSISTENT KIS_SELLABLE_ROWS_AMBIGUOUS
 KIS_SESSION_FIELD_INVALID KIS_SESSION_FIELD_MISSING_OR_AMBIGUOUS
 KIS_STATUS_CODE_MISSING KIS_TICKER_MISMATCH KIS_UNEXPECTED_CONTINUATION
 KIS_WEEKDAY_CODE_UNVERIFIED
+KIS_MARKET_INQUIRY_PRICE_MUST_BE_ABSENT KIS_PORTAL_CONTINUATION_UNSUPPORTED
+KIS_SELLABLE_SCHEMA_CONFLICT KIS_HOLIDAY_SCHEMA_CONFLICT
 '''.split())
 
 
@@ -113,14 +115,16 @@ class BuyingPowerQuery:
     binding: AccountBinding
     trading_day_context: str
     ticker: str
-    price_krw: int
+    # Market-mode inquiry has no price on the wire. A positive local order price
+    # cannot be bound to this response or silently serialized into ORD_UNPR.
+    price_krw: None = None
     # This inquiry mode is not an instruction to place a market order. KIS warns
     # that 00 does not reflect the stock's margin rate when calculating quantity.
     inquiry_order_code: str = '01'
 
     def validate(self):
         self.binding.validate(); _day(self.trading_day_context); _ticker(self.ticker)
-        require(integer(self.price_krw, 1) and self.price_krw <= 1_000_000_000_000, 'KIS_INVALID_PRICE')
+        require(self.price_krw is None, 'KIS_MARKET_INQUIRY_PRICE_MUST_BE_ABSENT')
         require(self.inquiry_order_code == '01', 'KIS_BUYING_POWER_MODE_UNVERIFIED')
         return self
 
@@ -130,7 +134,7 @@ def prepare_buying_power_query(query: BuyingPowerQuery) -> RequestRecipe:
     return _recipe(BUYING_POWER_PATH,
                    'TTTC8908R' if query.binding.environment == 'real' else 'VTTC8908R', {
         'CANO': query.binding.cano, 'ACNT_PRDT_CD': query.binding.product_code,
-        'PDNO': query.ticker, 'ORD_UNPR': str(query.price_krw),
+        'PDNO': query.ticker, 'ORD_UNPR': '',
         'ORD_DVSN': query.inquiry_order_code, 'CMA_EVLU_AMT_ICLD_YN': 'N', 'OVRS_ICLD_YN': 'N',
     })
 
@@ -190,6 +194,9 @@ class HolidayQuery:
 
 def prepare_holiday_query(query: HolidayQuery, *, cursor=('', '')) -> RequestRecipe:
     query.validate(); _cursor(cursor)
+    # Portal contract: both 20-character-capacity cursor fields must be blank;
+    # tr_cont is unsupported. Recursive GitHub sample behavior is not adopted.
+    require(cursor == ('', ''), 'KIS_PORTAL_CONTINUATION_UNSUPPORTED')
     return _recipe(HOLIDAY_PATH, 'CTCA0903R', {
         'BASS_DT': query.target_day.replace('-', ''),
         'CTX_AREA_FK': cursor[0], 'CTX_AREA_NK': cursor[1],
@@ -282,7 +289,7 @@ class BuyingPowerObservation(OfflineObservation):
     environment: str
     trading_day_context: str
     ticker: str
-    inquiry_price_krw: int
+    inquiry_price_krw: None
     inquiry_order_code: str
     window: CaptureWindow
     orderable_cash_krw: int
@@ -291,6 +298,10 @@ class BuyingPowerObservation(OfflineObservation):
     maximum_buy_amount_krw: int
     maximum_buy_quantity: int
     quantity_calculation_price: Decimal
+
+    @property
+    def contract_profile(self):
+        return PORTAL_PROFILE
 
 
 @dataclass(frozen=True)
@@ -306,8 +317,16 @@ class SellableObservation(OfflineObservation):
 
     @property
     def traversal_complete(self):
-        # Sample provides M -> N but no authoritative terminal enum.
+        # Portal is nonpaginated, but output1 vs output remains contradictory.
         return False
+
+    @property
+    def contract_profile(self):
+        return PORTAL_PROFILE
+
+    @property
+    def unresolved_contracts(self):
+        return ('SELLABLE_OUTPUT1_VS_OUTPUT', 'PORTAL_VS_SAMPLE_CONTINUATION')
 
 
 @dataclass(frozen=True)
@@ -374,8 +393,16 @@ class HolidayObservation(OfflineObservation):
 
     @property
     def traversal_complete(self):
-        # The current sample treats every non-M/F marker as terminal. Do not.
+        # Portal is nonpaginated; sample array/horizon behavior remains unproven.
         return False
+
+    @property
+    def contract_profile(self):
+        return PORTAL_PROFILE
+
+    @property
+    def unresolved_contracts(self):
+        return ('HOLIDAY_OBJECT_VS_ARRAY', 'PORTAL_VS_SAMPLE_CONTINUATION', 'CALENDAR_HORIZON')
 
     @property
     def session_permitted(self):
@@ -407,7 +434,7 @@ def _calendar_day(raw):
     row = _fields(raw)
     return ReportedCalendarDay(_wire_day(row.get('bass_dt')), _flag(row.get('bzdy_yn')),
         _flag(row.get('tr_day_yn')), _flag(row.get('opnd_yn')), _flag(row.get('sttl_day_yn')),
-        _text(row.get('wday_dvsn_cd'), r'[0-9]{1,2}', 'KIS_WEEKDAY_CODE_UNVERIFIED'))
+        _text(row.get('wday_dvsn_cd'), r'0[1-7]', 'KIS_WEEKDAY_CODE_UNVERIFIED'))
 
 
 def _run(parser):
@@ -457,6 +484,11 @@ class KisOfflineEvidenceAdapter:
         require(headers.get('tr_cont', '') in ('', 'D', 'E'), 'KIS_UNEXPECTED_CONTINUATION')
         return body, CaptureWindow(read.started_at, read.received_at)
 
+    def _portal_single(self, read, expected, day=None):
+        body, headers = self._read(read, expected, day)
+        require(headers.get('tr_cont', '') == '', 'KIS_PORTAL_CONTINUATION_UNSUPPORTED')
+        return body, CaptureWindow(read.started_at, read.received_at)
+
     def _pages(self, reads, recipe_factory, *, day=None, cursor_suffix='100'):
         require(type(reads) is tuple and 1 <= len(reads) <= self.max_pages, 'KIS_PAGE_LIMIT_OR_EMPTY')
         pages = []; cursor = ('', ''); seen = {cursor}; previous = None
@@ -501,7 +533,7 @@ class KisOfflineEvidenceAdapter:
 
     def buying_power(self, query: BuyingPowerQuery, read: OfflineRead) -> EvidenceOutcome[BuyingPowerObservation]:
         def parse():
-            body, window = self._single(read, prepare_buying_power_query(query), query.trading_day_context)
+            body, window = self._portal_single(read, prepare_buying_power_query(query), query.trading_day_context)
             row = _fields(body.get('output'))
             return BuyingPowerObservation(query.binding.account, query.binding.environment,
                 query.trading_day_context, query.ticker, query.price_krw, query.inquiry_order_code, window,
@@ -512,20 +544,17 @@ class KisOfflineEvidenceAdapter:
 
     def sellable(self, query: SellableQuery, read: OfflineRead) -> EvidenceOutcome[SellableObservation]:
         def parse():
-            body, headers = self._read(read, prepare_sellable_query(query), query.trading_day_context)
-            marker = headers.get('tr_cont')
-            require(marker in ('D', 'E'), 'KIS_SELLABLE_CONTINUATION_UNSUPPORTED')
-            raw = body.get('output')
-            if type(raw) is list:
-                require(len(raw) == 1, 'KIS_SELLABLE_ROWS_AMBIGUOUS')
-                raw = raw[0]
+            body, window = self._portal_single(read, prepare_sellable_query(query), query.trading_day_context)
+            # Explicit portal-schema fixture profile, not automatic aliasing to
+            # the contradictory prose/GitHub output key or array response.
+            require('output' not in body and type(body.get('output1')) is dict, 'KIS_SELLABLE_SCHEMA_CONFLICT')
+            raw = body['output1']
             row = _fields(raw)
             require(_ticker(row.get('pdno')) == query.ticker, 'KIS_TICKER_MISMATCH')
             balance = _number(row.get('cblc_qty')); sellable = _number(row.get('ord_psbl_qty'))
             require(sellable <= balance, 'KIS_SELLABLE_QUANTITY_INCONSISTENT')
             return SellableObservation(query.binding.account, query.binding.environment,
-                query.trading_day_context, query.ticker, CaptureWindow(read.started_at, read.received_at),
-                balance, sellable, marker)
+                query.trading_day_context, query.ticker, window, balance, sellable, '')
         return _run(parse)
 
     def price(self, query: MarketQuery, read: OfflineRead) -> EvidenceOutcome[PriceObservation]:
@@ -565,21 +594,16 @@ class KisOfflineEvidenceAdapter:
     def holidays(self, query: HolidayQuery, reads: tuple[OfflineRead, ...]) -> EvidenceOutcome[HolidayObservation]:
         def parse():
             query.validate()
-            pages, window, marker = self._pages(reads, lambda **kw: prepare_holiday_query(query, **kw),
-                                                 cursor_suffix='')
-            days = []; seen = set()
-            for body in pages:
-                rows = body.get('output')
-                if isinstance(rows, Mapping):
-                    rows = [rows]
-                require(type(rows) is list and rows, 'KIS_HOLIDAY_ROWS_MISSING')
-                require(len(days)+len(rows) <= self.max_rows, 'KIS_ROW_LIMIT')
-                for raw in rows:
-                    day = _calendar_day(raw)
-                    require(day.day not in seen, 'KIS_HOLIDAY_DUPLICATE_DAY')
-                    seen.add(day.day); days.append(day)
-            require(query.target_day in seen, 'KIS_HOLIDAY_TARGET_MISSING')
-            return HolidayObservation(query.target_day, window, tuple(days), marker)
+            require(type(reads) is tuple and len(reads) == 1, 'KIS_PORTAL_CONTINUATION_UNSUPPORTED')
+            body, window = self._portal_single(reads[0], prepare_holiday_query(query))
+            require('output1' not in body and type(body.get('output')) is dict, 'KIS_HOLIDAY_SCHEMA_CONFLICT')
+            # Unexpected nonblank response cursors contradict this supported
+            # nonpaginated profile, even if its header was blank.
+            require(all(body.get(key, '') == '' for key in ('ctx_area_fk', 'ctx_area_nk')),
+                    'KIS_PORTAL_CONTINUATION_UNSUPPORTED')
+            day = _calendar_day(body['output'])
+            require(day.day == query.target_day, 'KIS_HOLIDAY_TARGET_MISSING')
+            return HolidayObservation(query.target_day, window, (day,), '')
         return _run(parse)
 
     def policy_evidence(self, *args, **kwargs):

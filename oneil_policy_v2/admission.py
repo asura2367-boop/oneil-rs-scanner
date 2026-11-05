@@ -76,6 +76,7 @@ class SimulationPolicySource:
     """
     def __init__(self):
         self._requests = {}
+        self._kis_blocked_requests = set()
 
     def register(self, request_id, admission):
         require(type(admission) is PolicyAdmission and type(admission.context) is PolicyContext
@@ -83,13 +84,33 @@ class SimulationPolicySource:
                 'POLICY_ADMISSION_REQUIRED')
         key = str(request_id)
         require(key and len(key) <= 128, 'POLICY_REQUEST_ID_INVALID')
+        require(key not in self._kis_blocked_requests, 'KIS_POLICY_EVIDENCE_NOT_ESTABLISHED')
         existing = self._requests.get(key)
         if existing is not None:
             require(existing.proposal == admission.proposal and existing.mode == admission.mode
                     and existing.manual == admission.manual and existing.original_context == admission.original_context, 'POLICY_INTENT_IMMUTABLE')
         self._requests[key] = deepcopy(admission)
 
+    def register_kis_offline(self, request_id, inputs, *, now, max_age_seconds,
+                             max_pages=20, max_rows=2000):
+        """Inspect supplied KIS data and invalidate this request's fixture source.
+
+        Current parsers cannot authenticate evidence, so this never installs a
+        PolicyContext. Block BEFORE parsing, including on malformed input, and
+        retain the block even if inspection fails or a fixture is registered later.
+        It is not an owner approval, queue operation, or live broker installation.
+        """
+        key = str(request_id)
+        require(key and len(key) <= 128, 'POLICY_REQUEST_ID_INVALID')
+        self._kis_blocked_requests.add(key)
+        self._requests.pop(key, None)
+        from .kis_pipeline import inspect_kis_inputs
+        return inspect_kis_inputs(inputs, now=now, max_age_seconds=max_age_seconds,
+                                  max_pages=max_pages, max_rows=max_rows)
+
     def read(self, request_id):
+        require(str(request_id) not in self._kis_blocked_requests,
+                'KIS_POLICY_EVIDENCE_NOT_ESTABLISHED')
         admission = self._requests.get(str(request_id))
         require(admission is not None, 'POLICY_ADMISSION_REQUIRED')
         return deepcopy(admission)

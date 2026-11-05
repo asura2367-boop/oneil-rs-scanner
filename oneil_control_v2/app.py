@@ -28,7 +28,10 @@ STATUS = {200: 'OK', 201: 'Created', 202: 'Accepted', 400: 'Bad Request',
 # Domain messages must never disclose arbitrary database, identity or broker text.
 SAFE_ERRORS = {'CONTROL_REVISION_CONFLICT', 'UNRESOLVED_ORDER', 'HALTED', 'POLICY_CHANGED',
                'IDEMPOTENCY_CONFLICT', 'REQUEST_EXPIRED', 'APPROVAL_EXPIRED', 'REQUEST_NOT_FOUND',
-               'ALREADY_ADMITTED_BROKER_CANCEL_REQUIRED', 'ACCOUNT_NOT_SIMULATION'}
+               'ALREADY_ADMITTED_BROKER_CANCEL_REQUIRED', 'ACCOUNT_NOT_SIMULATION',
+               'SERVER_POLICY_PROPOSAL_REQUIRED', 'ACCOUNT_BUSY', 'POLICY_PROPOSAL_CHANGED',
+               'EXPLICIT_CURRENT_POLICY_CONTEXT_REQUIRED', 'EXPLICIT_STARTED_RUNTIME_REQUIRED',
+               'RUNTIME_BINDING_CHANGED', 'RUNTIME_OWNER_ACTIVATION_REQUIRED'}
 
 
 @dataclass(frozen=True)
@@ -190,20 +193,28 @@ class ControlAPI:
         try:
             self.state.complete(session, key, status, payload, self._now(), preview=preview)
         except Exception as error:
+            if path == '/api/v2/commands' and data['action'] in ('policy_order', 'activate_runtime') and status in (200, 202):
+                try:
+                    self.backend.policy_command_outcome_unknown(session.account)
+                except Exception:
+                    pass  # Never convert an uncertain journal result to rejection.
             raise APIError(503, 'COMMAND_OUTCOME_UNKNOWN') from error
         return status, payload
 
     def _validate_command(self, data, path):
         action = data.get('action')
         if path.endswith('/previews'):
-            check(action in ('order', 'resume_simulation'), 400, 'UNSUPPORTED_ACTION')
-            exact_fields(data, ('action', 'expected_revision', 'order') if action == 'order' else ('action', 'expected_revision'))
+            check(action in ('order', 'policy_order', 'resume_simulation', 'activate_runtime'), 400, 'UNSUPPORTED_ACTION')
+            extra = ('order',) if action == 'order' else (('proposal_id',) if action == 'policy_order' else ())
+            exact_fields(data, ('action', 'expected_revision', *extra))
             revision(data['expected_revision'])
             if action == 'order':
                 exact_fields(data['order'], ('ticker', 'side', 'venue', 'quantity', 'limit_price', 'expires_at'))
+            if action == 'policy_order':
+                check(type(data['proposal_id']) is str and KEY.fullmatch(data['proposal_id']), 400, 'INVALID_PROPOSAL_ID')
             return None
-        check(action in ('order', 'resume_simulation', 'halt', 'cancel_pending'), 400, 'UNSUPPORTED_ACTION')
-        if action in ('order', 'resume_simulation'):
+        check(action in ('order', 'policy_order', 'resume_simulation', 'activate_runtime', 'halt', 'cancel_pending'), 400, 'UNSUPPORTED_ACTION')
+        if action in ('order', 'policy_order', 'resume_simulation', 'activate_runtime'):
             exact_fields(data, ('action', 'confirmation_id', 'content_digest'))
             check(isinstance(data['confirmation_id'], str) and KEY.fullmatch(data['confirmation_id']), 400, 'INVALID_CONFIRMATION')
             check(isinstance(data['content_digest'], str) and HEX.fullmatch(data['content_digest']), 400, 'INVALID_CONFIRMATION')
@@ -223,7 +234,27 @@ class ControlAPI:
         check(control['revision'] == data['expected_revision'], 409, 'CONTROL_REVISION_CONFLICT')
         content = {'action': data['action'], 'expected_revision': data['expected_revision'], 'mode': 'SIMULATION'}
         expires = min(now + 60, session.expires_at)
-        if data['action'] == 'order':
+        if data['action'] == 'activate_runtime':
+            binding = self.backend.preview_runtime_activation(session.principal, session.account, data['expected_revision'])
+            content.update(binding)
+            display = {'action': 'activate_runtime', 'expected_revision': data['expected_revision'], **binding}
+            warning = 'SIMULATION ONLY. Activate this exact runtime epoch. Real trading remains unavailable.'
+        elif data['action'] == 'policy_order':
+            binding = self.backend.preview_policy_order(session.principal, session.account,
+                                                        data['proposal_id'], data['expected_revision'])
+            content.update(binding)
+            order = Order.from_payload(binding['order']).validate()
+            expiry = order.expires_at.timestamp()
+            check(now < expiry <= now + 120, 409, 'INVALID_ORDER_EXPIRY')
+            expires = min(expires, int(expiry))
+            display = {k: v for k, v in order.payload().items() if k != 'account'}
+            display.update({k: binding[k] for k in ('policy_mode', 'reason', 'buffered_cost_krw', 'manual_request_id', 'manual_intent')})
+            display['notional_krw'] = str(order.notional)
+            display['intent_digest'] = binding['intent_digest']
+            warning = 'SIMULATION ONLY. Confirm this exact policy proposal. Acceptance is not a fill.'
+        elif data['action'] == 'order':
+            if hasattr(self.backend, 'validate_raw_order'):
+                self.backend.validate_raw_order()
             check(not control['halted'], 409, 'HALTED')
             try:
                 order = Order.from_payload({**data['order'], 'account': session.account,
@@ -257,6 +288,10 @@ class ControlAPI:
             expected = approved['expected_revision']
         else:
             expected = data['expected_revision']
+        if action == 'policy_order':
+            return 202, self.backend.confirm_policy_order(session, approved, data['confirmation_id'], clock=self.clock)
+        if action == 'activate_runtime':
+            return 200, self.backend.confirm_runtime_activation(session, approved, data['confirmation_id'], clock=self.clock)
         if action == 'order':
             result = self.backend.confirm_order(session.principal, session.account,
                                                 Order.from_payload(approved['order']), expected,

@@ -3,14 +3,24 @@
 **준비용 소스 패키지입니다. PC에 설치하거나 자동 시작을 등록하지 않았고,
 사용자의 Windows PC 연결 여부도 확인하지 않았습니다. 실거래는 불가능합니다.**
 
-Combined source based on execution-v2 `5fd6730`, preserving policy import/planning
-`eebd0b8`, strict worker admission `74ca1369`, and Windows operations foundation
-`904c216d`. This combined release includes policy admission and its tests, plus
-integration packaging and Windows-portability corrections. No legacy trading code
-is imported. Never enable fixture-only worker mode or relax the strict policy
-evidence default for operation. Exact final provenance is in ZIP `MANIFEST.json`.
+Combined supervised-runtime source based on `e107bae`, preserving runtime
+coordinator `b10eb02`, reconciliation Worker composition `13e130f`, and concrete
+inactive HTTPS client `3787323`. The original component histories remain intact.
+No legacy trading code is imported. These components are **not an end-to-end
+operational host**: the supervised SQLite core is permanently halted, while the
+control coordinator requires the separate PostgreSQL core. The HTTPS client is
+credential-free and unwired. See [INTEGRATION.md](../deploy/windows/INTEGRATION.md)
+for exact verification and gaps. Never relax policy/runtime gates or use fixture-
+only mode as an operational fallback. ZIP MANIFEST.json identifies the exact
+final source commit.
 
 ## Included
+
+- New fixed-child offline process supervisor and manual Windows launcher. Its
+  [real simulation Worker composition](COMPOSITION.md) reconciles isolated SQLite
+  and explicitly synthetic broker history, with no order admission or submission.
+  It is not Windows-validated or installed. See
+  [SUPERVISOR.md](../deploy/windows/SUPERVISOR.md) for exact launch/stop semantics.
 
 - Pure health evaluator: stale/future heartbeat and dependency observations,
   sleep/hibernation, long loop pauses, backward/discontinuous clocks, missing
@@ -68,7 +78,9 @@ It reports source presence, not source integrity; verify the archive separately.
 
 ## Limits that must not be hidden
 
-This is **not an installed Windows service, process watchdog or deployment**.
+This is **not an installed Windows service or deployment**. The new process
+supervisor composes an isolated reconciliation-only simulation Worker, not a
+production Worker host.
 `SimulationRuntime` is a callable in-process loop, not a process launcher. Its
 optional guard integrates with strict Worker/PolicyAdmissionGate and the bound
 PostgresStore's final admission path. An unguarded existing Worker is unchanged;

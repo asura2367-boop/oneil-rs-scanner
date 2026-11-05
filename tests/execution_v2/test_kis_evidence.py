@@ -57,7 +57,7 @@ class KisEvidenceTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[2]/'oneil_execution_v2'/'kis_evidence.py'
         tree = ast.parse(source.read_text())
         imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
-        self.assertEqual(imports, {'collections.abc', 'dataclasses', 'datetime', 'decimal', 'typing',
+        self.assertEqual(imports, {'dataclasses', 'datetime', 'decimal', 'typing',
                                    'domain', 'kis_adapter'})
         self.assertFalse(any(isinstance(node, ast.Import) for node in ast.walk(tree)))
         for case in cases():
@@ -288,6 +288,11 @@ class KisEvidenceTests(unittest.TestCase):
         self.assertEqual(params['CMA_EVLU_AMT_ICLD_YN'], 'N')
         self.assertEqual(params['OVRS_ICLD_YN'], 'N')
         self.assertEqual(params['ORD_DVSN'], '01')
+        self.assertEqual(params['ORD_UNPR'], '')
+        self.assertIsNone(self.run_case(cases()[1]).value.inquiry_price_krw)
+        for price in (10000, 0, '', True):
+            with self.subTest(price=price), self.assertRaisesRegex(Blocked, 'PRICE_MUST_BE_ABSENT'):
+                prepare_buying_power_query(replace(BUYING_POWER, price_krw=price))
 
     def test_sellable_not_invented_from_holdings_and_terminal_unverified(self):
         value = self.run_case(cases()[2]).value
@@ -299,9 +304,9 @@ class KisEvidenceTests(unittest.TestCase):
 
     def test_sellable_wrong_ticker_multiple_rows_and_pagination_block(self):
         for output in ({**SELL, 'pdno': '000660'}, {**SELL, 'ord_psbl_qty': '11'}, [SELL, SELL], []):
-            self.invalid(self.adapter.sellable(SELLABLE, read(prepare_sellable_query(SELLABLE), {'output': output})))
-        for marker in ('M', 'F', '', None, 'UNKNOWN'):
-            self.invalid(self.adapter.sellable(SELLABLE, read(prepare_sellable_query(SELLABLE), {'output': SELL}, marker=marker)))
+            self.invalid(self.adapter.sellable(SELLABLE, read(prepare_sellable_query(SELLABLE), {'output1': output})))
+        for marker in ('M', 'F', 'D', 'E', None, 'UNKNOWN'):
+            self.invalid(self.adapter.sellable(SELLABLE, read(prepare_sellable_query(SELLABLE), {'output1': SELL}, marker=marker)))
 
     def test_quote_has_no_exchange_timestamp_or_executability(self):
         value = self.run_case(cases()[3]).value
@@ -357,7 +362,7 @@ class KisEvidenceTests(unittest.TestCase):
             self.invalid(self.adapter.session(MARKET, read(prepare_market_query(MARKET, book=True), body)))
 
     def test_holiday_day_flags_are_separate_never_session_or_terminal(self):
-        body = {'output': [{**CALENDAR, 'bzdy_yn': 'Y', 'tr_day_yn': 'N', 'opnd_yn': 'N', 'sttl_day_yn': 'Y'}]}
+        body = {'output': {**CALENDAR, 'bzdy_yn': 'Y', 'tr_day_yn': 'N', 'opnd_yn': 'N', 'sttl_day_yn': 'Y'}}
         value = self.adapter.holidays(HOLIDAY, (read(prepare_holiday_query(HOLIDAY), body),)).value
         self.assertTrue(value.target.business_day)
         self.assertFalse(value.target.trading_day)
@@ -367,23 +372,60 @@ class KisEvidenceTests(unittest.TestCase):
         self.assertFalse(value.session_permitted)
 
     def test_holiday_uses_explicit_rows_not_weekday_or_inferred_dates(self):
-        for rows in ([], [{**CALENDAR, 'bass_dt': '20261106'}], [CALENDAR, CALENDAR],
-                     [{**CALENDAR, 'bass_dt': '20260230'}], [{**CALENDAR, 'opnd_yn': None}]):
-            self.invalid(self.adapter.holidays(HOLIDAY, (read(prepare_holiday_query(HOLIDAY), {'output': rows}),)))
+        for row, reason in (
+            ({**CALENDAR, 'bass_dt': '20261106'}, 'KIS_HOLIDAY_TARGET_MISSING'),
+            ({**CALENDAR, 'bass_dt': '20260230'}, 'KIS_INVALID_DAY'),
+            ({**CALENDAR, 'opnd_yn': None}, 'KIS_INVALID_FLAG'),
+        ):
+            self.invalid(self.adapter.holidays(HOLIDAY, (read(prepare_holiday_query(HOLIDAY), {'output': row}),)), reason)
 
     def test_holiday_cursor_order_stability_and_missing_continuation(self):
-        first = read(prepare_holiday_query(HOLIDAY), {'output': [CALENDAR], 'ctx_area_fk': 'FK', 'ctx_area_nk': 'NK'},
-                     marker='F', started_at=NOW-timedelta(seconds=4), received_at=NOW-timedelta(seconds=3))
-        recipe = prepare_holiday_query(HOLIDAY, cursor=('FK', 'NK'))
-        second = read(recipe, {'output': [{**CALENDAR, 'bass_dt': '20261106'}]})
-        value = self.adapter.holidays(HOLIDAY, (first, second)).value
-        self.assertEqual(len(value.days), 2)
-        self.assertEqual(recipe.wire_parameters()['BASS_DT'], '20261105')
-        self.assertEqual(recipe.wire_parameters()['CTX_AREA_FK'], 'FK')
-        self.assertEqual(recipe.wire_parameters()['CTX_AREA_NK'], 'NK')
-        self.assertFalse(value.traversal_complete)
-        self.invalid(self.adapter.holidays(HOLIDAY, (first,)), 'KIS_PAGES_TRUNCATED')
-        self.invalid(self.adapter.holidays(HOLIDAY, (replace(second, response=replace(second.response, headers={})),)))
+        recipe = prepare_holiday_query(HOLIDAY)
+        self.assertEqual(recipe.wire_parameters(), {'BASS_DT': '20261105', 'CTX_AREA_FK': '', 'CTX_AREA_NK': ''})
+        for cursor in (('FK', 'NK'), ('FK', ''), ('', 'NK')):
+            with self.assertRaisesRegex(Blocked, 'PORTAL_CONTINUATION_UNSUPPORTED'):
+                prepare_holiday_query(HOLIDAY, cursor=cursor)
+        sample = read(recipe, {'output': CALENDAR})
+        self.assertTrue(self.adapter.holidays(HOLIDAY, (replace(sample, response=replace(sample.response, headers={})),)).valid)
+        self.invalid(self.adapter.holidays(HOLIDAY, (sample, sample)), 'KIS_PORTAL_CONTINUATION_UNSUPPORTED')
+        for marker in ('M', 'F', 'D', 'E', None, 'UNKNOWN'):
+            self.invalid(self.adapter.holidays(HOLIDAY, (replace(sample, response=replace(sample.response, headers={'tr_cont': marker})),)),
+                         'KIS_PORTAL_CONTINUATION_UNSUPPORTED')
+        for key in ('ctx_area_fk', 'ctx_area_nk'):
+            self.invalid(self.adapter.holidays(HOLIDAY, (read(recipe, {'output': CALENDAR, key: 'next'}),)),
+                         'KIS_PORTAL_CONTINUATION_UNSUPPORTED')
+
+    def test_portal_profiles_leave_documentary_conflicts_unresolved(self):
+        for index in (1, 2, 5):
+            case = cases()[index]
+            self.assertEqual(case.contract_profile, 'KIS_PUBLIC_PORTAL_2026_11_05')
+            self.assertEqual(self.run_case(case).value.contract_profile, case.contract_profile)
+        for index in (2, 5):
+            value = self.run_case(cases()[index]).value
+            self.assertTrue(value.unresolved_contracts)
+            self.assertFalse(value.traversal_complete)
+            self.assertFalse(value.live_eligible)
+
+    def test_sellable_rejects_conflicting_output_aliases_and_sample_array(self):
+        recipe = prepare_sellable_query(SELLABLE)
+        for body in ({'output': SELL}, {'output': SELL, 'output1': SELL}, {'output1': [SELL]}):
+            self.invalid(self.adapter.sellable(SELLABLE, read(recipe, body)), 'KIS_SELLABLE_SCHEMA_CONFLICT')
+        self.assertTrue(self.adapter.sellable(SELLABLE, replace(read(recipe, {'output1': SELL}),
+            response=KisResponse(200, {'rt_cd': '0', 'output1': SELL}, {}))).valid)
+
+    def test_holiday_portal_object_and_day_flags_do_not_accept_sample_array(self):
+        recipe = prepare_holiday_query(HOLIDAY)
+        for body in ({'output': [CALENDAR]}, {'output': CALENDAR, 'output1': CALENDAR}):
+            self.invalid(self.adapter.holidays(HOLIDAY, (read(recipe, body),)), 'KIS_HOLIDAY_SCHEMA_CONFLICT')
+        for code in ('5', '00', '08', ''):
+            self.invalid(self.adapter.holidays(HOLIDAY, (read(recipe, {'output': {**CALENDAR, 'wday_dvsn_cd': code}}),)))
+
+    def test_buying_power_rejects_sample_positive_wire_price(self):
+        recipe = prepare_buying_power_query(BUYING_POWER)
+        for price in ('10000', '0', ' '):
+            params = recipe.wire_parameters(); params['ORD_UNPR'] = price
+            self.invalid(self.adapter.buying_power(BUYING_POWER,
+                read(replace(recipe, parameters=tuple(params.items())), {'output': POWER})), 'KIS_EVIDENCE_REQUEST_MISMATCH')
 
     def test_outputs_immutable_and_raw_payload_mutation_does_not_change_them(self):
         sample = balance_read()
@@ -398,7 +440,8 @@ class KisEvidenceTests(unittest.TestCase):
             for marker in ('M', 'F', 'UNKNOWN', None):
                 original = case.reads[0]
                 modified = replace(original, response=replace(original.response, headers={'tr_cont': marker}))
-                self.invalid(self.run_case(replace(case, reads=(modified,))), 'KIS_UNEXPECTED_CONTINUATION')
+                reason = 'KIS_PORTAL_CONTINUATION_UNSUPPORTED' if case.name == 'buying_power' else 'KIS_UNEXPECTED_CONTINUATION'
+                self.invalid(self.run_case(replace(case, reads=(modified,))), reason)
 
     def test_nested_case_collisions_rejected(self):
         sample = balance_read(positions=[{**POSITION, 'PDNO': POSITION['pdno']}])

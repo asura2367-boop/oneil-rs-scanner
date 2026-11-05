@@ -79,14 +79,11 @@ class BridgeTests(unittest.TestCase):
             self.backend.resume_simulation('owner', 'a' * 64, 7)
         self.assertEqual(self.store.conn.events[-1], 'rollback')
 
-    def test_confirmation_reference_becomes_core_stable_key(self):
-        def effect(owner, order, *, idempotency_key):
-            self.assertEqual((owner.principal, owner.account, order, idempotency_key),
-                             ('owner', 'a' * 64, 'order-object', 'confirmation-reference'))
-            return {'state': 'QUEUED'}
-        self.backend.api.confirm_order = effect
-        self.assertEqual(self.backend.confirm_order('owner', 'a' * 64, 'order-object', 7,
-                                                    'confirmation-reference'), {'state': 'QUEUED'})
+    def test_raw_order_cannot_bypass_server_policy_proposal(self):
+        self.backend.api.confirm_order = lambda *a, **k: self.fail('must not enqueue')
+        with self.assertRaisesRegex(Blocked, 'SERVER_POLICY_PROPOSAL_REQUIRED'):
+            self.backend.confirm_order('owner', 'a' * 64, 'order-object', 7, 'confirmation-reference')
+        self.assertEqual(self.store.conn.events, [])
 
 
 if __name__ == '__main__':

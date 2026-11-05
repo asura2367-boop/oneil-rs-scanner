@@ -83,6 +83,23 @@ CREATE TABLE IF NOT EXISTS confirmations (
  content TEXT NOT NULL, content_digest TEXT NOT NULL, expires_at INTEGER NOT NULL,
  consumed INTEGER NOT NULL DEFAULT 0 CHECK(consumed IN (0,1))
 );
+CREATE TABLE IF NOT EXISTS policy_proposals (
+ proposal_id TEXT PRIMARY KEY, principal TEXT NOT NULL, account TEXT NOT NULL,
+ intent_key TEXT NOT NULL, intent TEXT NOT NULL, intent_digest TEXT NOT NULL,
+ UNIQUE(account, intent_key)
+);
+CREATE TABLE IF NOT EXISTS policy_dispatches (
+ proposal_id TEXT PRIMARY KEY, confirmation_id TEXT NOT NULL UNIQUE,
+ principal TEXT NOT NULL, account TEXT NOT NULL, idempotency_key TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS policy_proposal_no_update BEFORE UPDATE ON policy_proposals
+ BEGIN SELECT RAISE(ABORT, 'POLICY_INTENT_IMMUTABLE'); END;
+CREATE TRIGGER IF NOT EXISTS policy_proposal_no_delete BEFORE DELETE ON policy_proposals
+ BEGIN SELECT RAISE(ABORT, 'POLICY_INTENT_IMMUTABLE'); END;
+CREATE TRIGGER IF NOT EXISTS policy_dispatch_no_update BEFORE UPDATE ON policy_dispatches
+ BEGIN SELECT RAISE(ABORT, 'POLICY_DISPATCH_IMMUTABLE'); END;
+CREATE TRIGGER IF NOT EXISTS policy_dispatch_no_delete BEFORE DELETE ON policy_dispatches
+ BEGIN SELECT RAISE(ABORT, 'POLICY_DISPATCH_IMMUTABLE'); END;
 CREATE TABLE IF NOT EXISTS audit (
  sequence INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
  principal TEXT NOT NULL, account TEXT NOT NULL,
@@ -162,6 +179,49 @@ class ControlState:
         with self.transaction() as conn:
             conn.execute('UPDATE sessions SET revoked=1 WHERE token_digest=?', (token_digest,))
 
+    def save_policy_proposal(self, proposal_id, principal, account, intent_key, intent, intent_digest):
+        """Trusted coordinator only. Never called with browser policy/evidence."""
+        with self.transaction() as conn:
+            prior = conn.execute('SELECT * FROM policy_proposals WHERE account=? AND intent_key=?',
+                                 (account, intent_key)).fetchone()
+            if prior is not None:
+                check((prior['principal'], prior['intent'], prior['intent_digest']) ==
+                      (principal, intent, intent_digest), 409, 'POLICY_INTENT_CONFLICT')
+                return prior['proposal_id']
+            conn.execute('INSERT INTO policy_proposals VALUES(?,?,?,?,?,?)',
+                         (proposal_id, principal, account, intent_key, intent, intent_digest))
+        return proposal_id
+
+    def policy_proposal(self, principal, account, proposal_id):
+        conn = self._connection()
+        try:
+            row = conn.execute('SELECT * FROM policy_proposals WHERE proposal_id=? AND principal=? AND account=?',
+                               (proposal_id, principal, account)).fetchone()
+            check(row is not None, 404, 'POLICY_PROPOSAL_NOT_FOUND')
+            return dict(row)
+        finally:
+            conn.close()
+
+    def validate_policy_confirmation(self, session, confirmation_id, content, clock):
+        """Recheck after core locks; no journal lock is held while waiting for them.
+
+        A reserved confirmation cannot be renewed by waiting for the core. Its
+        proposal-wide tombstone must already exist from the atomic reservation.
+        """
+        with self.transaction() as conn:
+            now = int(clock())
+            check(self._session(conn, session.token_digest, now) == session, 401, 'SESSION_CHANGED')
+            row = conn.execute('SELECT * FROM confirmations WHERE confirmation_id=?', (confirmation_id,)).fetchone()
+            check(row is not None and row['session_digest'] == session.token_digest and row['consumed'] == 1
+                  and row['content'] == canonical(content), 403, 'CONFIRMATION_INVALID')
+            check(now < row['expires_at'], 409, 'CONFIRMATION_EXPIRED')
+            if content['action'] == 'policy_order':
+                dispatch = conn.execute('SELECT * FROM policy_dispatches WHERE proposal_id=?',
+                                        (content['proposal_id'],)).fetchone()
+                check(dispatch is not None and dispatch['confirmation_id'] == confirmation_id
+                      and dispatch['principal'] == session.principal and dispatch['account'] == session.account,
+                      409, 'POLICY_DISPATCH_REQUIRED')
+
     def _session(self, conn, token_digest, now):
         row = conn.execute('SELECT * FROM sessions WHERE token_digest=?', (token_digest,)).fetchone()
         check(row is not None and row['revoked'] == 0 and
@@ -227,6 +287,20 @@ class ControlState:
                 check(row['consumed'] == 0, 409, 'CONFIRMATION_ALREADY_USED')
                 check(now < row['expires_at'], 409, 'CONFIRMATION_EXPIRED')
                 content = json.loads(row['content'])
+                if content.get('action') == 'policy_order':
+                    proposal = conn.execute('SELECT * FROM policy_proposals WHERE proposal_id=?',
+                                            (content.get('proposal_id'),)).fetchone()
+                    check(proposal is not None and proposal['principal'] == session.principal
+                          and proposal['account'] == session.account
+                          and proposal['intent_digest'] == content.get('intent_digest'),
+                          403, 'CONFIRMATION_INVALID')
+                    check(conn.execute('SELECT 1 FROM policy_dispatches WHERE proposal_id=?',
+                                       (proposal['proposal_id'],)).fetchone() is None,
+                          409, 'POLICY_PROPOSAL_ALREADY_DISPATCHED')
+                    # One proposal-wide reservation survives every HTTP key,
+                    # confirmation, process restart, and uncertain core result.
+                    conn.execute('INSERT INTO policy_dispatches VALUES(?,?,?,?,?)',
+                                 (proposal['proposal_id'], confirmation_id, session.principal, session.account, key))
                 conn.execute('UPDATE confirmations SET consumed=1 WHERE confirmation_id=?', (confirmation_id,))
             conn.execute("INSERT INTO commands VALUES(?,?,?,?,'STARTED',NULL,NULL,?)", (*args, request_digest, now))
             conn.execute('INSERT INTO audit(at,principal,account,idempotency_key,event) VALUES(?,?,?,?,?)',

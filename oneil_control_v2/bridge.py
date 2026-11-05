@@ -12,8 +12,10 @@ from oneil_execution_v2.store import PostgresStore, S
 
 class CoreSimulationBackend:
     def __init__(self, store):
-        require(type(store) is PostgresStore, 'ISOLATED_CORE_STORE_REQUIRED')
+        from oneil_runtime_v2.simulation_store import SQLiteSimulationStore
+        require(type(store) in (PostgresStore, SQLiteSimulationStore), 'ISOLATED_CORE_STORE_REQUIRED')
         self.store, self.api = store, SimulationAPI(store)
+        self.policy_coordinator = None
 
     def status(self, account):
         return self.store.read_model(account)
@@ -27,6 +29,11 @@ class CoreSimulationBackend:
     @contextmanager
     def _revision_fence(self, account, expected):
         self.store.assert_owner()
+        from oneil_runtime_v2.simulation_store import SQLiteSimulationStore
+        if type(self.store) is SQLiteSimulationStore:
+            with self.store.revision_fence(account, expected):
+                yield
+            return
         # Keep the account row lock until the nested core transaction commits.
         # This closes the preview/revision race without modifying the core.
         with self.store.conn.transaction():
@@ -36,9 +43,31 @@ class CoreSimulationBackend:
             yield
 
     def confirm_order(self, principal, account, order, expected, confirmation_id):
-        with self._revision_fence(account, expected):
-            return self.api.confirm_order(AuthenticatedOwner(principal, account), order,
-                                          idempotency_key=confirmation_id)
+        # Raw browser economics never create a stranded/unvalidated queue row.
+        require(False, 'SERVER_POLICY_PROPOSAL_REQUIRED')
+
+    def validate_raw_order(self):
+        require(False, 'SERVER_POLICY_PROPOSAL_REQUIRED')
+
+    def preview_policy_order(self, principal, account, proposal_id, expected):
+        require(self.policy_coordinator is not None, 'SERVER_POLICY_PROPOSAL_REQUIRED')
+        return self.policy_coordinator.preview(principal, account, proposal_id, expected)
+
+    def confirm_policy_order(self, session, content, confirmation_id, *, clock):
+        require(self.policy_coordinator is not None, 'SERVER_POLICY_PROPOSAL_REQUIRED')
+        return self.policy_coordinator.confirm(session, content, confirmation_id, clock=clock)
+
+    def policy_command_outcome_unknown(self, account):
+        if self.policy_coordinator is not None:
+            self.policy_coordinator.outcome_unknown(account)
+
+    def preview_runtime_activation(self, principal, account, expected):
+        require(self.policy_coordinator is not None, 'EXPLICIT_STARTED_RUNTIME_REQUIRED')
+        return self.policy_coordinator.preview_activation(principal, account, expected)
+
+    def confirm_runtime_activation(self, session, content, confirmation_id, *, clock):
+        require(self.policy_coordinator is not None, 'EXPLICIT_STARTED_RUNTIME_REQUIRED')
+        return self.policy_coordinator.confirm_activation(session, content, confirmation_id, clock=clock)
 
     def resume_simulation(self, principal, account, expected):
         with self._revision_fence(account, expected):
