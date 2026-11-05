@@ -271,6 +271,16 @@ class PgRuntimeLedger:
             RETURNING intent_id''',(ident,self.fingerprint))
         if len(rows)!=1:raise LedgerBlocked('UNSENT_SELL_STATE_CONFLICT')
 
+    def void_unsent_order(self,ident):
+        # Called only for typed in-process pre-transport rejection, never from
+        # recovery, absence in broker history, or exception-message matching.
+        # Preserve intent, signal and daily BUY uniqueness as permanent evidence.
+        rows=self.rows("""UPDATE v519_order_intents SET status='REJECTED',verified_not_sent=true,updated_at=now()
+            WHERE intent_id=%s AND account_fingerprint=%s
+            AND status='SUBMISSION_UNKNOWN' AND broker_order_id IS NULL AND filled_quantity=0
+            RETURNING intent_id""",(ident,self.fingerprint))
+        if len(rows)!=1:raise LedgerBlocked('UNSENT_ORDER_STATE_CONFLICT')
+
     def record_sell_alerts(self,plans,day):
         import hashlib
         for plan in plans:
