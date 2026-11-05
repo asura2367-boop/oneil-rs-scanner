@@ -192,10 +192,10 @@ class IncidentHistoryTests(unittest.TestCase):
 
     def test_observation_requires_explicit_dispatch_and_is_read_only(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/oneil_v519_incident_history.yml").read_text()
-        self.assertIn("github.run_attempt == 1", workflow)
-        self.assertIn("[incident-ro-20261104-once-44]", workflow)
-        for guard in ("github.ref == 'refs/heads/main'",
-                      "INCIDENT_DAY: ${{ github.event_name == 'push' && '2026-11-04' || inputs.day }}",
+        self.assertNotIn("  push:", workflow)
+        self.assertNotIn("[incident-ro-20261104-once-44]", workflow)
+        for guard in ("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
+                      "INCIDENT_DAY: ${{ inputs.day }}",
                       "contents: read", "LIVE_ENABLED: 'false'", "KIS_ALLOW_ORDER: 'false'",
                       'python oneil_v519_incident_history.py --day "$INCIDENT_DAY"'):
             self.assertIn(guard, workflow)
