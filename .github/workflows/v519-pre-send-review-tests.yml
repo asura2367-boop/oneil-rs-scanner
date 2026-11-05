@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'v519_pre_send_review.py'
+      - 'v519_pg_ledger.py'
+      - 'v519_no_order_review.py'
       - 'tests/test_v519_pre_send_review.py'
       - 'tests/test_v519_no_order_review.py'
       - 'tests/fixtures/pre_send_*'
