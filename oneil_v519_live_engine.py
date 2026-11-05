@@ -27,7 +27,10 @@ def read_stage(stage):
                           'elapsed_seconds':round(time.monotonic()-started,3)}),flush=True)
 
 class TradingBlocked(ValueError): pass
-class SellDisabledBeforeSend(TradingBlocked): pass
+class OrderNotSent(TradingBlocked):
+    """Trusted adapter rejection before entering order transport; never infer from error text."""
+    pass
+class SellDisabledBeforeSend(OrderNotSent): pass
 CODE=re.compile(r"^[0-9]{6}$")
 
 def money(n):
@@ -544,9 +547,9 @@ class KisBroker:
         now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
         if (not self.execution or not evidence or evidence['price']!=plan.price or
                 not 0<=(now-evidence['at']).total_seconds()<=3):
-            raise TradingBlocked('FRESH_EXECUTABLE_BOOK_REQUIRED')
+            raise OrderNotSent('FRESH_EXECUTABLE_BOOK_REQUIRED')
         if plan.quantity>evidence['size']:
-            raise TradingBlocked('BOOK_SIZE_EXCEEDED')
+            raise OrderNotSent('BOOK_SIZE_EXCEEDED')
         return self._send_verified(plan)
 
     def _send_verified(self, plan):
@@ -558,12 +561,16 @@ class KisBroker:
         if (not self.execution or not ev or ev['price']!=plan.price or
                 not 0<=(dt.datetime.now(ev['at'].tzinfo)-ev['at']).total_seconds()<=3 or
                 plan.quantity>ev['size']):
-            raise TradingBlocked('EXECUTABLE_BOOK_REQUIRED')
+            raise OrderNotSent('EXECUTABLE_BOOK_REQUIRED')
         prepared = KisCashOrderAdapter(None).prepare(side=plan.side,ticker=plan.ticker,
             qty=plan.quantity,limit_price_krw=plan.price,cano=self.account,product=self.product)
         prepared['body'].update(EXCG_ID_DVSN_CD='KRX',
             SLL_TYPE='01' if plan.side=='SELL' else '',CNDT_PRIC='')
-        _, response = self.request(prepared['path'],prepared['tr_id'],prepared['body'],post=True)
+        try:
+            _, response = self.request(prepared['path'],prepared['tr_id'],prepared['body'],post=True)
+        except OrderNotSent as exc:
+            # Once transport is entered this marker cannot certify absence of POST.
+            raise TradingBlocked('ORDER_TRANSPORT_OUTCOME_UNCERTAIN') from exc
         return response
 
 
@@ -927,6 +934,20 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
                         result.update(status='ACKNOWLEDGED',gate='ALLOW')
                         display_plans.append(plan)
                     except Exception as exc:
+                        if isinstance(exc,OrderNotSent):
+                            uncertain=False
+                            # This type originates only before the adapter enters POST.
+                            # Keep the durable reservation/daily key; never retry here.
+                            try:
+                                ledger.void_unsent_order(ident)
+                            except Exception:
+                                ledger.halt()
+                                raise
+                            uncertain=False
+                            if not result['orders_sent']:result['status']='PRE_SUBMIT_REJECTED'
+                            result.update(batch_stop_reason=str(exc),pre_send_cancelled=True)
+                            ledger.dashboard_state['plans']=display_plans+[plan]
+                            return result
                         ledger.halt()
                         blocked=TradingBlocked('SUBMISSION_UNCERTAIN_NO_RETRY')
                         blocked._submission_exception=exc
@@ -1106,6 +1127,15 @@ def process_manual_buy(ledger,broker,requests,*,now,clock):
                 if str(response.get('rt_cd'))!='0' or not isinstance(order_id,str) or not re.fullmatch('[0-9]{1,20}',order_id):raise TradingBlocked('BROKER_ACK_INVALID')
             ledger.ack(ident,order_id);uncertain=False
         except Exception as exc:
+            if isinstance(exc,OrderNotSent):
+                try:
+                    ledger.void_unsent_order(ident)
+                except Exception as void_error:
+                    ledger.halt()
+                    void_error.execution_progress={'orders_sent':0,'confirmed_orders_sent':0,'order_attempts':1}
+                    raise
+                return {'status':'MANUAL_PRE_SUBMIT_REJECTED','orders_sent':0,'order_attempts':1,
+                    'gate':'DENY','manual_buy_reason':str(exc),'pre_send_cancelled':True}
             ledger.halt();exc.execution_progress={'orders_sent':None if uncertain else 0,'confirmed_orders_sent':0,'order_attempts':1};raise
         if isinstance(broker,KisBroker):broker.history_cache.pop(now.strftime('%Y%m%d'),None)
         # Acknowledgement is not a fill. Existing recovery owns every fill transition.
@@ -1136,24 +1166,38 @@ def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss
         try:
             manual_buy_request(request,now=clock(),fingerprint=ledger.fingerprint,release=release_fingerprint())
             sent=process_manual_buy(ledger,broker,[request],now=now,clock=clock)
-            checks.append({'id':request_id,'status':sent['status']})
+            checks.append({'id':request_id,'status':sent['status'],
+                **({'reason':sent['manual_buy_reason']} if 'manual_buy_reason' in sent else {})})
             state['manual_buy_checks']=checks
             if sent['status']=='MANUAL_ALREADY_RECORDED':continue
             result.update(sent)
-            result['manual_buy_status']=sent['status'];result.pop('manual_buy_reason',None)
+            result['manual_buy_status']=sent['status']
+            if 'manual_buy_reason' not in sent:result.pop('manual_buy_reason',None)
             return result  # Never send another order after an acknowledgement.
         except TradingBlocked as exc:
-            if getattr(exc,'execution_progress',None):raise
             checks.append({'id':request_id,'status':'BLOCKED','reason':str(exc)})
+            ledger.dashboard_state['manual_buy_checks']=checks
+            if getattr(exc,'execution_progress',None):raise
             state['manual_buy_checks']=checks
             result['manual_buy_status']='BLOCKED';result['manual_buy_reason']=str(exc)
             if str(exc) not in local_blocks:return result
+        except Exception:
+            checks.append({'id':request_id,'status':'SUBMISSION_CHECK_FAILED'})
+            ledger.dashboard_state['manual_buy_checks']=checks
+            raise
+    if any(check['status']=='BLOCKED' for check in checks):
+        # A considered owner request failure must not silently become an unrelated buy.
+        # Expired-only queues are ignored by the initial automatic eligibility check.
+        result.update(status='MANUAL_QUEUE_BLOCKED',batch_stop_reason='OWNER_REQUEST_BLOCKED')
+        return result
     if result.get('status')=='MANUAL_QUEUE_PENDING':
-        # Every queued request was ineligible or already recorded. Re-enter the
-        # normal guarded path using fresh account/control evidence, no bypasses.
-        result=_automatic_cycle(ledger,broker,candidates,execute=execute,now=now,
-            stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,clock=clock,defer_for_manual=False)
-        ledger.dashboard_state['manual_buy_checks']=checks
+        # Only an entirely already-recorded queue may resume automatic selection.
+        # _automatic_cycle replaces dashboard_state, including on exceptions.
+        try:
+            result=_automatic_cycle(ledger,broker,candidates,execute=execute,now=now,
+                stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,clock=clock,defer_for_manual=False)
+        finally:
+            ledger.dashboard_state['manual_buy_checks']=checks
     return result
 
 

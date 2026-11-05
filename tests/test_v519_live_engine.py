@@ -634,6 +634,43 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertEqual(self.broker.calls,[])
         self.assertEqual(self.ledger.dashboard_state['manual_buy_checks'][0]['reason'],'ALREADY_BOUGHT_TODAY')
 
+    def test_proven_prepost_buy_rejection_keeps_daily_key_without_halt(self):
+        broker=object.__new__(KisBroker);broker.execution=True
+        broker.quote_evidence={}
+        self.broker.submit=broker.submit
+        with patch('oneil_v519_live_engine.require_live_release'):
+            result=self.cycle()
+        self.assertEqual(result['status'],'PRE_SUBMIT_REJECTED');self.assertEqual(result['orders_sent'],0)
+        self.assertFalse(self.ledger.halted());self.assertEqual(self.ledger.pending(),[])
+        row=self.ledger.rows('SELECT status,verified_not_sent FROM v519_order_intents',())[0]
+        self.assertEqual(row,{'status':'REJECTED','verified_not_sent':True})
+        from v519_pg_ledger import LedgerBlocked
+        with self.assertRaises(LedgerBlocked):self.seed()
+        self.assertIn('144960',self.ledger.bought_today(self.now.date()))
+
+    def test_manual_real_adapter_prepost_rejection_is_not_unknown(self):
+        request=self.owner_request();self.manual_queue([request]);self.candidates=[]
+        broker=object.__new__(KisBroker);broker.execution=True;broker.quote_evidence={}
+        self.broker.submit=broker.submit
+        with patch('oneil_v519_live_engine.require_live_release'):result=self.cycle()
+        self.assertEqual(result['status'],'MANUAL_PRE_SUBMIT_REJECTED')
+        self.assertFalse(self.ledger.halted());self.assertEqual(self.ledger.pending(),[])
+        self.assertEqual(result['manual_buy_reason'],'FRESH_EXECUTABLE_BOOK_REQUIRED')
+        self.assertEqual(len(self.ledger.rows('SELECT intent_id FROM v519_order_intents',())),1)
+
+    def test_unsent_void_refuses_acknowledged_filled_or_foreign_intent(self):
+        from v519_pg_ledger import LedgerBlocked
+        ident=self.seed();self.ledger.ack(ident,'000123')
+        with self.assertRaises(LedgerBlocked):self.ledger.void_unsent_order(ident)
+        self.assertEqual(self.ledger.pending()[0]['status'],'ACKNOWLEDGED')
+        with self.assertRaises(LedgerBlocked):self.ledger.void_unsent_order('0'*64)
+        self.conn.execute("UPDATE v519_order_intents SET status='FILLED',filled_quantity=quantity WHERE intent_id=%s",(ident,))
+        with self.assertRaises(LedgerBlocked):self.ledger.void_unsent_order(ident)
+        self.conn.execute("UPDATE v519_order_intents SET status='SUBMISSION_UNKNOWN',broker_order_id=NULL,filled_quantity=1 WHERE intent_id=%s",(ident,))
+        with self.assertRaises(LedgerBlocked):self.ledger.void_unsent_order(ident)
+        self.conn.execute("UPDATE v519_order_intents SET filled_quantity=0,account_fingerprint=%s WHERE intent_id=%s",('c'*64,ident))
+        with self.assertRaises(LedgerBlocked):self.ledger.void_unsent_order(ident)
+
     def test_saved_owner_risk_controls_actual_quantity_and_snapshot(self):
         self.with_risk(60,10)
         result=self.cycle()
@@ -2143,6 +2180,7 @@ class ManualAveragingTests(unittest.TestCase):
             def rows(self,*a):return self.records
             def reserve_plan(self,p,d):self.records.append({'signal':p.signal});return 'intent'
             def ack(self,*a):pass
+            def void_unsent_order(self,ident):self.records[-1].update(status='REJECTED',verified_not_sent=True)
         class Broker(BrokerFixture):
             def snapshot(self):return test.snap.copy()
             def quote(self,*a):return 8000
@@ -2213,10 +2251,10 @@ class ManualQueueIntegrationTests(ManualAveragingTests):
         l,b=self.fixtures();self.add_second();self.queue(b,[self.req,self.second()]);b.failure=TimeoutError('unknown')
         with self.assertRaises(TimeoutError):self.cycle(l,b)
         self.assertTrue(l.stopped);self.assertEqual(len(b.calls),1)
-    def test_all_request_local_blocks_allow_guarded_automatic_fallback(self):
+    def test_all_request_local_blocks_stop_unrelated_automatic_buy(self):
         l,b=self.fixtures();self.queue(b,[{**self.req,'limit_price':7999}])
         result=self.cycle(l,b)
-        self.assertEqual([p.ticker for p in b.calls],['000003'])
+        self.assertEqual(b.calls,[])
         self.assertEqual(l.dashboard_state['manual_buy_checks'][0]['reason'],'OWNER_LIMIT_PRICE_EXCEEDED')
     def test_unrelated_automatic_quote_failure_does_not_starve_owner(self):
         l,b=self.fixtures();quote=b.quote
@@ -2236,7 +2274,7 @@ class ManualQueueIntegrationTests(ManualAveragingTests):
         b.buy_control=control
         self.cycle(l,b)
         self.assertEqual([p.ticker for p in b.calls],['000001'])
-    def test_exit_switched_off_and_blocked_owner_allows_guarded_auto_fallback(self):
+    def test_exit_switched_off_and_blocked_owner_stops_unrelated_auto_buy(self):
         l,b=self.fixtures();l.record_sell_alerts=lambda *args:None
         self.snap['positions']['000001']['average']='10000'
         original=b.buy_control();count=0
@@ -2247,7 +2285,7 @@ class ManualQueueIntegrationTests(ManualAveragingTests):
                 'sell':{'connected':True,'enabled':count==1,'revision':count}}
         b.buy_control=control
         self.cycle(l,b)
-        self.assertEqual([p.ticker for p in b.calls],['000003'])
+        self.assertEqual(b.calls,[])
     def test_control_or_approval_change_during_send_guard_blocks_wire(self):
         for change in ('withdraw','buy_off','risk','release','activation'):
             l,b=self.fixtures();control=b.buy_control()
@@ -2479,6 +2517,7 @@ class ManagedExitBatchTests(unittest.TestCase):
             def rows(self,sql,args):return [self.records[args[1]]] if args[1] in self.records else []
             def record_sell_alerts(self,*args):pass
             def void_unsent_sell(self,i):self.records[i]['status']='REJECTED'
+            def void_unsent_order(self,i):self.records[i].update(status='REJECTED',verified_not_sent=True)
         self.ledger=Ledger()
     def cycle(self):
         return integrated_cycle(self.ledger,self.broker,self.candidates,execute=True,now=self.now,clock=lambda:self.now)
@@ -2687,3 +2726,73 @@ class CloseRuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(result['recovery'],observation['recovery']);self.assertTrue(result['session_closed'])
         self.assertNotIn('PRIVATE_STORAGE_FIXTURE',json.dumps(result));encrypt.assert_not_called()
         self.assertEqual(ledger.finish_run.call_count,2)
+
+class PreTransportProofTests(unittest.TestCase):
+    def broker(self, stale=True):
+        broker=object.__new__(KisBroker);broker.execution=True
+        broker.account='12345678';broker.product='01'
+        now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
+        broker.quote_evidence={('144960','BUY'):{'price':10000,'size':100,'at':now-dt.timedelta(seconds=10 if stale else 0)}}
+        return broker
+    def test_real_adapter_stale_and_oversized_never_enter_transport(self):
+        from unittest.mock import Mock
+        for stale,qty in ((True,1),(False,101)):
+            broker=self.broker(stale);broker.request=Mock()
+            with patch('oneil_v519_live_engine.require_live_release'),self.assertRaises(OrderNotSent):
+                broker.submit(OrderPlan('144960','BUY',qty,10000,'rs','TEST'))
+            broker.request.assert_not_called()
+    def test_second_guard_and_transport_marker_are_distinguished(self):
+        from unittest.mock import Mock
+        broker=self.broker();broker.request=Mock()
+        with patch('oneil_v519_live_engine.require_live_release'),self.assertRaises(OrderNotSent):
+            broker._send_verified(OrderPlan('144960','BUY',1,10000,'rs','TEST'))
+        broker.request.assert_not_called()
+        for error in (TimeoutError('lost reply'),OrderNotSent('FRESH_EXECUTABLE_BOOK_REQUIRED')):
+            broker=self.broker(False);broker.request=Mock(side_effect=error)
+            with patch('oneil_v519_live_engine.require_live_release'),self.assertRaises(Exception) as caught:
+                broker.submit(OrderPlan('144960','BUY',1,10000,'rs','TEST'))
+            self.assertNotIsInstance(caught.exception,OrderNotSent)
+            self.assertEqual(broker.request.call_count,1)
+
+class ManualPreTransportTests(ManualQueueIntegrationTests):
+    def test_known_unsent_manual_preserves_key_and_stops_without_halt(self):
+        l,b=self.fixtures();self.queue(b,[self.req]);b.submit=lambda p:(_ for _ in ()).throw(OrderNotSent('FRESH_EXECUTABLE_BOOK_REQUIRED'))
+        result=self.cycle(l,b)
+        self.assertFalse(l.stopped);self.assertEqual(result['orders_sent'],0)
+        self.assertEqual(result['manual_buy_reason'],'FRESH_EXECUTABLE_BOOK_REQUIRED')
+        self.assertEqual(l.records[0]['status'],'REJECTED');self.assertTrue(l.records[0]['verified_not_sent'])
+        self.assertEqual(l.dashboard_state['manual_buy_checks'][0]['status'],'MANUAL_PRE_SUBMIT_REJECTED')
+        self.assertEqual(l.dashboard_state['manual_buy_checks'][0]['reason'],'FRESH_EXECUTABLE_BOOK_REQUIRED')
+    def test_failed_unsent_persistence_halts_and_keeps_attempt_diagnostic(self):
+        l,b=self.fixtures();b.submit=lambda p:(_ for _ in ()).throw(OrderNotSent('BOOK_SIZE_EXCEEDED'))
+        l.void_unsent_order=lambda i:(_ for _ in ()).throw(RuntimeError('db failure'))
+        with self.assertRaises(RuntimeError) as caught:self.cycle(l,b)
+        self.assertTrue(l.stopped);self.assertEqual(caught.exception.execution_progress['order_attempts'],1)
+        self.assertEqual(l.dashboard_state['manual_buy_checks'][0]['status'],'SUBMISSION_CHECK_FAILED')
+    def test_recorded_queue_diagnostics_survive_fallback_failure(self):
+        l,b=self.fixtures();l.records.append({'signal':'owner:'+self.req['id']})
+        from oneil_v519_live_engine import _automatic_cycle
+        def automatic(*args,**kwargs):
+            if kwargs.get('defer_for_manual') is False:
+                l.dashboard_state={}
+                raise TradingBlocked('FALLBACK_READ_FAILED')
+            return _automatic_cycle(*args,**kwargs)
+        with patch('oneil_v519_live_engine._automatic_cycle',side_effect=automatic),self.assertRaises(TradingBlocked):self.cycle(l,b)
+        self.assertEqual(l.dashboard_state['manual_buy_checks'][0]['status'],'MANUAL_ALREADY_RECORDED')
+    def test_timeout_retains_manual_check_and_unknown_progress(self):
+        l,b=self.fixtures();b.failure=TimeoutError('unknown')
+        with self.assertRaises(TimeoutError) as caught:self.cycle(l,b)
+        self.assertIsNone(caught.exception.execution_progress['orders_sent']);self.assertTrue(l.stopped)
+        self.assertEqual(l.dashboard_state['manual_buy_checks'][0]['status'],'SUBMISSION_CHECK_FAILED')
+
+class ExitPreTransportTests(ManagedExitBatchTests):
+    def test_second_exit_provably_unsent_retains_first_ack(self):
+        self.fill_exits();original=self.broker.submit
+        def submit(plan):
+            if self.broker.calls:raise OrderNotSent('EXECUTABLE_BOOK_REQUIRED')
+            return original(plan)
+        self.broker.submit=submit
+        result=self.cycle()
+        self.assertEqual(result['orders_sent'],1);self.assertEqual(result['status'],'ACKNOWLEDGED')
+        self.assertEqual(result['order_attempts'],2);self.assertFalse(self.ledger.stopped)
+        self.assertEqual(self.ledger.records['2']['status'],'REJECTED')
