@@ -507,12 +507,31 @@ class KisBroker:
             return self.reference_quote(ticker)
         return self.execution_quote(ticker,side)
 
+    @staticmethod
+    def public_session_code(value):
+        # Public classification fields only; never report raw broker bodies,
+        # instrument identities, prices, quantities or account identifiers.
+        if value is None:return None
+        if isinstance(value,str) and re.fullmatch('[A-Za-z0-9]{0,4}',value):return value
+        return 'INVALID'
+
     def after_market_eligibility(self,ticker):
         """Broker GET evidence only. A normal stock code is not eligibility proof."""
+        self.after_market_evidence={'stock_info_response_present':False}
         _,info=self.request('/uapi/domestic-stock/v1/quotations/search-stock-info',
             'CTPF1002R',{'PRDT_TYPE_CD':'300','PDNO':ticker})
         out=info.get('output')
-        if not isinstance(out,dict) or out.get('pdno')!=ticker:
+        if isinstance(out,dict):
+            self.after_market_evidence.update(stock_info_response_present=True,
+                stock_identity_matches=out.get('pdno')=='00000A'+ticker,
+                product_type=self.public_session_code(out.get('prdt_type_cd')),
+                security_group=self.public_session_code(out.get('scty_grp_id_cd')),
+                market=self.public_session_code(out.get('mket_id_cd')),
+                instrument_halt=self.public_session_code(out.get('tr_stop_yn')))
+        # KIS documents domestic product identity as 00000A + six-digit code,
+        # not a suffix match and not the quote API's short instrument field.
+        if (not isinstance(out,dict) or out.get('pdno')!='00000A'+ticker or
+                out.get('prdt_type_cd')!='300'):
             raise TradingBlocked('AFTER_MARKET_INSTRUMENT_UNVERIFIED')
         group=out.get('scty_grp_id_cd');market=out.get('mket_id_cd');halt=out.get('tr_stop_yn')
         if group not in ('ST','EF','EN','FE','EW') or market not in ('STK','KSQ','KNX') or halt not in ('Y','N'):
@@ -522,6 +541,12 @@ class KisBroker:
         _,status=self.request('/uapi/domestic-stock/v1/quotations/inquire-price',
             'FHKST01010100',{'FID_COND_MRKT_DIV_CODE':'J','FID_INPUT_ISCD':ticker})
         status=status.get('output')
+        if isinstance(status,dict):
+            self.after_market_evidence.update(status_identity_matches=status.get('stck_shrn_iscd')==ticker,
+                security_status=self.public_session_code(status.get('iscd_stat_cls_code')),
+                temporary_halt=self.public_session_code(status.get('temp_stop_yn')),
+                short_overheated=self.public_session_code(status.get('short_over_yn')),
+                liquidation=self.public_session_code(status.get('sltr_yn')))
         if not isinstance(status,dict) or status.get('stck_shrn_iscd')!=ticker:
             raise TradingBlocked('AFTER_MARKET_INSTRUMENT_UNVERIFIED')
         flags=('temp_stop_yn','short_over_yn','sltr_yn')
@@ -557,6 +582,9 @@ class KisBroker:
             # '20' is the documented in-session ordinary book. Unknown new
             # codes are denied, never mapped from wall-clock time alone.
             detail=book.get('output2')
+            self.after_market_evidence.update(book_session=self.public_session_code(b.get('new_mkop_cls_code')),
+                book_identity_matches=isinstance(detail,dict) and detail.get('stck_shrn_iscd')==ticker,
+                vi=self.public_session_code(detail.get('vi_cls_code')) if isinstance(detail,dict) else None)
             if (b.get('new_mkop_cls_code')!='20' or not isinstance(detail,dict) or
                     detail.get('stck_shrn_iscd')!=ticker or detail.get('vi_cls_code')!='N'):
                 raise TradingBlocked('AFTER_MARKET_SESSION_UNVERIFIED')
@@ -710,6 +738,8 @@ def audit_broker_evidence(broker, candidates, *, now, lookback_days=5):
             result['errors'].append(str(exc) if isinstance(exc,TradingBlocked) else 'QUOTE_OR_POWER_READ_FAILED')
     else:
         result['errors'].append('NO_AUDIT_INSTRUMENT')
+    public_evidence=getattr(broker,'after_market_evidence',None)
+    if isinstance(public_evidence,dict):result['after_market_evidence']=public_evidence.copy()
     if result['errors']:result['status']='BLOCKED_BROKER_EVIDENCE'
     result['after_market_path_verified']=(execution_session(now)=='AFTER' and
         result['fresh_book_verified'] and result['buying_power_read_verified'] and not result['errors'])
