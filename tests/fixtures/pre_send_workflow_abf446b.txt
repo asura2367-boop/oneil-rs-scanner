@@ -1,0 +1,257 @@
+name: V5.19 Integrated Engine (OWNER CONTROLLED)
+on:
+  pull_request:
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - '.github/workflows/oneil_v519_live_engine_review.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'oneil_v519_live_engine.py'
+      - 'v519_pg_ledger.py'
+      - 'tests/test_v519_live_engine.py'
+      - 'v519_no_order_review.py'
+      - 'tests/test_v519_no_order_review.py'
+      - 'build_data.py'
+      - 'build_investor.py'
+      - 'build_v4b_candidates.py'
+      - 'quote_collector_v4a.py'
+      - 'collect_shared_token.py'
+      - 'requirements.txt'
+      - '.github/workflows/update.yml'
+      - '.github/workflows/v10_collect_auto.yml'
+      - '.github/workflows/oneil_v519_live_engine_review.yml'
+  schedule:
+    # KST weekdays only; 09:00–19:40 every 20 minutes; 20:00 closes new-order intake.
+    # Automatic trading requires an exact reviewed release hash AND account activation. Best effort.
+    - cron: '0,20,40 0-10 * * 1-5'
+    - cron: '0 11 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [observe, recover, halt, migrate, close, broker-audit, activate, apply-approval, trade]
+        default: observe
+        description: 'observe=조회 / activate=소유자 활성화 / trade=수동 1회 거래'
+      confirm_live_activation:
+        type: boolean
+        default: false
+        description: '실거래 시작 동의: 첫 실주문·복구 실증 미완료, 기본 손절5%/익절10%, 자동매매 위험을 확인함'
+      approved_release:
+        type: string
+        default: ''
+        description: 'apply-approval 전용: 대시보드에 저장된 소스 확인값'
+      approval_revision:
+        type: string
+        default: ''
+        description: 'apply-approval 전용: 저장된 승인 기록 번호'
+permissions:
+  contents: read
+jobs:
+  test:
+    if: inputs.operation != 'halt'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: integration_test_only
+          POSTGRES_DB: oneil_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      V519_TEST_DB_URL: postgresql://postgres:integration_test_only@127.0.0.1:5432/oneil_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'psycopg[binary]>=3.2,<4' 'cryptography>=42,<47' 'pandas>=2,<3' 'numpy>=1.24,<3' 'requests>=2.31,<3' 'exchange-calendars>=4.5,<5'
+      - name: Unit and real PostgreSQL recovery/concurrency tests
+        run: python -m unittest discover -s tests -p 'test_v519_live_engine.py' -v
+      - name: Existing KIS pagination and safety regression tests
+        run: |
+          python -m unittest discover -s tests -p 'test_v519_no_order_review.py' -v
+          python -m unittest discover -s tests -p 'test_v519_broker_recovery.py' -v
+          python -m unittest discover -s tests -p 'test_v519_order_recovery.py' -v
+          python -m unittest discover -s tests -p 'test_live_runner.py' -v
+          python -m unittest discover -s tests -p 'test_v519_cash_sizing.py' -v
+          python -m unittest -v test_v519_durable_submit test_v519_pipeline
+          python -m unittest discover -s tests -p 'test_kis_live_v4_5_2.py' -v
+      - name: Release lock resists all environment flags
+        run: |
+          if LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES python oneil_v519_live_engine.py --run --execute; then
+            echo 'ERROR: live lock bypassed'; exit 1
+          fi
+          python - <<'PY'
+          import json
+          r=json.load(open('v5_19_report.json'))
+          assert r['reason']=='RELEASE_LOCKED_PENDING_OPERATOR_ACTIVATION' and r['orders_sent']==0
+          PY
+  source-proof:
+    needs: test
+    if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (needs.test.result == 'success' || needs.test.result == 'failure') && inputs.operation != 'halt'
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/oneil_v519_release_attest.yml
+    with:
+      early: true
+    secrets:
+      DASHBOARD_SITE_ACCESS_TOKEN: ${{ secrets.DASHBOARD_SITE_ACCESS_TOKEN }}
+  session:
+    needs: test
+    if: github.event_name != 'pull_request' && needs.test.result == 'success' && inputs.operation != 'halt' && inputs.operation != 'migrate'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/kis_live_v4_5_2.yml
+    secrets:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+  observe:
+    # Keep account operations serialized without queueing source tests/proof.
+    concurrency:
+      group: v519-integrated-${{ inputs.operation == 'halt' && 'emergency-halt' || (github.event_name == 'pull_request' && github.ref || 'account') }}
+      cancel-in-progress: false
+    if: always() && github.event_name != 'pull_request' && (needs.test.result == 'success' || inputs.operation == 'halt') && (needs.session.result == 'success' || needs.session.result == 'skipped')
+    needs: [test, session]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LIVE_ENABLED: 'false'
+      KIS_ALLOW_ORDER: 'false'
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_TOKEN_CACHE_KEY: ${{ secrets.KIS_TOKEN_CACHE_KEY }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_ACCOUNT_PRODUCT: ${{ secrets.KIS_ACCOUNT_PRODUCT }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      DASHBOARD_SITE_ACCESS_TOKEN: ${{ secrets.DASHBOARD_SITE_ACCESS_TOKEN }}
+      APPROVED_RELEASE: ${{ vars.V519_APPROVED_RELEASE }}
+      V519_APPROVED_RELEASE: ${{ vars.V519_APPROVED_RELEASE }}
+      OPERATOR_CONFIRMED: ${{ inputs.confirm_live_activation }}
+      REQUESTED_RELEASE: ${{ inputs.approved_release }}
+      REQUESTED_APPROVAL_REVISION: ${{ inputs.approval_revision }}
+      OPERATION: ${{ github.event.schedule == '0 11 * * 1-5' && 'close' || (github.event_name == 'schedule' && 'auto') || inputs.operation || 'observe' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load latest shared encrypted session (no token issuance)
+        if: needs.session.outputs.ready == 'true'
+        run: |
+          git fetch origin main
+          git show FETCH_HEAD:data/live/kis_token_cache.enc.json > data/live/kis_token_cache.enc.json
+      - name: Clear prior generated results
+        run: rm -f v5_19_report.json data/live/dashboard.enc.json data/live/release_review.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'psycopg[binary]>=3.2,<4' 'cryptography>=42,<47'
+      - name: Deploy idempotent ledger migration on main update
+        if: github.event_name == 'push'
+        run: python oneil_v519_live_engine.py --migrate
+      - name: Resolve dashboard owner review without changing repository variables
+        if: env.OPERATION == 'auto' || env.OPERATION == 'apply-approval'
+        run: python oneil_v519_live_engine.py --dashboard-release-env
+      - name: Run existing integrated engine
+        id: engine_runtime
+        run: |
+          rm -f data/live/dashboard.enc.json v5_19_report.json
+          mkdir -p data/live
+          release_info="$(python oneil_v519_live_engine.py --release-info)"
+          printf '%s\n' "$release_info"
+          release_configured="$(printf '%s' "$release_info" | python -c 'import json,sys; print("true" if json.load(sys.stdin).get("release_configured") is True else "false")')"
+          case "$OPERATION" in
+            observe) python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem ;;
+            auto)
+              # Schedule delays may start this job after trading closes.
+              # Keep monitoring until 20:00 without enabling order transport.
+              read -r weekday session_hhmm <<< "$(TZ=Asia/Seoul date '+%u %H%M')"
+              # A stored approval for old source must not stop read-only account
+              # refresh. Exact source approval is still required for execution.
+              if [ "$release_configured" = true ] && [ "$weekday" -le 5 ] && [ "$session_hhmm" -ge 900 ] && [ "$session_hhmm" -lt 1515 ]; then
+                LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --run --execute --dashboard-public-key data/live/dashboard_public_key.pem
+              else
+                python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem
+              fi ;;
+            apply-approval)
+              # Owner click requests activation checks only. This path cannot trade
+              # or clear halt, even if the same release is already activated.
+              [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
+              [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
+              LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --apply-owner-approval --acknowledge-live-risk --dashboard-public-key data/live/dashboard_public_key.pem ;;
+            activate)
+              [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
+              [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
+              LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --activate --operator "$GITHUB_ACTOR" --acknowledge-live-risk --dashboard-public-key data/live/dashboard_public_key.pem ;;
+            trade)
+              [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
+              [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
+              LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --run --execute --dashboard-public-key data/live/dashboard_public_key.pem ;;
+            close) python oneil_v519_live_engine.py --close --dashboard-public-key data/live/dashboard_public_key.pem ;;
+            recover) python oneil_v519_live_engine.py --recover ;;
+            broker-audit) python oneil_v519_live_engine.py --broker-audit ;;
+            halt) python oneil_v519_live_engine.py --halt ;;
+            migrate) python oneil_v519_live_engine.py --migrate ;;
+            *) exit 2 ;;
+          esac
+      - name: Publish encrypted private-dashboard snapshot
+        if: always()
+        env:
+          ENGINE_OUTCOME: ${{ steps.engine_runtime.outcome }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if(process.env.OPERATION==='broker-audit')return; // diagnostics do not replace account health
+            const fs = require('fs');
+            const publish = async (path, raw, message) => {
+              let sha;
+              try { sha = (await github.rest.repos.getContent({...context.repo, path, ref:'main'})).data.sha; }
+              catch(e) { if(e.status !== 404) throw e; }
+              await github.rest.repos.createOrUpdateFileContents({...context.repo,path,branch:'main',sha,message,content:Buffer.from(raw).toString('base64')});
+            };
+            const path = 'data/live/dashboard.enc.json';
+            if(fs.existsSync(path)) {
+              const raw=fs.readFileSync(path,'utf8'); const envelope=JSON.parse(raw);
+              if(envelope.algorithm!=='RSA-OAEP-256+A256GCM'||!envelope.ciphertext||!envelope.wrapped_key)throw new Error('Invalid encrypted snapshot');
+              await publish(path,raw,'Update encrypted V5.19 dashboard snapshot [skip ci]');
+            }
+            let result={status:'NO_RESULT'};
+            if(fs.existsSync('v5_19_report.json'))result=JSON.parse(fs.readFileSync('v5_19_report.json','utf8'));
+            const incomplete=process.env.ENGINE_OUTCOME!=='success';
+            const blocked=String(result.status).includes('BLOCKED')||result.scanner_status==='BLOCKED_INVALID_OR_STALE_SOURCE';
+            const status={schema_version:1,run_id:context.runId,updated_at:new Date().toISOString(),event:context.eventName,
+              conclusion:incomplete||blocked||result.status==='NO_RESULT'?'failure':'success',status:incomplete?'RUNTIME_INCOMPLETE':result.status,
+              url:`https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`};
+            await publish('data/live/dashboard_status.json',JSON.stringify(status),'Update sanitized V5.19 runtime status [skip ci]');
+      - name: Save sanitized result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v519-integrated-result-${{ github.run_id }}
+          path: v5_19_report.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Record workflow summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path('v5_19_report.json')
+          r=json.loads(p.read_text()) if p.exists() else {'status':'NO_RESULT','orders_sent':None,'order_outcome':'CHECK_LEDGER'}
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('V5.19 runtime result\n\n```json\n'+json.dumps(r,ensure_ascii=False,indent=2)+'\n```\n')
+          PY
