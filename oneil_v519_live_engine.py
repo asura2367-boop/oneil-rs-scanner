@@ -1166,7 +1166,8 @@ def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss
         try:
             manual_buy_request(request,now=clock(),fingerprint=ledger.fingerprint,release=release_fingerprint())
             sent=process_manual_buy(ledger,broker,[request],now=now,clock=clock)
-            checks.append({'id':request_id,'status':sent['status']})
+            checks.append({'id':request_id,'status':sent['status'],
+                **({'reason':sent['manual_buy_reason']} if 'manual_buy_reason' in sent else {})})
             state['manual_buy_checks']=checks
             if sent['status']=='MANUAL_ALREADY_RECORDED':continue
             result.update(sent)

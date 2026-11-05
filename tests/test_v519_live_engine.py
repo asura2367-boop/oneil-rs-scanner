@@ -2762,6 +2762,7 @@ class ManualPreTransportTests(ManualQueueIntegrationTests):
         self.assertEqual(result['manual_buy_reason'],'FRESH_EXECUTABLE_BOOK_REQUIRED')
         self.assertEqual(l.records[0]['status'],'REJECTED');self.assertTrue(l.records[0]['verified_not_sent'])
         self.assertEqual(l.dashboard_state['manual_buy_checks'][0]['status'],'MANUAL_PRE_SUBMIT_REJECTED')
+        self.assertEqual(l.dashboard_state['manual_buy_checks'][0]['reason'],'FRESH_EXECUTABLE_BOOK_REQUIRED')
     def test_failed_unsent_persistence_halts_and_keeps_attempt_diagnostic(self):
         l,b=self.fixtures();b.submit=lambda p:(_ for _ in ()).throw(OrderNotSent('BOOK_SIZE_EXCEEDED'))
         l.void_unsent_order=lambda i:(_ for _ in ()).throw(RuntimeError('db failure'))
