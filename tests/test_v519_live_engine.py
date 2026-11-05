@@ -918,7 +918,7 @@ class PostgresRuntimeTests(unittest.TestCase):
 
     def test_batch_session_closes_after_first_buy(self):
         self.two_candidates();self.fill_each_submission()
-        clock=lambda:self.now if not self.broker.calls else self.now.replace(hour=15,minute=15)
+        clock=lambda:self.now if not self.broker.calls else self.now.replace(hour=15,minute=20)
         with self.assertRaisesRegex(TradingBlocked,'OUTSIDE_KRX'):
             integrated_cycle(self.ledger,self.broker,self.candidates,execute=True,now=self.now,clock=clock)
         self.assertEqual(len(self.broker.calls),1)
