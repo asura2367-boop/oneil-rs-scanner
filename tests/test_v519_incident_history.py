@@ -2,6 +2,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import os
 import types
 from pathlib import Path
 import unittest
@@ -171,6 +172,8 @@ class IncidentHistoryTests(unittest.TestCase):
                         patch.object(m, "fetch_page", broker), redirect_stdout(output):
                     clock.now.return_value = self.now
                     self.assertEqual(m.main(), 2)
+                if failed not in ("READ_CREDENTIALS", "CONNECT_DATABASE"):
+                    self.assertIs(connection.__enter__.return_value.read_only, True)
                 result = json.loads(output.getvalue())
                 self.assertEqual(result["failure_stage"], failed)
                 self.assertNotIn("reason", result)
@@ -189,14 +192,40 @@ class IncidentHistoryTests(unittest.TestCase):
 
     def test_observation_requires_explicit_dispatch_and_is_read_only(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/oneil_v519_incident_history.yml").read_text()
-        self.assertNotIn("  push:", workflow)
-        self.assertNotIn("incident-evidence-20261104-once-42", workflow)
-        for guard in ("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
-                      "INCIDENT_DAY: ${{ inputs.day }}",
+        self.assertIn("github.run_attempt == 1", workflow)
+        self.assertIn("[incident-ro-20261104-once-44]", workflow)
+        for guard in ("github.ref == 'refs/heads/main'",
+                      "INCIDENT_DAY: ${{ github.event_name == 'push' && '2026-11-04' || inputs.day }}",
                       "contents: read", "LIVE_ENABLED: 'false'", "KIS_ALLOW_ORDER: 'false'",
                       'python oneil_v519_incident_history.py --day "$INCIDENT_DAY"'):
             self.assertIn(guard, workflow)
         for forbidden in ("--execute", "--activate", "--recover", "--migrate", "token_bootstrap", "contents: write"):
             self.assertNotIn(forbidden, workflow)
+
+
+@unittest.skipUnless(os.environ.get("INCIDENT_TEST_DB_URL"), "isolated PostgreSQL integration service only")
+class ReadOnlyTransactionIntegrationTests(unittest.TestCase):
+    def test_explicit_transaction_overrides_writable_server_default(self):
+        import psycopg
+        with psycopg.connect(os.environ["INCIDENT_TEST_DB_URL"]) as conn:
+            conn.read_only = True
+            with conn.cursor() as cur:
+                cur.execute("SHOW transaction_read_only")
+                self.assertEqual(cur.fetchone(), ("on",))
+            with self.assertRaises(psycopg.errors.UndefinedTable):
+                m.read_reference(conn, dt.date(2026, 11, 4))
+
+    def test_unconfigured_transaction_is_rejected_before_table_read(self):
+        import psycopg
+        with psycopg.connect(os.environ["INCIDENT_TEST_DB_URL"]) as conn:
+            with self.assertRaisesRegex(m.IncidentEvidenceError, "READ_ONLY_REQUIRED"):
+                m.read_reference(conn, dt.date(2026, 11, 4))
+
+    def test_postgres_rejects_write_in_explicit_read_only_transaction(self):
+        import psycopg
+        with psycopg.connect(os.environ["INCIDENT_TEST_DB_URL"]) as conn:
+            conn.read_only = True
+            with self.assertRaises(psycopg.errors.ReadOnlySqlTransaction):
+                conn.execute("CREATE TABLE forbidden_write_probe (id integer)")
 
 if __name__ == "__main__": unittest.main()
