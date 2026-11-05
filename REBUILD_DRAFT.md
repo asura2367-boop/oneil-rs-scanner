@@ -22,7 +22,7 @@ The branch remains based on repository main at `880b48859aa351a1a20202cbe8fd25c1
 
 Real PostgreSQL durability/isolation, native Windows and Task Scheduler behavior, reboot/power-loss testing, trusted evidence acquisition, authenticated broker responses, production HTTPS/session issuance, production database roles, and actual legacy/new-engine account exclusion remain unverified or unimplemented. The source's detailed validation documents distinguish simulation tests from those gates.
 
-The concrete HTTPS GET client is inactive, has no credentials or live runtime registration, and does not support order submission. No real network request, broker authentication, financial action, deployment, or installation was performed for publication.
+The concrete HTTPS GET client is inactive, has no credentials or live runtime registration, and does not support order submission. No real KIS request, broker authentication, financial action, deployment, or installation was performed for publication.
 
 Do not run legacy trading workflows from this branch, merge it, deploy it, or connect production credentials as part of this review. Live order transport is not supplied by this rebuild.
 
