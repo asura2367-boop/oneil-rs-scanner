@@ -4,6 +4,7 @@ on:
     paths:
       - 'tools/operator_no_order_review.py'
       - 'tests/test_operator_no_order_review.py'
+      - 'tests/test_v519_no_order_review.py'
       - 'v519_no_order_review.py'
       - 'v519_pg_ledger.py'
       - '.github/workflows/v519-operator-review-tests.yml'
