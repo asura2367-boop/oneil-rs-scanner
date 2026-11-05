@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'tools/operator_no_order_review.py'
+      - 'tools/operator_no_order_sql.py'
+      - 'tests/test_operator_no_order_sql.py'
       - 'tests/test_operator_no_order_review.py'
       - 'tests/test_v519_no_order_review.py'
       - 'v519_no_order_review.py'
@@ -40,3 +42,4 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'test_v519_no_order_review.py' -v
           python -m unittest discover -s tests -p 'test_operator_no_order_review.py' -v
+          python -m unittest discover -s tests -p 'test_operator_no_order_sql.py' -v
