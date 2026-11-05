@@ -658,6 +658,58 @@ class PostgresRuntimeTests(unittest.TestCase):
         return {'id':ident,'ticker':ticker,'quantity':5,'limit_price':10000,'holding_quantity':10,
             'buy_revision':1,'risk_revision':0,'account_ref':self.ledger.fingerprint,'approved_release':release_fingerprint(),
             'trading_day':self.now.date().isoformat(),'created_at':self.now.isoformat(),'expires_at':(self.now+dt.timedelta(minutes=40)).isoformat()}
+    def manual_dispatch_fixture(self,requests):
+        control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'release':owner_manual_review(release_fingerprint()),'manual_buys':requests}
+    def selected_cycle(self,request):
+        with patch.dict(os.environ,owner_manual_env(request['id'],release_fingerprint())),patch('oneil_v519_live_engine.require_live_release'):
+            return manual_buy_cycle(self.ledger,self.broker,request['id'],now=self.now,clock=lambda:self.now)
+    def test_manual_only_exact_selection_commits_before_wire_and_other_connection_cannot_race(self):
+        import psycopg
+        first=self.owner_request();second=self.owner_request('000002','22222222-2222-4222-8222-222222222222')
+        self.manual_dispatch_fixture([first,second]);original=self.broker.submit
+        def wire(plan):
+            rows=self.ledger.pending()
+            self.assertEqual(len(rows),1);self.assertEqual(rows[0]['signal'],'owner:'+second['id'])
+            self.assertEqual(rows[0]['status'],'SUBMISSION_UNKNOWN')
+            with psycopg.connect(self.url,autocommit=True) as other:
+                self.assertFalse(other.execute('SELECT pg_try_advisory_lock(%s)',(self.ledger.lock_key,)).fetchone()[0])
+            return original(plan)
+        self.broker.submit=wire
+        result=self.selected_cycle(second)
+        self.assertEqual(result['orders_sent'],1);self.assertEqual([p.ticker for p in self.broker.calls],['000002'])
+        self.assertEqual(self.selected_cycle(second)['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.conn.execute("UPDATE v519_order_intents SET status='CANCELLED'")
+        self.assertEqual(self.selected_cycle(second)['status'],'MANUAL_ALREADY_RECORDED')
+        self.assertEqual(len(self.broker.calls),1)
+    def test_manual_only_competing_account_lock_denies_before_broker_reads(self):
+        import psycopg
+        from v519_pg_ledger import LedgerBlocked
+        request=self.owner_request();self.manual_dispatch_fixture([request])
+        self.broker.history=lambda day:(_ for _ in ()).throw(AssertionError('history before lock'))
+        with psycopg.connect(self.url,autocommit=True) as other:
+            other.execute('SELECT pg_advisory_lock(%s)',(self.ledger.lock_key,))
+            with self.assertRaisesRegex(LedgerBlocked,'ACCOUNT_RUNTIME_ALREADY_RUNNING'):self.selected_cycle(request)
+            other.execute('SELECT pg_advisory_unlock(%s)',(self.ledger.lock_key,))
+        self.assertEqual(self.broker.calls,[])
+    def test_manual_only_typed_rejection_preserves_daily_key_against_new_uuid(self):
+        request=self.owner_request();self.manual_dispatch_fixture([request])
+        self.broker.submit=lambda plan:(_ for _ in ()).throw(OrderNotSent('MANUAL_FINAL_PRICE_CHANGED'))
+        self.assertEqual(self.selected_cycle(request)['status'],'MANUAL_PRE_SUBMIT_REJECTED')
+        self.assertFalse(self.ledger.halted());self.assertEqual(self.ledger.pending(),[])
+        new={**request,'id':'22222222-2222-4222-8222-222222222222'};self.manual_dispatch_fixture([new])
+        result=self.selected_cycle(new)
+        self.assertEqual(result['manual_buy_reason'],'ALREADY_BOUGHT_TODAY')
+        rows=self.ledger.rows('SELECT status,verified_not_sent FROM v519_order_intents')
+        self.assertEqual(rows,[{'status':'REJECTED','verified_not_sent':True}])
+    def test_manual_only_unknown_wire_halts_retains_pending_and_never_replays(self):
+        request=self.owner_request();self.manual_dispatch_fixture([request]);self.broker.failure=TimeoutError('PRIVATE')
+        with self.assertRaises(TimeoutError) as error:self.selected_cycle(request)
+        self.assertIsNone(error.exception.execution_progress['orders_sent']);self.assertTrue(self.ledger.halted())
+        self.assertEqual(len(self.ledger.pending()),1)
+        self.assertEqual(self.selected_cycle(request)['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(len(self.broker.calls),1)
+
     def test_manual_queue_real_ledger_skips_ineligible_and_commits_before_send(self):
         first=self.owner_request();second=self.owner_request('000002','22222222-2222-4222-8222-222222222222')
         first['limit_price']=9999;self.manual_queue([first,second]);self.candidates=[{'ticker':'000003','rs':98}]
@@ -2937,6 +2989,8 @@ class CloseRuntimeRegressionTests(unittest.TestCase):
             release_authorized=lambda _:False,sell_alerts=lambda:[])
         result={'status':'SELL_CONTROL_UNAVAILABLE','session_closed':True}
         snapshot=dashboard_snapshot(ledger,result)
+        self.assertEqual(snapshot['poll_minutes'],5)
+        self.assertTrue(snapshot['manual_immediate_supported'])
         self.assertFalse(snapshot['monitoring_open'])
         self.assertEqual(snapshot['result']['status'],'SELL_CONTROL_UNAVAILABLE')
         self.assertTrue(snapshot['halted']);self.assertFalse(snapshot['orders_enabled'])
@@ -3156,3 +3210,314 @@ class FiveMinuteScheduleTests(unittest.TestCase):
             runners=re.findall(r'^\s+runs-on: (.+)$',(self.root/path).read_text(),re.M)
             self.assertTrue(runners,path)
             self.assertEqual(set(runners),{'ubuntu-latest'},path)
+
+def owner_manual_env(request_id,release='b'*64,revision=1):
+    return {'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_REF':'refs/heads/main',
+        'GITHUB_REPOSITORY':'asura2367-boop/oneil-rs-scanner','GITHUB_REPOSITORY_OWNER':'asura2367-boop',
+        'GITHUB_ACTOR':'asura2367-boop','GITHUB_TRIGGERING_ACTOR':'asura2367-boop',
+        'GITHUB_WORKFLOW_REF':'asura2367-boop/oneil-rs-scanner/.github/workflows/oneil_v519_live_engine_review.yml@refs/heads/main',
+        'OPERATION':'manual-buy','REQUESTED_MANUAL_REQUEST_ID':request_id,
+        'REQUESTED_RELEASE':release,'REQUESTED_APPROVAL_REVISION':str(revision)}
+
+def owner_manual_review(release='b'*64,revision=1):
+    return {'schema_version':1,'operator':'asura2367-boop','approved_release':release,
+        'source_commit':'a'*40,'revision':revision,'review_run_id':123,'approved_at':'2026-11-02T10:00:00+09:00'}
+
+class ManualOnlyDispatchTests(unittest.TestCase):
+    setUp=ManualAveragingTests.setUp
+    def fixtures(self,requests=None):
+        ledger,broker=ManualAveragingTests.fixtures(self)
+        self.snap['positions']['000001']['average']='8000'
+        ledger.dashboard_state=None
+        ledger.rows=lambda query,args:[r for r in ledger.records if r['signal']==args[1]]
+        original=broker.buy_control()
+        broker.buy_control=lambda:{**original,'release':owner_manual_review(),
+            'manual_buys':requests if requests is not None else [self.req]}
+        return ledger,broker
+    def cycle(self,ledger,broker,request_id=None,env=None):
+        from contextlib import ExitStack
+        ident=request_id if request_id is not None else self.req['id']
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ,env or owner_manual_env(ident)))
+            stack.enter_context(patch('oneil_v519_live_engine.require_live_release'))
+            stack.enter_context(patch('oneil_v519_live_engine.release_fingerprint',return_value='b'*64))
+            for name in ('integrated_cycle','_automatic_cycle','scan_candidates','activate_live_account'):
+                stack.enter_context(patch('oneil_v519_live_engine.'+name,side_effect=AssertionError(name+' forbidden')))
+            return manual_buy_cycle(ledger,broker,ident,now=self.now,clock=lambda:self.now)
+    def second(self):
+        self.snap['positions']['000002']=self.snap['positions']['000001'].copy()
+        return {**self.req,'id':'22222222-2222-4222-8222-222222222222','ticker':'000002'}
+    def test_exact_uuid_only_among_other_requests_no_automatic_or_exit_cycle(self):
+        second=self.second();l,b=self.fixtures([self.req,second])
+        result=self.cycle(l,b,second['id'])
+        self.assertEqual(result['status'],'ACKNOWLEDGED');self.assertEqual(result['orders_sent'],1)
+        self.assertEqual([(p.ticker,p.signal) for p in b.calls],[('000002','owner:'+second['id'])])
+        self.assertEqual(len(l.dashboard_state['manual_buy_checks']),1)
+        self.assertEqual(l.dashboard_state['candidates'],[])
+        self.assertNotIn('id',result);self.assertNotIn(second['id'],json.dumps(result))
+    def test_missing_duplicate_malformed_expired_changed_account_release_fail_closed(self):
+        variants=[[],[self.req,self.req],[{**self.req,'quantity':True}],
+            [{**self.req,'expires_at':self.now.isoformat()}],[{**self.req,'account_ref':'c'*64}],
+            [{**self.req,'approved_release':'c'*64}]]
+        for requests in variants:
+            with self.subTest(requests=requests):
+                second=self.second();l,b=self.fixtures([*requests,second])
+                result=self.cycle(l,b)
+                self.assertEqual(result['manual_buy_status'],'BLOCKED');self.assertEqual(b.calls,[])
+                self.assertEqual(l.records,[])
+    def test_invalid_dispatch_context_never_sends_or_activates(self):
+        fields={'GITHUB_ACTIONS':'false','GITHUB_EVENT_NAME':'schedule','GITHUB_REF':'refs/heads/other',
+            'GITHUB_REPOSITORY':'other/repo','GITHUB_REPOSITORY_OWNER':'other','GITHUB_ACTOR':'other',
+            'GITHUB_TRIGGERING_ACTOR':'other','GITHUB_WORKFLOW_REF':'other/workflow@refs/heads/main',
+            'OPERATION':'auto','REQUESTED_MANUAL_REQUEST_ID':'other','REQUESTED_RELEASE':'c'*64,
+            'REQUESTED_APPROVAL_REVISION':'2'}
+        for key,value in fields.items():
+            with self.subTest(field=key):
+                l,b=self.fixtures();env={**owner_manual_env(self.req['id']),key:value}
+                with self.assertRaises(TradingBlocked):self.cycle(l,b,env=env)
+                self.assertEqual(b.calls,[]);self.assertEqual(l.records,[])
+        for ident in ('','bad',self.req['id'].upper(),self.req['id'].replace('-4','-3',1)):
+            l,b=self.fixtures()
+            if ident==self.req['id']:continue
+            with self.assertRaises(TradingBlocked):self.cycle(l,b,ident)
+            self.assertEqual(b.calls,[])
+    def test_unconditional_history_before_recovery_and_controls_inside_lock(self):
+        l,b=self.fixtures();events=[];depth=0
+        @contextmanager
+        def lock():
+            nonlocal depth
+            depth+=1;events.append('lock')
+            try:yield
+            finally:depth-=1
+        l.lock=lock
+        b.history=lambda day:(self.assertGreater(depth,0),events.append('history'),[])[2]
+        pending=l.pending;l.pending=lambda:(events.append('pending'),pending())[1]
+        control=b.buy_control;b.buy_control=lambda:(self.assertGreater(depth,0),events.append('control'),control())[2]
+        self.cycle(l,b)
+        self.assertEqual(events[:3],['lock','history','pending'])
+        self.assertLess(events.index('pending'),events.index('control'))
+        l,b=self.fixtures();b.history=lambda day:None
+        with self.assertRaisesRegex(TradingBlocked,'BROKER_HISTORY_INCOMPLETE'):self.cycle(l,b)
+        self.assertEqual(b.calls,[])
+    def test_unresolved_history_never_collects_account_or_sends(self):
+        l,b=self.fixtures();l.pending=lambda:[{'broker_order_id':None,'trading_day':self.now.date()}]
+        b.snapshot=lambda:(_ for _ in ()).throw(AssertionError('snapshot forbidden'))
+        result=self.cycle(l,b)
+        self.assertEqual(result['status'],'BLOCKED_UNRESOLVED_ORDERS');self.assertEqual(b.calls,[])
+        self.assertIsNone(l.dashboard_state)
+    def test_selected_recorded_or_daily_blocked_never_chooses_another(self):
+        for daily in (False,True):
+            second=self.second();l,b=self.fixtures([self.req,second])
+            if daily:l.bought_today=lambda day:{'000001'}
+            else:l.records=[{'signal':'owner:'+self.req['id']}]
+            result=self.cycle(l,b)
+            self.assertEqual(result['status'],'MANUAL_REQUEST_BLOCKED' if daily else 'MANUAL_ALREADY_RECORDED')
+            self.assertEqual(b.calls,[])
+    def test_exit_priority_blocks_without_selling_or_unrelated_buy(self):
+        second=self.second();l,b=self.fixtures([self.req,second]);b.quote=lambda *args:12000
+        result=self.cycle(l,b)
+        self.assertEqual(result['manual_buy_reason'],'EXIT_PRIORITY');self.assertEqual(b.calls,[])
+        self.assertEqual(l.records,[])
+    def test_halt_missing_activation_and_settings_changes_stop_selected(self):
+        for condition in ('halt','activation','buy','risk','holding','price','cash'):
+            with self.subTest(condition=condition):
+                self.setUp();l,b=self.fixtures();control=b.buy_control()
+                if condition=='halt':l.stopped=True
+                if condition=='activation':l.release_authorized=lambda r:False
+                if condition=='buy':b.buy_control=lambda:{**control,'enabled':False}
+                if condition=='risk':b.buy_control=lambda:{**control,'risk':{**control['risk'],'revision':2}}
+                if condition=='holding':self.snap['positions']['000001']['quantity']=11
+                if condition=='price':self.req['limit_price']=7999
+                if condition=='cash':b.power=lambda *args:(0,0)
+                result=self.cycle(l,b)
+                self.assertEqual(result['manual_buy_status'],'BLOCKED');self.assertEqual(b.calls,[])
+    def test_review_revision_and_immutable_request_rechecked_before_reservation_and_send(self):
+        for stage in (2,3,4):
+            for change in ('revision','source','request','withdraw'):
+                with self.subTest(stage=stage,change=change):
+                    l,b=self.fixtures();control=b.buy_control();calls=0
+                    def current():
+                        nonlocal calls
+                        calls+=1
+                        if calls<stage:return control
+                        if change=='revision':return {**control,'release':{**control['release'],'revision':2}}
+                        if change=='source':return {**control,'release':{**control['release'],'source_commit':'d'*40}}
+                        return {**control,'manual_buys':[] if change=='withdraw' else [{**self.req,'limit_price':8001}]}
+                    b.buy_control=current
+                    if stage==4:
+                        with self.assertRaises(TradingBlocked):self.cycle(l,b)
+                        self.assertTrue(l.stopped)
+                    else:
+                        result=self.cycle(l,b);self.assertEqual(result['manual_buy_status'],'BLOCKED')
+                    self.assertEqual(b.calls,[])
+    def test_expiry_in_send_guard_and_uncertain_outcome_never_retry(self):
+        l,b=self.fixtures()
+        @contextmanager
+        def guard():
+            self.now+=dt.timedelta(minutes=20)
+            yield
+        l.send_guard=guard
+        with self.assertRaises(TradingBlocked):self.cycle(l,b)
+        self.assertEqual(b.calls,[]);self.assertTrue(l.stopped)
+        self.setUp();l,b=self.fixtures();b.failure=TimeoutError('PRIVATE_WIRE')
+        with self.assertRaises(TimeoutError) as error:self.cycle(l,b)
+        self.assertIsNone(error.exception.execution_progress['orders_sent']);self.assertTrue(l.stopped)
+        self.cycle(l,b);self.assertEqual(len(b.calls),1)
+    def test_diagnostic_failure_preserves_ack_or_unknown_and_does_not_replay(self):
+        for fail_wire in (False,True):
+            l,b=self.fixtures();l.manual_check_checkpoint=lambda checks:(_ for _ in ()).throw(OSError('PRIVATE_DB'))
+            if fail_wire:b.failure=TimeoutError('PRIVATE_WIRE')
+            with self.assertRaises(TimeoutError if fail_wire else ManualDiagnosticCheckpointError) as error:self.cycle(l,b)
+            self.assertTrue(error.exception.manual_diagnostic_checkpoint_failed)
+            self.assertEqual(error.exception.execution_progress['orders_sent'],None if fail_wire else 1)
+            self.assertEqual(len(b.calls),1)
+            self.assertNotIn('PRIVATE',json.dumps(failure_details(error.exception)))
+    def test_typed_not_sent_keeps_record_and_no_halt_or_other_request(self):
+        second=self.second();l,b=self.fixtures([self.req,second])
+        b.submit=lambda plan:(_ for _ in ()).throw(OrderNotSent('FRESH_EXECUTABLE_BOOK_REQUIRED'))
+        result=self.cycle(l,b)
+        self.assertEqual(result['status'],'MANUAL_PRE_SUBMIT_REJECTED');self.assertEqual(result['orders_sent'],0)
+        self.assertEqual(len(l.records),1);self.assertTrue(l.records[0]['verified_not_sent']);self.assertFalse(l.stopped)
+        self.assertEqual(self.cycle(l,b)['status'],'MANUAL_ALREADY_RECORDED')
+
+    def test_submission_and_halt_double_failure_preserves_unknown_not_zero(self):
+        for failure in ('submit','ack','unlock'):
+            with self.subTest(failure=failure):
+                l,b=self.fixtures()
+                if failure=='submit':b.failure=TimeoutError('PRIVATE_SUBMIT')
+                if failure=='ack':l.ack=lambda *args:(_ for _ in ()).throw(OSError('PRIVATE_ACK'))
+                if failure=='unlock':
+                    depth=0
+                    @contextmanager
+                    def lock():
+                        nonlocal depth
+                        depth+=1
+                        try:yield
+                        finally:
+                            depth-=1
+                            if depth==1:raise OSError('PRIVATE_UNLOCK')
+                    l.lock=lock
+                l.halt=lambda:(_ for _ in ()).throw(OSError('PRIVATE_HALT'))
+                with self.assertRaises(OSError) as error:self.cycle(l,b)
+                self.assertIsNone(error.exception.execution_progress['orders_sent'])
+                self.assertEqual(error.exception.execution_progress['order_attempts'],1)
+                self.assertEqual(len(b.calls),1)
+                if failure!='unlock':self.assertIn('submission_failure',failure_details(error.exception))
+                self.assertNotIn('PRIVATE',json.dumps(failure_details(error.exception)))
+
+class ManualOnlyRuntimeTests(unittest.TestCase):
+    def test_cli_routing_never_activates_scans_or_runs_automatic_cycle(self):
+        import io,sys
+        from contextlib import ExitStack
+        from unittest.mock import MagicMock
+        ident='11111111-1111-4111-8111-111111111111';ledger=MagicMock();ledger.dashboard_state=None
+        with tempfile.TemporaryDirectory() as directory,ExitStack() as stack:
+            out=pathlib.Path(directory)/'result.json'
+            stack.enter_context(patch.object(sys,'argv',['engine','--manual-buy','--manual-request-id',ident,'--execute','--output',str(out)]))
+            stack.enter_context(patch.dict(os.environ,{**owner_manual_env(ident),'SUPABASE_DB_URL':'','V519_DASHBOARD_REVIEW_REVISION':'1'}))
+            stack.enter_context(patch('oneil_v519_live_engine.dt.datetime',RegularSessionClock))
+            stack.enter_context(patch('oneil_v519_live_engine.read_buy_control',return_value={'connected':True,'release':owner_manual_review()}))
+            stack.enter_context(patch('oneil_v519_live_engine.release_fingerprint',return_value='b'*64))
+            stack.enter_context(patch('oneil_v519_live_engine.require_live_release'))
+            stack.enter_context(patch('v519_pg_ledger.connect'))
+            stack.enter_context(patch('v519_pg_ledger.PgRuntimeLedger',return_value=ledger))
+            creds=stack.enter_context(patch('kis_buying_power_readonly.credentials',return_value=('key','secret','account','01')))
+            broker=stack.enter_context(patch('oneil_v519_live_engine.KisBroker'))
+            cycle=stack.enter_context(patch('oneil_v519_live_engine.manual_buy_cycle',return_value={'status':'ACKNOWLEDGED','gate':'ALLOW','orders_sent':1,'order_attempts':1}))
+            for name in ('integrated_cycle','_automatic_cycle','scan_candidates','activate_live_account','activation_candidates'):
+                stack.enter_context(patch('oneil_v519_live_engine.'+name,side_effect=AssertionError(name+' forbidden')))
+            stack.enter_context(patch('sys.stdout',new_callable=io.StringIO))
+            with self.assertRaises(SystemExit) as stopped:runtime_main()
+            self.assertEqual(stopped.exception.code,0)
+            cycle.assert_called_once_with(ledger,broker.return_value,ident,expected_review=owner_manual_review())
+            broker.assert_called_once_with(execution=True,operator_activation=False);creds.assert_called_once_with(read_only=False)
+            ledger.activate_release.assert_not_called();ledger.halt.assert_not_called()
+            self.assertNotIn(ident,out.read_text())
+    def test_cli_missing_or_invalid_manual_arguments_deny_before_database(self):
+        import io,sys
+        for argv in (['--manual-buy'],['--manual-buy','--execute'],['--run','--manual-request-id','bad'],
+                     ['--manual-buy','--manual-request-id','bad','--execute']):
+            with self.subTest(argv=argv),tempfile.TemporaryDirectory() as directory:
+                out=pathlib.Path(directory)/'result.json'
+                with patch.object(sys,'argv',['engine',*argv,'--output',str(out)]),patch('v519_pg_ledger.connect') as connect_db,patch('sys.stdout',new_callable=io.StringIO):
+                    with self.assertRaises(SystemExit) as stopped:runtime_main()
+                self.assertEqual(stopped.exception.code,2);connect_db.assert_not_called()
+    def test_workflow_manual_only_inputs_and_shared_dependencies_remain(self):
+        text=pathlib.Path('.github/workflows/oneil_v519_live_engine_review.yml').read_text()
+        branch=text.split('            manual-buy)')[1].split('            trade)')[0]
+        self.assertIn('--manual-buy --manual-request-id "$REQUESTED_MANUAL_REQUEST_ID" --execute',branch)
+        self.assertNotIn('--run',branch);self.assertNotIn('--activate',branch);self.assertNotIn('--apply-owner-approval',branch)
+        self.assertNotIn('REQUESTED_MANUAL_REQUEST_ID: ${{ inputs.manual_request_id }}',text)
+        masking=text.split('      - name: Mask private manual request identifier')[1].split('      - name:')[0]
+        self.assertIn('context.payload.inputs?.manual_request_id',masking)
+        self.assertLess(masking.index('core.setSecret(requestId)'),masking.index("core.exportVariable('REQUESTED_MANUAL_REQUEST_ID'"))
+        self.assertNotIn('${{ inputs.manual_request_id }}',text)
+        self.assertIn("env.OPERATION == 'manual-buy'",text)
+        self.assertIn('needs: [test, session]',text);self.assertIn('V519_TEST_DB_URL:',text)
+        self.assertIn("cron: '5,10,15,25,30,35,45,50,55 0-10 * * 1-5'",text)
+class ManualFinalQuoteTests(unittest.TestCase):
+    setUp=ManualOnlyDispatchTests.setUp
+    fixtures=ManualOnlyDispatchTests.fixtures
+    cycle=ManualOnlyDispatchTests.cycle
+    def real_broker(self,change=None):
+        l,fixture=self.fixtures();b=object.__new__(KisBroker)
+        b.execution=True;b.account='12345678';b.product='01';b.quote_evidence={};b.history_cache={}
+        for name in ('buy_control','snapshot','history','quote'):setattr(b,name,getattr(fixture,name))
+        b.calls=[];b.reads=0;b.refresh_after_controls=[]
+        def power(*args):
+            self.now+=dt.timedelta(seconds=5)
+            return (100000,100)
+        b.power=power
+        def quote(ticker,side):
+            b.reads+=1
+            price=8000;size=100
+            if b.reads==2:
+                if change=='error':raise TimeoutError('PRIVATE_QUOTE')
+                if change=='price_up':price=8001
+                if change=='price_down':price=7999
+                if change=='depth':size=4
+                if change=='expiry':self.now+=dt.timedelta(minutes=20)
+                if change=='session':self.now=self.now.replace(hour=15,minute=20)
+            b.quote_evidence[(ticker,side)]={'price':price,'size':size,'at':self.now,'venue':'KRX',
+                'session':execution_session(self.now),'order_type':limit_order_code(execution_session(self.now) or 'REGULAR')}
+            return price
+        b.execution_quote=quote
+        def wire(path,tr,body,post=False):
+            self.assertTrue(post);b.calls.append(body)
+            if change=='wire':raise TimeoutError('PRIVATE_POST')
+            return None,{'rt_cd':'0','output':{'ODNO':'000123'}}
+        b.request=wire
+        return l,b
+    def clock_patch(self):
+        test=self
+        class Clock(dt.datetime):
+            @classmethod
+            def now(cls,tz=None):return test.now.astimezone(tz) if tz else test.now
+        return patch('oneil_v519_live_engine.dt.datetime',Clock)
+    def test_refresh_after_slow_checks_preserves_exact_reserved_price_quantity_and_post_once(self):
+        l,b=self.real_broker()
+        with self.clock_patch():result=self.cycle(l,b)
+        self.assertEqual(result['status'],'ACKNOWLEDGED');self.assertEqual(b.reads,2);self.assertEqual(len(b.calls),1)
+        self.assertEqual(b.calls[0]['ORD_UNPR'],'8000');self.assertEqual(b.calls[0]['ORD_QTY'],'5')
+    def test_final_refresh_changed_price_read_failure_or_depth_blocks_before_post(self):
+        for change,reason in [('error','MANUAL_FINAL_QUOTE_UNAVAILABLE'),('price_up','MANUAL_FINAL_PRICE_CHANGED'),
+                ('price_down','MANUAL_FINAL_PRICE_CHANGED'),('depth','BOOK_SIZE_EXCEEDED')]:
+            with self.subTest(change=change):
+                self.setUp();l,b=self.real_broker(change)
+                with self.clock_patch():result=self.cycle(l,b)
+                self.assertEqual(result['status'],'MANUAL_PRE_SUBMIT_REJECTED');self.assertEqual(result['manual_buy_reason'],reason)
+                self.assertEqual(b.calls,[]);self.assertEqual(b.reads,2);self.assertFalse(l.stopped)
+                self.assertEqual(len(l.records),1);self.assertTrue(l.records[0]['verified_not_sent'])
+    def test_refresh_cannot_extend_owner_expiry_or_execution_session(self):
+        for change in ('expiry','session'):
+            self.setUp();l,b=self.real_broker(change)
+            with self.clock_patch():result=self.cycle(l,b)
+            self.assertEqual(result['status'],'MANUAL_PRE_SUBMIT_REJECTED')
+            self.assertEqual(b.calls,[]);self.assertEqual(len(l.records),1);self.assertFalse(l.stopped)
+    def test_submit_timeout_after_refresh_is_unknown_not_typed_pre_send(self):
+        l,b=self.real_broker('wire')
+        with self.clock_patch(),self.assertRaises(TimeoutError) as error:self.cycle(l,b)
+        self.assertIsNone(error.exception.execution_progress['orders_sent']);self.assertTrue(l.stopped)
+        self.assertEqual(len(b.calls),1);self.assertEqual(b.reads,2)
+        with self.clock_patch():self.cycle(l,b)
+        self.assertEqual(len(b.calls),1);self.assertNotIn('verified_not_sent',l.records[0])
