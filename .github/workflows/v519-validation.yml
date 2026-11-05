@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - 'oneil_v519_*.py'
-      - 'test_v519_runner_update.py'
+      - 'tests/test_v519_runner_update.py'
       - '.github/workflows/v519-validation.yml'
 permissions:
   contents: read
@@ -27,7 +27,7 @@ jobs:
       - name: Validate Python and order checks
         run: |
           python -m py_compile oneil_v519_live_runner.py oneil_v519_broker_recovery.py oneil_v519_order_recovery.py
-          python -m unittest discover -p 'test_v519_runner_update.py' -v
+          PYTHONPATH=tests python -m unittest -v test_v519_runner_update
       - name: Verify GitHub Actions live order gate stays closed
         run: |
           mkdir -p "$RUNNER_TEMP/v519-state"
