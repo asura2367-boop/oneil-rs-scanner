@@ -31,6 +31,7 @@ REQUIRED_FILES = TOOLS | {
         '__init__.py', 'api.py', 'broker.py', 'domain.py', 'kis_adapter.py',
         'kis_evidence.py', 'KIS_EVIDENCE.md', 'kis_transport.py', 'KIS_TRANSPORT.md',
         'kis_https.py', 'KIS_HTTPS.md', 'KIS_PUBLIC_SPEC.md',
+        'kis_authenticated.py', 'KIS_AUTHENTICATED.md',
         'store.py', 'worker.py', 'schema.sql', 'README.md', 'KIS_ADAPTER.md', 'recovery.py', 'RECOVERY.md')
 } | {
     'oneil_control_v2/' + name for name in (
@@ -53,7 +54,7 @@ REQUIRED_FILES = TOOLS | {
 } | {
     'tests/execution_v2/' + name for name in (
         'test_domain.py', 'test_kis_adapter.py', 'test_kis_evidence.py', 'test_kis_transport.py',
-        'test_kis_https.py',
+        'test_kis_https.py', 'test_kis_authenticated.py',
         'kis_evidence_fixtures.py', 'test_postgres.py',
         'test_simulator.py', 'test_worker.py', 'test_recovery.py')
 } | {

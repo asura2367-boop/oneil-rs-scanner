@@ -7,9 +7,9 @@ was accessed. No actual network/DNS/TCP/TLS requests were made.
 ## Source and current aggregate
 
 Base `e107bae`; preserved source tips `b10eb02`, `13e130f`, `3787323`,
-`e5c4c24` and `4f3fa28`. The public-spec documentation is included in the
-required package inventory.
-`python tools/run_monitor_v2_tests.py`: **757 Python + 33 Node = 790 tests**,
+`e5c4c24`, `4f3fa28` and `73d0693`. Public-spec and inactive authenticated
+read-source documentation are included in the required package inventory.
+`python tools/run_monitor_v2_tests.py`: **818 Python + 33 Node = 851 tests**,
 zero failures and zero skips. Every execution, control, monitor, policy and runtime
 offline module is discovered once. The 37 PostgreSQL cases remain a separate,
 unrun acceptance gate; they are not counted as passes or hidden skips.
@@ -37,6 +37,19 @@ synthetic clocks and isolated SQLite, verifying reconciliation and durable stop.
 It is not a Windows/PowerShell, broker, PostgreSQL or power-loss test. Other paths
 use named SQL-core, HTTP/process and provider doubles with local SQLite journals.
 
+## Inactive authenticated GET foundation
+
+The source adds 61 synthetic, socket-forbidden credential lifecycle, cancellable
+GET retry, rate/cooldown, pagination, redaction and fail-closed admission tests.
+It supplies only injected provider/client contracts; no Windows secret loader,
+token issuer or authenticated HTTP implementation is provided. The existing
+credential-free HTTPS client and all production/runtime wiring remain unchanged.
+Independent review reran all 271 KIS tests and an adversarial frozen-clock bearer
+reuse probe; token resurrection, cleanup and persistent-auth-failure findings
+were fixed before the final pass. No remaining blocker was found for this
+inactive scope. These checks do not establish authenticated provenance or live
+semantic evidence. See [KIS_AUTHENTICATED.md](../../oneil_execution_v2/KIS_AUTHENTICATED.md).
+
 ## Separate acceptance gates, not run
 
 - Real PostgreSQL/psycopg transactions, locking, concurrency, DDL and crash tests.
@@ -53,7 +66,9 @@ use named SQL-core, HTTP/process and provider doubles with local SQLite journals
 
 Read [INTEGRATION.md](INTEGRATION.md), [COMPOSITION.md](../../oneil_runtime_v2/COMPOSITION.md)
 and [KIS_HTTPS.md](../../oneil_execution_v2/KIS_HTTPS.md) for exact scope, including
-Content-Length-only success framing and the fail-closed multipage pacing gap.
+Content-Length-only success framing. The credential-free transport remains
+fail-fast on multipage pacing; the inactive injected authenticated source adds
+bounded pacing without activating an authenticated client.
 
 ## Package verification
 
