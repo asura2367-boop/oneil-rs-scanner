@@ -331,8 +331,21 @@ class PgRuntimeLedger:
             cur.execute('INSERT INTO v519_runs(run_id,account_fingerprint) VALUES(%s,%s)',
                         (run_id,self.fingerprint))
 
+    def save_manual_buy_checks(self, run_id, checks):
+        # The run JSON is private. Persist each evaluated owner request before
+        # progressing; a final error must not erase already collected evidence.
+        from psycopg.types.json import Jsonb
+        with self.conn.cursor() as cur:
+            cur.execute('''UPDATE v519_runs SET result=result || %s
+                WHERE run_id=%s AND account_fingerprint=%s''',
+                (Jsonb({'manual_buy_checks':checks}),run_id,self.fingerprint))
+            if cur.rowcount != 1:raise LedgerBlocked('RUN_DIAGNOSTIC_CHECKPOINT_MISSING')
+
     def finish_run(self, run_id, result):
         from psycopg.types.json import Jsonb
         with self.conn.cursor() as cur:
-            cur.execute('UPDATE v519_runs SET finished_at=now(),result=%s WHERE run_id=%s',
+            cur.execute('''UPDATE v519_runs SET finished_at=now(),result=%s ||
+                    CASE WHEN result ? 'manual_buy_checks'
+                        THEN jsonb_build_object('manual_buy_checks',result->'manual_buy_checks')
+                        ELSE '{}'::jsonb END WHERE run_id=%s''',
                         (Jsonb(result),run_id))

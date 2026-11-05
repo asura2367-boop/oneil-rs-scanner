@@ -603,6 +603,27 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.broker.buy_control=lambda:{**control,'risk':risk}
         return control,risk
 
+    def test_manual_diagnostics_checkpoint_survives_final_failure_record(self):
+        self.ledger.start_run('diagnostic-fixture')
+        checks=[{'id':'fixture','ticker':'234690','status':'BLOCKED','reason':'MANUAL_BUY_LIMIT_EXCEEDED',
+                 'limit_reasons':['PER_STOCK_EXPOSURE_LIMIT']}]
+        self.ledger.save_manual_buy_checks('diagnostic-fixture',checks)
+        row=self.ledger.rows("SELECT result,finished_at FROM v519_runs WHERE run_id=%s",('diagnostic-fixture',))[0]
+        self.assertEqual(row['result']['manual_buy_checks'],checks);self.assertIsNone(row['finished_at'])
+        self.ledger.finish_run('diagnostic-fixture',{'status':'MANUAL_QUEUE_BLOCKED'})
+        self.ledger.finish_run('diagnostic-fixture',{'status':'BLOCKED','failure_kind':'NETWORK_ERROR'})
+        row=self.ledger.rows("SELECT result FROM v519_runs WHERE run_id=%s",('diagnostic-fixture',))[0]
+        self.assertEqual(row['result']['manual_buy_checks'],checks)
+        self.assertEqual(row['result']['status'],'BLOCKED')
+        self.assertNotIn('account_snapshot',row['result'])
+
+    def test_manual_diagnostic_checkpoint_is_account_scoped(self):
+        from v519_pg_ledger import PgRuntimeLedger,LedgerBlocked
+        self.ledger.start_run('diagnostic-fixture')
+        other=PgRuntimeLedger(self.conn,'c'*64)
+        with self.assertRaises(LedgerBlocked):other.save_manual_buy_checks('diagnostic-fixture',[])
+        with self.assertRaises(LedgerBlocked):self.ledger.save_manual_buy_checks('absent',[])
+
     def manual_queue(self, requests):
         control=self.broker.buy_control()
         self.broker.buy_control=lambda:{**control,'manual_buys':requests,'release':{'approved_release':release_fingerprint()}}
@@ -2611,7 +2632,7 @@ class ManagedExitBatchTests(unittest.TestCase):
         self.assertEqual([p.ticker for p in self.broker.calls],['000001'])
 
 class CloseRuntimeRegressionTests(unittest.TestCase):
-    def run_close(self, observation, *, collected=False, scanner_failure=False, publication_failure=False, storage_failure=False):
+    def run_close(self, observation, *, collected=False, scanner_failure=False, publication_failure=False, storage_failure=False, manual_checks=None, cycle_failure=False):
         import copy, io, sys
         from contextlib import ExitStack
         from unittest.mock import MagicMock
@@ -2632,7 +2653,12 @@ class CloseRuntimeRegressionTests(unittest.TestCase):
             stack.enter_context(patch('v519_pg_ledger.PgRuntimeLedger',return_value=ledger))
             credentials=stack.enter_context(patch('kis_buying_power_readonly.credentials',return_value=('key','secret','account','01')))
             broker=stack.enter_context(patch('oneil_v519_live_engine.KisBroker'))
-            cycle=stack.enter_context(patch('oneil_v519_live_engine.integrated_cycle',return_value=copy.deepcopy(observation)))
+            def run_observation(*args,**kwargs):
+                if manual_checks is not None:
+                    ledger.manual_check_checkpoint(manual_checks)
+                if cycle_failure:raise TimeoutError('PRIVATE_AFTER_CHECKS')
+                return copy.deepcopy(observation)
+            cycle=stack.enter_context(patch('oneil_v519_live_engine.integrated_cycle',side_effect=run_observation))
             stack.enter_context(patch('oneil_v519_live_engine.scan_candidates',side_effect=ValueError('fixture') if scanner_failure else None,return_value=[]))
             wire=stack.enter_context(patch('urllib.request.urlopen',side_effect=AssertionError('no network allowed')))
             encrypt=stack.enter_context(patch('oneil_v519_live_engine.encrypt_dashboard',side_effect=OSError('PRIVATE_FIXTURE') if publication_failure else None))
@@ -2653,6 +2679,15 @@ class CloseRuntimeRegressionTests(unittest.TestCase):
     def observed(self,status='OBSERVED'):
         return {'status':status,'gate':'DENY','orders_sent':0,'order_attempts':0,
                 'recovery':{'matched':0,'unresolved':0}}
+
+    def test_private_manual_checkpoint_is_wired_before_cycle_and_not_public(self):
+        checks=[{'id':'private-id','ticker':'234690','status':'BLOCKED','reason':'MANUAL_BUY_LIMIT_EXCEEDED'}]
+        for cycle_failure,publication_failure in ((False,False),(True,False),(False,True)):
+            result,ledger,_,_=self.run_close(self.observed(),collected=True,manual_checks=checks,
+                cycle_failure=cycle_failure,publication_failure=publication_failure)
+            ledger.save_manual_buy_checks.assert_called_once_with(ledger.start_run.call_args.args[0],checks)
+            self.assertNotIn('manual_buy_checks',result)
+            self.assertNotIn('private-id',json.dumps(result));self.assertNotIn('PRIVATE_AFTER_CHECKS',json.dumps(result))
 
     def test_close_preserves_unresolved_status_and_skips_missing_snapshot(self):
         observation=self.observed('BLOCKED_UNRESOLVED_ORDERS')
@@ -2796,3 +2831,68 @@ class ExitPreTransportTests(ManagedExitBatchTests):
         self.assertEqual(result['orders_sent'],1);self.assertEqual(result['status'],'ACKNOWLEDGED')
         self.assertEqual(result['order_attempts'],2);self.assertFalse(self.ledger.stopped)
         self.assertEqual(self.ledger.records['2']['status'],'REJECTED')
+
+class ManualDiagnosticTests(ManualQueueIntegrationTests):
+    def test_limit_reasons_are_distinct_without_changing_policy(self):
+        cases=[({'remaining':40000,'per_stock':180000},(100000,100),'TOTAL_ALLOCATION_LIMIT'),
+               ({'remaining':500000,'per_stock':140000},(100000,100),'PER_STOCK_EXPOSURE_LIMIT'),
+               (self.alloc,(40000,100),'BROKER_BUYING_POWER_LIMIT'),
+               (self.alloc,(100000,4),'BROKER_QUANTITY_LIMIT')]
+        for allocation,power,reason in cases:
+            with self.assertRaises(TradingBlocked) as caught:
+                manual_buy_plan(self.req,self.snap,allocation,8000,lambda *args:power,set())
+            self.assertEqual(str(caught.exception),'MANUAL_BUY_LIMIT_EXCEEDED')
+            self.assertEqual(caught.exception.manual_limit_reasons,[reason])
+
+    def test_checkpoint_precedes_next_request_and_keeps_first_when_second_fails(self):
+        import copy
+        l,b=self.fixtures();self.add_second();self.queue(b,[{**self.req,'limit_price':7999},self.second()])
+        saved=[];l.manual_check_checkpoint=lambda checks:saved.append(copy.deepcopy(checks))
+        def fail(plan):
+            self.assertEqual(saved[0][0]['reason'],'OWNER_LIMIT_PRICE_EXCEEDED')
+            raise TimeoutError('PRIVATE')
+        b.submit=fail
+        with self.assertRaises(TimeoutError):self.cycle(l,b)
+        self.assertEqual(len(saved[-1]),2)
+        self.assertEqual(saved[-1][0]['ticker'],'000001')
+        self.assertEqual(saved[-1][1]['status'],'SUBMISSION_CHECK_FAILED')
+        self.assertNotIn('PRIVATE',json.dumps(saved))
+
+    def test_checkpoint_failure_prevents_later_order_and_is_not_retried(self):
+        l,b=self.fixtures();self.add_second();self.queue(b,[{**self.req,'limit_price':7999},self.second()])
+        from unittest.mock import Mock
+        l.manual_check_checkpoint=Mock(side_effect=OSError('PRIVATE'))
+        with self.assertRaises(TradingBlocked) as caught:self.cycle(l,b)
+        self.assertEqual(str(caught.exception),'OWNER_LIMIT_PRICE_EXCEEDED')
+        self.assertTrue(caught.exception.manual_diagnostic_checkpoint_failed)
+        self.assertEqual(b.calls,[]);self.assertEqual(l.manual_check_checkpoint.call_count,1)
+
+    def test_successful_block_has_durable_ticker_and_cap_diagnostic(self):
+        import copy
+        l,b=self.fixtures();self.queue(b,[{**self.req,'quantity':1000}])
+        saved=[];l.manual_check_checkpoint=lambda checks:saved.append(copy.deepcopy(checks))
+        result=self.cycle(l,b)
+        self.assertEqual(result['status'],'MANUAL_QUEUE_BLOCKED');self.assertEqual(b.calls,[])
+        check=saved[-1][0]
+        self.assertEqual(check['ticker'],'000001');self.assertEqual(check['reason'],'MANUAL_BUY_LIMIT_EXCEEDED')
+        self.assertIn('PER_STOCK_EXPOSURE_LIMIT',check['limit_reasons'])
+        self.assertNotIn('manual_buy_checks',result)  # private DB/dashboard only
+
+    def test_ack_checkpoint_failure_retains_known_order_progress(self):
+        l,b=self.fixtures()
+        l.manual_check_checkpoint=lambda checks:(_ for _ in ()).throw(OSError('PRIVATE'))
+        with self.assertRaises(ManualDiagnosticCheckpointError) as caught:self.cycle(l,b)
+        self.assertEqual(caught.exception.execution_progress['orders_sent'],1)
+        self.assertEqual(caught.exception.execution_progress['order_attempts'],1)
+        self.assertEqual(len(b.calls),1)
+        self.assertTrue(failure_details(caught.exception)['manual_diagnostic_checkpoint_failed'])
+
+    def test_timeout_checkpoint_failure_retains_original_uncertainty(self):
+        l,b=self.fixtures();original=TimeoutError('PRIVATE_WIRE');b.failure=original
+        l.manual_check_checkpoint=lambda checks:(_ for _ in ()).throw(OSError('PRIVATE_DB'))
+        with self.assertRaises(TimeoutError) as caught:self.cycle(l,b)
+        self.assertIs(caught.exception,original)
+        self.assertIsNone(caught.exception.execution_progress['orders_sent'])
+        self.assertEqual(caught.exception.execution_progress['order_attempts'],1)
+        self.assertTrue(l.stopped);self.assertEqual(len(b.calls),1)
+        self.assertNotIn('PRIVATE',json.dumps(failure_details(caught.exception)))

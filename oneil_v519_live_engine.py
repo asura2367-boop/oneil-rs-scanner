@@ -1072,7 +1072,14 @@ def manual_buy_plan(request,snapshot,allocation,price,power,bought_today):
     exposure=max(money(pos['cost']),money(pos['valuation']))
     cap=min(allocation['remaining'],max(0,allocation['per_stock']-exposure),amount)
     # Exact owner quantity. Never silently increase or shrink the requested order.
-    if request['quantity']>broker_qty or charge>cap:raise TradingBlocked('MANUAL_BUY_LIMIT_EXCEEDED')
+    if request['quantity']>broker_qty or charge>cap:
+        exc=TradingBlocked('MANUAL_BUY_LIMIT_EXCEEDED')
+        exc.manual_limit_reasons=[code for code,blocked in (
+            ('BROKER_QUANTITY_LIMIT',request['quantity']>broker_qty),
+            ('TOTAL_ALLOCATION_LIMIT',charge>allocation['remaining']),
+            ('PER_STOCK_EXPOSURE_LIMIT',charge>max(0,allocation['per_stock']-exposure)),
+            ('BROKER_BUYING_POWER_LIMIT',charge>amount)) if blocked]
+        raise exc
     return OrderPlan(ticker,'BUY',request['quantity'],price,'owner:'+request['id'],'OWNER_AVERAGING')
 
 
@@ -1147,6 +1154,10 @@ def process_manual_buy(ledger,broker,requests,*,now,clock):
         return {'status':'ACKNOWLEDGED','orders_sent':1,'order_attempts':1,'gate':'ALLOW','recovery':recovery}
 
 
+class ManualDiagnosticCheckpointError(RuntimeError):
+    pass
+
+
 def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss_pct=5,take_profit_pct=10,clock=None):
     clock=clock or (lambda:dt.datetime.now(ZoneInfo('Asia/Seoul')));now=now or clock()
     result=_automatic_cycle(ledger,broker,candidates,execute=execute,now=now,stop_loss_pct=stop_loss_pct,take_profit_pct=take_profit_pct,clock=clock)
@@ -1155,6 +1166,23 @@ def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss
     requests=state.get('buy_control',{}).get('manual_buys',[]) if state else []
     if not execute or not requests or result.get('orders_sent') or result.get('planned_sells') or result.get('recovery',{}).get('unresolved'):return result
     checks=[]
+    def record_check(check, *, progress=None, cause=None):
+        # Private diagnostics only. Checkpoint before another request or fallback
+        # can replace state or fail; never include this data in the public report.
+        if isinstance(request,dict) and CODE.fullmatch(str(request.get('ticker',''))):
+            check['ticker']=request['ticker']
+        checks.append(check)
+        ledger.dashboard_state['manual_buy_checks']=checks
+        checkpoint=getattr(ledger,'manual_check_checkpoint',None)
+        if callable(checkpoint):
+            try:checkpoint(checks)
+            except Exception:
+                failed=cause or ManualDiagnosticCheckpointError('MANUAL_DIAGNOSTIC_CHECKPOINT_FAILED')
+                failed.manual_diagnostic_checkpoint_failed=True
+                if progress is not None:
+                    failed.execution_progress={key:progress[key] for key in
+                        ('orders_sent','confirmed_orders_sent','order_attempts') if key in progress}
+                raise failed from None
     # Only request-local failures may advance the queue. Unknown exceptions,
     # unresolved orders, changed controls and account safety blocks stop the run.
     local_blocks={'MANUAL_REQUEST_INVALID','MANUAL_REQUEST_IDENTITY_CHANGED',
@@ -1166,23 +1194,28 @@ def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss
         try:
             manual_buy_request(request,now=clock(),fingerprint=ledger.fingerprint,release=release_fingerprint())
             sent=process_manual_buy(ledger,broker,[request],now=now,clock=clock)
-            checks.append({'id':request_id,'status':sent['status'],
-                **({'reason':sent['manual_buy_reason']} if 'manual_buy_reason' in sent else {})})
+            record_check({'id':request_id,'status':sent['status'],
+                **({'reason':sent['manual_buy_reason']} if 'manual_buy_reason' in sent else {})},progress=sent)
             state['manual_buy_checks']=checks
             if sent['status']=='MANUAL_ALREADY_RECORDED':continue
             result.update(sent)
             result['manual_buy_status']=sent['status']
             if 'manual_buy_reason' not in sent:result.pop('manual_buy_reason',None)
             return result  # Never send another order after an acknowledgement.
+        except ManualDiagnosticCheckpointError:
+            raise
         except TradingBlocked as exc:
-            checks.append({'id':request_id,'status':'BLOCKED','reason':str(exc)})
+            record_check({'id':request_id,'status':'BLOCKED','reason':str(exc),
+                **({'limit_reasons':exc.manual_limit_reasons} if hasattr(exc,'manual_limit_reasons') else {})},
+                progress=getattr(exc,'execution_progress',result),cause=exc)
             ledger.dashboard_state['manual_buy_checks']=checks
             if getattr(exc,'execution_progress',None):raise
             state['manual_buy_checks']=checks
             result['manual_buy_status']='BLOCKED';result['manual_buy_reason']=str(exc)
             if str(exc) not in local_blocks:return result
-        except Exception:
-            checks.append({'id':request_id,'status':'SUBMISSION_CHECK_FAILED'})
+        except Exception as exc:
+            record_check({'id':request_id,'status':'SUBMISSION_CHECK_FAILED'},
+                progress=getattr(exc,'execution_progress',None),cause=exc)
             ledger.dashboard_state['manual_buy_checks']=checks
             raise
     if any(check['status']=='BLOCKED' for check in checks):
@@ -1225,6 +1258,8 @@ def failure_details(exc, *, _include_submission=True):
            ('TIMEOUT',TimeoutError),('INVALID_VALUE',ValueError),
            ('MISSING_FIELD',KeyError),('RUNTIME_ERROR',RuntimeError))
     data={'failure_kind':next((name for name,kind in kinds if isinstance(exc,kind)),'UNEXPECTED_ERROR')}
+    if getattr(exc,'manual_diagnostic_checkpoint_failed',False) is True:
+        data['manual_diagnostic_checkpoint_failed']=True
     sqlstate=getattr(exc,'sqlstate',None)
     if isinstance(sqlstate,str) and re.fullmatch('[0-9A-Z]{5}',sqlstate):
         data.update(failure_kind='DATABASE_ERROR',sqlstate=sqlstate)
@@ -1563,6 +1598,7 @@ def runtime_main():
                     ledger=PgRuntimeLedger(db,fingerprint)
                     print(json.dumps({'event':'RUNTIME_LEDGER_START'}),flush=True)
                     ledger.start_run(run_id)
+                    ledger.manual_check_checkpoint=lambda checks:ledger.save_manual_buy_checks(run_id,checks)
                     print(json.dumps({'event':'RUNTIME_LEDGER_READY'}),flush=True)
                     # Daily close is a time boundary, not an emergency halt.
                     # Emergency stops persist until an operator explicitly activates again.
