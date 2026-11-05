@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       day:
-        description: 'Closed incident day in KST (YYYY-MM-DD), less than 90 days old'
+        description: 'Incident date in KST (YYYY-MM-DD), NOT today; 1-89 days ago. For the Nov 4 incident: 2026-11-04'
         required: true
         type: string
 permissions:
