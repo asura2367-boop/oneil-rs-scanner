@@ -1349,8 +1349,13 @@ def publish_dashboard_if_collected(ledger,result,public_key,output):
 def run_failure_context(result):
     # Preserve only safe observation metadata if publication/storage fails.
     # Never copy account snapshots, broker payloads or inferred order outcomes.
-    return {key:result[key] for key in ('recovery','scanner_status','session_closed',
+    context={key:result[key] for key in ('recovery','scanner_status','session_closed',
                                       'dashboard_snapshot_status') if key in result}
+    # Publication/storage after the control transaction cannot undo its commit.
+    # These booleans describe a completed operation, not the current halt state.
+    for key in ('activation_committed','halt_resume_committed'):
+        if type(result.get(key)) is bool:context[key]=result[key]
+    return context
 
 
 def failure_details(exc, *, _include_submission=True):
@@ -1403,25 +1408,51 @@ def failure_details(exc, *, _include_submission=True):
     return data
 
 
-def activate_live_account(ledger, broker, candidates, *, now, operator, acknowledged=False, dashboard_review=None):
+def require_owner_halt_resume(review, operator, expected_halt_revision):
+    if (not isinstance(expected_halt_revision,str) or not re.fullmatch('[0-9a-f]{64}',expected_halt_revision)
+            or release_review_policy(review)!=review or not isinstance(review,dict)
+            or review.get('operator')!=operator or review.get('approved_release')!=release_fingerprint()
+            or os.getenv('GITHUB_ACTIONS')!='true' or os.getenv('GITHUB_EVENT_NAME')!='workflow_dispatch'
+            or os.getenv('GITHUB_REF')!='refs/heads/main'
+            or os.getenv('GITHUB_REPOSITORY')!='asura2367-boop/oneil-rs-scanner'
+            or os.getenv('GITHUB_REPOSITORY_OWNER')!=operator or os.getenv('GITHUB_ACTOR')!=operator
+            or os.getenv('OPERATION')!='apply-approval' or os.getenv('OPERATOR_CONFIRMED')!='true'
+            or os.getenv('REQUESTED_RELEASE')!=review.get('approved_release')
+            or os.getenv('REQUESTED_APPROVAL_REVISION')!=str(review.get('revision'))):
+        raise TradingBlocked('OWNER_HALT_RESUME_CONFIRMATION_REQUIRED')
+
+
+def activate_live_account(ledger, broker, candidates, *, now, operator, acknowledged=False, dashboard_review=None,
+                          resume_halt=False, expected_halt_revision=None):
     if not acknowledged or not isinstance(operator,str) or not re.fullmatch('[A-Za-z0-9-]{1,39}',operator):
         raise TradingBlocked('OPERATOR_ACTIVATION_CONFIRMATION_REQUIRED')
     if os.getenv('GITHUB_ACTIONS')=='true' and operator!=os.getenv('GITHUB_REPOSITORY_OWNER'):
         raise TradingBlocked('ACCOUNT_OWNER_ACTIVATION_REQUIRED')
+    if type(resume_halt) is not bool or (not resume_halt and expected_halt_revision is not None):
+        raise TradingBlocked('HALT_RESUME_REQUEST_INVALID')
+    if resume_halt:require_owner_halt_resume(dashboard_review,operator,expected_halt_revision)
     require_live_release()
     # Same account/history/position/control readers, with execution=False:
     # operator activation itself never submits an order.
     result=integrated_cycle(ledger,broker,candidates,execute=False,now=now)
     if result['recovery']['unresolved'] or ledger.dashboard_state['snapshot']['pending']:
         raise TradingBlocked('ACTIVATION_REQUIRES_RECONCILED_ORDERS')
-    if dashboard_review is not None:
-        fresh=release_review_policy(broker.buy_control().get('release'))
-        if fresh!=dashboard_review or fresh['approved_release']!=release_fingerprint():
-            raise TradingBlocked('OWNER_RELEASE_REVIEW_CHANGED')
     with ledger.lock():
-        ledger.activate_release(release_fingerprint(),operator,preserve_halt=dashboard_review is not None)
-    result.update(status='LIVE_ACCOUNT_ACTIVATED',execution_requested=False,orders_sent=0,
-        live_release_approved=True)
+        if dashboard_review is not None:
+            fresh=release_review_policy(broker.buy_control().get('release'))
+            if fresh!=dashboard_review or fresh['approved_release']!=release_fingerprint():
+                raise TradingBlocked('OWNER_RELEASE_REVIEW_CHANGED')
+        from v519_pg_ledger import LedgerBlocked
+        try:
+            ledger.activate_release(release_fingerprint(),operator,preserve_halt=True,
+                resume_halt=resume_halt,expected_halt_revision=expected_halt_revision)
+        except LedgerBlocked as exc:
+            if str(exc) in {'HALT_REVISION_CHANGED','HALT_RESUME_REQUEST_INVALID',
+                            'ACTIVATION_NOT_RECONCILED','EMERGENCY_HALT_ACTIVE'}:
+                raise TradingBlocked(str(exc)) from exc
+            raise
+    result.update(status='LIVE_ACCOUNT_RESUMED' if resume_halt else 'LIVE_ACCOUNT_ACTIVATED',execution_requested=False,orders_sent=0,
+        live_release_approved=True,activation_committed=True,halt_resume_committed=resume_halt)
     if dashboard_review is not None:result['owner_review_revision']=dashboard_review['revision']
     return result
 
@@ -1567,14 +1598,14 @@ def dashboard_snapshot(ledger,result):
         isinstance(r['result'].get('account_snapshot'),dict) and
         r['result']['account_snapshot'].get('equity') is not None]
     approved=release_is_approved();authorized=ledger.release_authorized(release_fingerprint())
-    halted=ledger.halted();armed=approved and authorized and not halted
+    control=ledger.halt_state();halted=control['halted'];armed=approved and authorized and not halted
     return {'schema_version':1,'generated_at':state['at'].isoformat(),
         'account_reference':ledger.fingerprint,'manual_buy_supported':True,
         'manual_buy_checks':state.get('manual_buy_checks',[]),
         'mode':('LIVE_EXECUTION' if result.get('execution_requested') else 'LIVE_ARMED') if armed else 'OBSERVE_ONLY',
         'orders_enabled':armed,'halted':halted,
         'activation':{'expected_release':release_fingerprint(),'release_configured':approved,
-            'account_activated':authorized,'halted':halted,'live_armed':armed,
+            'account_activated':authorized,'halted':halted,'halt_revision':control['halt_revision'],'live_armed':armed,
             'trading_hours':TRADING_HOURS,'stop_loss_pct':5,'take_profit_pct':10,
             'broker_receipt_observed':any(o['broker_order_id'] for o in orders),
             'broker_fill_recovery_observed':any(o['filled_quantity']>0 for o in orders),
@@ -1635,6 +1666,8 @@ def runtime_main():
     modes.add_argument('--release-info',action='store_true')
     modes.add_argument('--release-review',action='store_true')
     modes.add_argument('--dashboard-release-env',action='store_true')
+    p.add_argument('--resume-halt',action='store_true')
+    p.add_argument('--expected-halt-revision')
     p.add_argument('--operator')
     p.add_argument('--acknowledge-live-risk',action='store_true')
     p.add_argument('--execute',action='store_true')
@@ -1647,6 +1680,10 @@ def runtime_main():
     args=p.parse_args()
     result=readiness(); code=0; ledger=None; run_id=uuid.uuid4().hex
     try:
+        if (args.resume_halt or args.expected_halt_revision is not None) and (
+                not args.apply_owner_approval or not args.resume_halt or
+                not args.expected_halt_revision or not re.fullmatch('[0-9a-f]{64}',args.expected_halt_revision)):
+            raise TradingBlocked('HALT_RESUME_REQUEST_INVALID')
         if args.release_review:
             print(json.dumps(public_release_review(),ensure_ascii=False));return
         if args.dashboard_release_env:
@@ -1665,6 +1702,7 @@ def runtime_main():
             if args.execute:raise TradingBlocked('ACTIVATION_CANNOT_SUBMIT')
             requested_review=dashboard_release_env()
             if not requested_review:raise TradingBlocked('OWNER_RELEASE_REVIEW_CHANGED')
+            if args.resume_halt:require_owner_halt_resume(requested_review,requested_review['operator'],args.expected_halt_revision)
             local=dt.datetime.now(ZoneInfo('Asia/Seoul'))
             if not monitoring_open(local):
                 raise TradingBlocked('OUTSIDE_OWNER_REVIEW_WINDOW')
@@ -1698,7 +1736,7 @@ def runtime_main():
                 if args.halt:
                     # Emergency stop must work even when broker auth/scan is broken.
                     with db.cursor() as cur:
-                        cur.execute('UPDATE v519_control SET halted=true,updated_at=now() WHERE singleton=true')
+                        cur.execute("UPDATE v519_control SET halted=true,updated_at=GREATEST(clock_timestamp(),updated_at+interval '1 microsecond') WHERE singleton=true")
                         if cur.rowcount!=1:
                             raise TradingBlocked('HALT_CONTROL_MISSING')
                     result.update(status='EMERGENCY_HALTED')
@@ -1730,7 +1768,8 @@ def runtime_main():
                             candidates,scanner_status=activation_candidates(args.source,now)
                             result=activate_live_account(ledger,broker,candidates,now=now,
                                 operator=requested_review['operator'] if requested_review else args.operator,
-                                acknowledged=args.acknowledge_live_risk,dashboard_review=requested_review)
+                                acknowledged=args.acknowledge_live_risk,dashboard_review=requested_review,
+                                resume_halt=args.resume_halt,expected_halt_revision=args.expected_halt_revision)
                             result['scanner_status']=scanner_status
                         elif args.broker_audit:
                             now=dt.datetime.now(ZoneInfo('Asia/Seoul'))

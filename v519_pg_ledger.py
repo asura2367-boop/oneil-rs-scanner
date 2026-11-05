@@ -4,6 +4,8 @@ Uses a single atomic INSERT under a PostgreSQL unique constraint. Unknown
 submission outcomes remain locked; never retry them automatically.
 """
 import os
+import hashlib
+import datetime as dt
 import re
 from contextlib import contextmanager
 
@@ -32,6 +34,16 @@ INSERT INTO v519_control(singleton,halted) VALUES (true,true) ON CONFLICT DO NOT
 '''
 
 class LedgerBlocked(RuntimeError): pass
+
+
+def halt_revision(row):
+    """Opaque CAS token for the actual control row, stable across DB time zones."""
+    stamp=row.get('updated_at')
+    if type(row.get('halted')) is not bool or not isinstance(stamp,dt.datetime) or stamp.tzinfo is None:
+        raise LedgerBlocked('HALT_CONTROL_INVALID')
+    value=stamp.astimezone(dt.timezone.utc).isoformat(timespec='microseconds')
+    return hashlib.sha256(('v519-halt-v1|'+str(row['halted'])+'|'+value).encode()).hexdigest()
+
 
 @contextmanager
 def connect():
@@ -170,6 +182,11 @@ class PgRuntimeLedger:
             with self.conn.cursor() as cur:
                 cur.execute('SELECT pg_advisory_unlock(%s)',(self.lock_key,))
 
+    def halt_state(self):
+        rows=self.rows('SELECT halted,updated_at FROM v519_control WHERE singleton=true')
+        if len(rows)!=1:raise LedgerBlocked('HALT_CONTROL_MISSING')
+        return {'halted':rows[0]['halted'],'halt_revision':halt_revision(rows[0])}
+
     def halted(self):
         rows=self.rows('SELECT halted FROM v519_control WHERE singleton=true')
         if len(rows)!=1:
@@ -178,7 +195,7 @@ class PgRuntimeLedger:
 
     def halt(self):
         with self.conn.cursor() as cur:
-            cur.execute('UPDATE v519_control SET halted=true,updated_at=now() WHERE singleton=true')
+            cur.execute("UPDATE v519_control SET halted=true,updated_at=GREATEST(clock_timestamp(),updated_at+interval '1 microsecond') WHERE singleton=true")
             if cur.rowcount!=1:
                 raise LedgerBlocked('HALT_CONTROL_MISSING')
 
@@ -195,20 +212,27 @@ class PgRuntimeLedger:
             (self.fingerprint,))
         return len(rows)==1 and rows[0]['release_fingerprint']==release
 
-    def activate_release(self, release, operator, *, preserve_halt=False):
+    def activate_release(self, release, operator, *, preserve_halt=True, resume_halt=False, expected_halt_revision=None):
         if not re.fullmatch('[0-9a-f]{64}',release) or not re.fullmatch('[A-Za-z0-9-]{1,39}',operator):
             raise LedgerBlocked('ACTIVATION_IDENTITY_INVALID')
+        if (preserve_halt is not True or type(resume_halt) is not bool or
+                (resume_halt and (not preserve_halt or not isinstance(expected_halt_revision,str) or
+                    not re.fullmatch('[0-9a-f]{64}',expected_halt_revision))) or
+                (not resume_halt and expected_halt_revision is not None)):
+            raise LedgerBlocked('HALT_RESUME_REQUEST_INVALID')
         with self.conn.transaction():
-            rows=self.rows('SELECT halted FROM v519_control WHERE singleton=true FOR UPDATE')
+            rows=self.rows('SELECT halted,updated_at FROM v519_control WHERE singleton=true FOR UPDATE')
             if len(rows)!=1 or self.pending():raise LedgerBlocked('ACTIVATION_NOT_RECONCILED')
-            if preserve_halt and rows[0]['halted'] is not False:
+            if resume_halt and (rows[0]['halted'] is not True or halt_revision(rows[0])!=expected_halt_revision):
+                raise LedgerBlocked('HALT_REVISION_CHANGED')
+            if preserve_halt and not resume_halt and rows[0]['halted'] is not False:
                 raise LedgerBlocked('EMERGENCY_HALT_ACTIVE')
             self.conn.execute('''INSERT INTO v519_live_activation(account_fingerprint,release_fingerprint,operator_login)
                 VALUES(%s,%s,%s) ON CONFLICT(account_fingerprint) DO UPDATE SET
                 release_fingerprint=excluded.release_fingerprint,operator_login=excluded.operator_login,activated_at=now()''',
                 (self.fingerprint,release,operator))
-            if not preserve_halt:
-                self.conn.execute('UPDATE v519_control SET halted=false,updated_at=now() WHERE singleton=true')
+            if resume_halt:
+                self.conn.execute("UPDATE v519_control SET halted=false,updated_at=GREATEST(clock_timestamp(),updated_at+interval '1 microsecond') WHERE singleton=true")
 
     def pending(self):
         return self.rows('''SELECT * FROM v519_order_intents WHERE account_fingerprint=%s

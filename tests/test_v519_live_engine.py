@@ -1288,6 +1288,139 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertTrue(self.ledger.release_authorized(release_fingerprint()))
         self.assertEqual(self.broker.buy_control()['enabled'],control['enabled'])
 
+    def resume_fixture(self):
+        review=self.dashboard_owner_review();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'release':review}
+        self.conn.execute('TRUNCATE v519_live_activation');self.ledger.halt()
+        flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES',
+            'V519_APPROVED_RELEASE':release_fingerprint(),'GITHUB_REPOSITORY_OWNER':'asura2367-boop',
+            'GITHUB_ACTIONS':'true','GITHUB_ACTOR':'asura2367-boop','GITHUB_EVENT_NAME':'workflow_dispatch',
+            'GITHUB_REF':'refs/heads/main','GITHUB_REPOSITORY':'asura2367-boop/oneil-rs-scanner',
+            'OPERATION':'apply-approval','OPERATOR_CONFIRMED':'true',
+            'REQUESTED_RELEASE':review['approved_release'],'REQUESTED_APPROVAL_REVISION':'1'}
+        return review,flags,self.ledger.halt_state()['halt_revision']
+
+    def resume(self,review,revision):
+        return activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,
+            operator=review['operator'],acknowledged=True,dashboard_review=review,
+            resume_halt=True,expected_halt_revision=revision)
+
+    def test_explicit_owner_resume_is_atomic_and_sends_no_orders(self):
+        review,flags,revision=self.resume_fixture()
+        with patch.dict(os.environ,flags):result=self.resume(review,revision)
+        self.assertEqual(result['status'],'LIVE_ACCOUNT_RESUMED')
+        self.assertTrue(result['activation_committed']);self.assertTrue(result['halt_resume_committed'])
+        self.assertEqual(result['orders_sent'],0);self.assertFalse(result['execution_requested'])
+        self.assertEqual(self.broker.calls,[]);self.assertFalse(self.ledger.halted())
+        self.assertTrue(self.ledger.release_authorized(release_fingerprint()))
+        self.assertNotEqual(self.ledger.halt_state()['halt_revision'],revision)
+        self.assertEqual(dashboard_snapshot(self.ledger,result)['activation']['halt_revision'],self.ledger.halt_state()['halt_revision'])
+
+    def test_resume_rejects_auto_nonowner_unconfirmed_and_changed_approval(self):
+        review,flags,revision=self.resume_fixture()
+        for update in ({'OPERATION':'auto'},{'GITHUB_EVENT_NAME':'schedule'},
+                {'GITHUB_ACTOR':'someone-else'},{'GITHUB_REPOSITORY_OWNER':'someone-else'},
+                {'OPERATOR_CONFIRMED':'false'},{'REQUESTED_RELEASE':'c'*64},
+                {'REQUESTED_APPROVAL_REVISION':'2'},{'GITHUB_REF':'refs/heads/other'}):
+            with self.subTest(update=update),patch.dict(os.environ,{**flags,**update}),self.assertRaisesRegex(TradingBlocked,'OWNER_HALT_RESUME_CONFIRMATION_REQUIRED|ACCOUNT_OWNER_ACTIVATION_REQUIRED'):
+                self.resume(review,revision)
+            self.assertTrue(self.ledger.halted());self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+        self.assertEqual(self.broker.calls,[])
+
+    def test_resume_new_halt_during_fresh_account_check_rejects_stale_click(self):
+        review,flags,revision=self.resume_fixture();original=self.broker.snapshot
+        def snapshot():
+            self.ledger.halt()
+            return original()
+        self.broker.snapshot=snapshot
+        with patch.dict(os.environ,flags),self.assertRaisesRegex(Exception,'HALT_REVISION_CHANGED'):
+            self.resume(review,revision)
+        self.assertTrue(self.ledger.halted());self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+        self.assertEqual(self.broker.calls,[])
+
+    def test_resume_fresh_review_change_blocks_without_clearing_halt(self):
+        review,flags,revision=self.resume_fixture();control=self.broker.buy_control()
+        self.broker.buy_control=lambda:{**control,'release':{**review,'revision':2}}
+        with patch.dict(os.environ,flags),self.assertRaisesRegex(TradingBlocked,'OWNER_RELEASE_REVIEW_CHANGED'):
+            self.resume(review,revision)
+        self.assertTrue(self.ledger.halted());self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+
+    def test_resume_requires_successful_fresh_account_read(self):
+        review,flags,revision=self.resume_fixture()
+        with patch.object(self.broker,'snapshot',side_effect=TradingBlocked('ACCOUNT_UNAVAILABLE')),patch.dict(os.environ,flags),self.assertRaisesRegex(TradingBlocked,'ACCOUNT_UNAVAILABLE'):
+            self.resume(review,revision)
+        self.assertTrue(self.ledger.halted());self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+
+    def test_resume_unresolved_orders_block_and_transaction_rechecks_pending(self):
+        self.seed();review,flags,revision=self.resume_fixture()
+        with patch.dict(os.environ,flags),self.assertRaisesRegex(TradingBlocked,'ACTIVATION_REQUIRES_RECONCILED_ORDERS'):
+            self.resume(review,revision)
+        with self.assertRaisesRegex(Exception,'ACTIVATION_NOT_RECONCILED'):
+            self.ledger.activate_release(release_fingerprint(),'fixture',preserve_halt=True,resume_halt=True,expected_halt_revision=revision)
+        self.assertTrue(self.ledger.halted());self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+        self.assertEqual(self.broker.calls,[])
+
+    def test_resume_database_failure_rolls_back_activation_and_halt(self):
+        review,flags,revision=self.resume_fixture()
+        self.conn.execute("CREATE FUNCTION reject_resume() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture failure'; END $$")
+        self.conn.execute('CREATE TRIGGER reject_resume BEFORE UPDATE ON v519_control FOR EACH ROW EXECUTE FUNCTION reject_resume()')
+        try:
+            with self.assertRaisesRegex(Exception,'fixture failure'):
+                self.ledger.activate_release(release_fingerprint(),'fixture',preserve_halt=True,resume_halt=True,expected_halt_revision=revision)
+            self.assertTrue(self.ledger.halted());self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+            self.assertEqual(self.ledger.halt_state()['halt_revision'],revision)
+        finally:
+            self.conn.execute('DROP TRIGGER reject_resume ON v519_control');self.conn.execute('DROP FUNCTION reject_resume()')
+
+    def test_concurrent_halt_wins_against_waiting_resume(self):
+        import psycopg,threading
+        from concurrent.futures import ThreadPoolExecutor
+        from v519_pg_ledger import PgRuntimeLedger
+        review,flags,revision=self.resume_fixture();started=threading.Event()
+        def resume():
+            with psycopg.connect(self.url,autocommit=True) as conn:
+                conn.execute('SET search_path TO '+self.schema)
+                ledger=PgRuntimeLedger(conn,self.ledger.fingerprint)
+                started.set()
+                ledger.activate_release(release_fingerprint(),'fixture',preserve_halt=True,resume_halt=True,expected_halt_revision=revision)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with self.conn.transaction():
+                self.conn.execute('SELECT halted FROM v519_control WHERE singleton=true FOR UPDATE')
+                future=pool.submit(resume)
+                self.assertTrue(started.wait(5));self.ledger.halt()
+            with self.assertRaisesRegex(Exception,'HALT_REVISION_CHANGED'):future.result(timeout=5)
+        self.assertTrue(self.ledger.halted());self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+
+    def test_every_halt_write_changes_revision_even_in_one_transaction(self):
+        self.ledger.halt();before=self.ledger.halt_state()['halt_revision']
+        with self.conn.transaction():
+            self.ledger.halt();first=self.ledger.halt_state()['halt_revision']
+            self.ledger.halt();second=self.ledger.halt_state()['halt_revision']
+        self.assertEqual(len({before,first,second}),3)
+
+    def test_default_ledger_activation_cannot_clear_halt(self):
+        review,flags,revision=self.resume_fixture()
+        with self.assertRaisesRegex(Exception,'EMERGENCY_HALT_ACTIVE'):
+            self.ledger.activate_release(release_fingerprint(),'fixture')
+        self.assertTrue(self.ledger.halted());self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+
+    def test_ledger_resume_rejects_missing_token_and_legacy_mode(self):
+        review,flags,revision=self.resume_fixture()
+        for values in ({'preserve_halt':True,'resume_halt':True},
+                {'preserve_halt':False,'resume_halt':True,'expected_halt_revision':revision},
+                {'preserve_halt':True,'expected_halt_revision':revision},
+                {'preserve_halt':True,'resume_halt':True,'expected_halt_revision':'invalid'}):
+            with self.assertRaisesRegex(Exception,'HALT_RESUME_REQUEST_INVALID'):
+                self.ledger.activate_release(release_fingerprint(),'fixture',**values)
+            self.assertTrue(self.ledger.halted());self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+
+    def test_repeated_click_cannot_resume_a_newer_halt(self):
+        review,flags,revision=self.resume_fixture()
+        with patch.dict(os.environ,flags):self.resume(review,revision)
+        self.ledger.halt()
+        with patch.dict(os.environ,flags),self.assertRaisesRegex(Exception,'HALT_REVISION_CHANGED'):self.resume(review,revision)
+        self.assertTrue(self.ledger.halted());self.assertEqual(self.broker.calls,[])
+
     def test_dashboard_owner_approval_cannot_clear_emergency_halt(self):
         review=self.dashboard_owner_review();control=self.broker.buy_control()
         self.broker.buy_control=lambda:{**control,'release':review}
@@ -1329,6 +1462,13 @@ class PostgresRuntimeTests(unittest.TestCase):
             self.assertTrue(self.ledger.halted())
             with patch.dict(os.environ,{'GITHUB_ACTIONS':'true'}),self.assertRaisesRegex(TradingBlocked,'ACCOUNT_OWNER_ACTIVATION_REQUIRED'):
                 activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,operator='other',acknowledged=True)
+            with self.assertRaisesRegex(TradingBlocked,'EMERGENCY_HALT_ACTIVE'):
+                activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,
+                    operator='fixture',acknowledged=True)
+            self.assertTrue(self.ledger.halted())
+            self.assertFalse(self.ledger.release_authorized(release_fingerprint()))
+            # A legacy activation may arm an already unhalted fixture, never clear halt.
+            self.conn.execute('UPDATE v519_control SET halted=false')
             r=activate_live_account(self.ledger,self.broker,self.candidates,now=self.now,
                 operator='fixture',acknowledged=True)
         self.assertEqual(r['status'],'LIVE_ACCOUNT_ACTIVATED')
@@ -2421,6 +2561,30 @@ class ImmediateApprovalTests(unittest.TestCase):
                 self.assertIn(result['reason'],['ACTIVATION_CANNOT_SUBMIT','OWNER_RELEASE_REVIEW_CHANGED'])
                 self.assertEqual(result['orders_sent'],0)
 
+    def test_halt_resume_cli_cannot_be_used_for_any_other_mode(self):
+        import sys,io
+        for mode in ('--run','--activate','--halt','--recover','--release-info','--dashboard-release-env','--close'):
+            with tempfile.TemporaryDirectory() as directory:
+                out=str(pathlib.Path(directory)/'result.json')
+                with patch.object(sys,'argv',['engine',mode,'--resume-halt','--expected-halt-revision','a'*64,'--output',out]),patch('v519_pg_ledger.connect') as connect,patch('sys.stdout',new_callable=io.StringIO):
+                    with self.assertRaises(SystemExit):runtime_main()
+                self.assertEqual(json.loads(pathlib.Path(out).read_text())['reason'],'HALT_RESUME_REQUEST_INVALID')
+                connect.assert_not_called()
+
+    def test_halt_revision_is_opaque_stable_and_state_bound(self):
+        from v519_pg_ledger import halt_revision
+        stamp=dt.datetime(2026,11,5,0,0,tzinfo=dt.timezone.utc)
+        token=halt_revision({'halted':True,'updated_at':stamp})
+        self.assertRegex(token,'^[0-9a-f]{64}$')
+        self.assertEqual(token,halt_revision({'halted':True,'updated_at':stamp.astimezone(ZoneInfo('Asia/Seoul'))}))
+        self.assertNotEqual(token,halt_revision({'halted':False,'updated_at':stamp}))
+        self.assertNotEqual(token,halt_revision({'halted':True,'updated_at':stamp+dt.timedelta(microseconds=1)}))
+
+    def test_postcommit_failure_context_cannot_imply_activation_rollback(self):
+        expected={'activation_committed':True,'halt_resume_committed':True}
+        self.assertEqual(run_failure_context({**expected,'account_snapshot':'PRIVATE'}),expected)
+        self.assertEqual(run_failure_context({'activation_committed':'PRIVATE'}),{})
+
     def test_workflow_apply_path_only_activates_with_bound_review(self):
         workflow=(pathlib.Path(__file__).resolve().parents[1]/'.github/workflows/oneil_v519_live_engine_review.yml').read_text()
         body=workflow.split('            apply-approval)')[1].split('            activate)')[0]
@@ -2769,7 +2933,8 @@ class CloseRuntimeRegressionTests(unittest.TestCase):
             'snapshot':{'positions':{},'managed':{},'cash':100,'equity':100,'valuation':0},
             'buy_control':{},'allocation':{},'candidates':[],'plans':[]}
         ledger=SimpleNamespace(fingerprint='b'*64,dashboard_state=state,rows=lambda *args:[],
-            halted=lambda:True,release_authorized=lambda _:False,sell_alerts=lambda:[])
+            halted=lambda:True,halt_state=lambda:{'halted':True,'halt_revision':'a'*64},
+            release_authorized=lambda _:False,sell_alerts=lambda:[])
         result={'status':'SELL_CONTROL_UNAVAILABLE','session_closed':True}
         snapshot=dashboard_snapshot(ledger,result)
         self.assertFalse(snapshot['monitoring_open'])
