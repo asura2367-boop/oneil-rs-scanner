@@ -28,12 +28,16 @@ class GeneratorTests(unittest.TestCase):
         self.assertNotIn('UPDATE public.v519_control',result['sql'])
         self.assertNotIn('v519_live_activation',result['sql'])
     def test_delimiter_injection_is_hex_encoded(self):
-        self.history['extra']="'$v519_operator_review$; DELETE FROM secret; --"
+        payload="safe'$v519_operator_review$; DELETE FROM secret; --"
+        self.intent['intent_id']=payload
+        self.history['intent_id']=payload
+        self.history['extra']=payload
         sql=self.build()['sql']
         self.assertNotIn('DELETE FROM secret',sql)
         self.assertEqual(sql.count('$v519_operator_review$'),2)
         decoded=json.loads(bytes.fromhex(re.search(r"decode\('([0-9a-f]+)'",sql).group(1)))
         self.assertEqual(set(decoded),{'intent_id','account_fingerprint','reviewer','reviewed_at'})
+        self.assertEqual(decoded['intent_id'],payload)
         self.assertNotIn('extra',decoded)
         self.assertNotIn('rows',decoded)
     def test_false_attestation_bad_source_flags_and_schema_blocked(self):
