@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import types
+from pathlib import Path
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import Mock, MagicMock, patch
@@ -185,5 +186,17 @@ class IncidentHistoryTests(unittest.TestCase):
         result = self.run_main_with_date_error(m.IncidentEvidenceError("TOKEN_CACHE_MISSING"))
         self.assertEqual(result["reason"], "TOKEN_CACHE_MISSING")
         self.assertNotIn("help", result)
+
+    def test_temporary_push_observation_is_narrow_and_read_only(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/oneil_v519_incident_history.yml").read_text()
+        for guard in ("branches: [main]", "github.ref == 'refs/heads/main'",
+                      "github.event_name == 'push' && github.run_attempt == 1",
+                      "contains(github.event.head_commit.message, '[incident-evidence-20261104-once-42]')",
+                      "github.event_name == 'push' && '2026-11-04' || inputs.day",
+                      "contents: read", "LIVE_ENABLED: 'false'", "KIS_ALLOW_ORDER: 'false'",
+                      'python oneil_v519_incident_history.py --day "$INCIDENT_DAY"'):
+            self.assertIn(guard, workflow)
+        for forbidden in ("--execute", "--activate", "--recover", "--migrate", "token_bootstrap", "contents: write"):
+            self.assertNotIn(forbidden, workflow)
 
 if __name__ == "__main__": unittest.main()
