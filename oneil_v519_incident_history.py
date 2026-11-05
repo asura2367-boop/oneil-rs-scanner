@@ -38,7 +38,7 @@ def parse_incident_day(value, now):
     return day
 
 def read_reference(conn, day):
-    # The connection must already enforce default_transaction_read_only=on.
+    # Verify the effective transaction, not merely a connection startup option.
     with conn.cursor() as cur:
         cur.execute("SHOW transaction_read_only")
         if cur.fetchone() != ("on",):
@@ -125,6 +125,10 @@ def main():
         url = os.environ["SUPABASE_DB_URL"]
         with psycopg.connect(url, connect_timeout=8, sslmode="require",
                 options="-c default_transaction_read_only=on -c statement_timeout=10000") as conn:
+            # Psycopg emits BEGIN READ ONLY before the first cursor operation.
+            # Retain the independent server-side SHOW guard before table reads.
+            stage = "CONFIGURE_READ_ONLY_TRANSACTION"
+            conn.read_only = True
             stage = "READ_INCIDENT_REFERENCE"
             reference = read_reference(conn, day)
         stage = "READ_TOKEN_CACHE"
