@@ -23,18 +23,36 @@ against the verified publication, not claimed recovery of missing commits:
   restart, fail-closed failure reporting and browser interruption/repeat fences.
 
 Credentials/token/GET implementations remain inactive and separately permissioned.
-No runtime, dashboard or worker activates KIS access. A broker token can have
+No runtime, dashboard or worker activates KIS access. Optional observation
+attachment does not start or authorize a source. A broker token can have
 rights beyond local GET restrictions; it is not a broker-enforced read-only token.
 No actual credential access, storage, token issuance or transmission occurred.
 The new simulation host requires explicit local trusted TLS inputs and does not
 install certificates, alter trust, set ACLs, create services or schedule itself.
 
+## Read-to-runtime diagnostic integration
+
+Built on verified remote `49fa9205b73e42d7a99fa7c8de1d2ae767497c38`, whose tree
+`ff6136cb2f42fe4d3ca8d39e7ec32cce69b5727b` exactly matches local `a6efb1e`.
+The new explicit diagnostic runner connects actual supplied read captures to the
+existing seven-stream parsers and the authenticated simulation dashboard. It
+reports malformed, inconsistent, incomplete, stale, cancelled and failed cycles
+instead of treating a completed read counter as parsed evidence. Old reports are
+invalidated before refresh, and a cycle cannot appear before the poller's commit.
+The host can observe/cancel an explicitly attached runner but never constructs
+credentials, starts broker reads or promotes its result into trading evidence.
+
+See [runtime diagnostics](oneil_runtime_v2/KIS_DIAGNOSTICS.md). The default console
+still has no broker connection. All real broker, native Windows and PostgreSQL
+acceptance gates below remain open.
+
 ## Verification
 
-- Exact network-free aggregate: **945 Python and 44 Node tests passed**, zero
-  failures or skips. The package requires all 139 public rebuild files.
-- Independent review checked polling deadlines/cancellation and local host
-  lifecycle/security boundaries. Findings were fixed and covered by regressions.
+- Exact network-free aggregate: **966 Python and 49 Node tests passed**, zero
+  failures or skips. The package requires all 142 public rebuild files.
+- Independent review checked diagnostic publication, stale/cancel/deadline
+  handling, host projection and packaging. Committed-cycle counting and required
+  bundle inventory findings were fixed and covered by regressions.
 - Tests include actual isolated SQLite, OS locks and Linux subprocess simulation.
   DNS/TCP/TLS, Windows APIs, broker responses and browser DOM are mocked.
 - Common secret/private-artifact patterns were checked before publication. Test

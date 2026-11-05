@@ -92,9 +92,13 @@ native Windows or real PostgreSQL execution evidence.
    now sequences the seven fixed read streams, propagates one absolute deadline,
    captures holiday only once and suppresses success after cancellation. It
    exposes sanitized progress counters only, not policy evidence or account data.
-   No runtime consumes it and a refreshed token requires new explicit local
-   issuance permission. Mock traversal does not establish actual complete broker
-   history. See [KIS_POLLING.md](../../oneil_execution_v2/KIS_POLLING.md).
+   An explicitly constructed diagnostic runner can now consume complete read
+   cycles through the real parser pipeline and expose a sanitized snapshot to
+   the simulation host. Host attachment is observation/cancellation only; no
+   factory or browser action starts reads or credentials. A refreshed token still
+   requires new explicit local issuance permission. Synthetic traversal does not
+   establish actual complete broker history. See
+   [KIS_DIAGNOSTICS.md](../../oneil_runtime_v2/KIS_DIAGNOSTICS.md). See [KIS_POLLING.md](../../oneil_execution_v2/KIS_POLLING.md).
 5. **KIS-to-policy authority is missing.** Complete shapes do not establish
    authenticated origin, coherent snapshot/fill causality, settled exact-order
    buying power, managed ownership, daily account loss/commitments, executable

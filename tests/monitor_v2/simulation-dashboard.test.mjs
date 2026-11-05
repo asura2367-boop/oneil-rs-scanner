@@ -19,7 +19,10 @@ function fixture() {
     return {ok:true,status:200,json:async()=>value};
   };
   vm.runInNewContext(source,{document,fetch,crypto:webcrypto,Date,Error,JSON,setInterval:()=>0});
-  const resolvePreview=()=>delayed({ok:true,status:201,json:async()=>({confirmation_id:'confirmation',content_digest:'digest',expires_at:new Date(Date.now()+60000).toISOString(),display:{quantity:10}})});
+  const resolvePreview=(status=201,malformed=false)=>delayed({ok:status===201,status,json:async()=>{
+    if(malformed)throw new Error('INVALID_JSON');
+    return {confirmation_id:'confirmation',content_digest:'digest',expires_at:new Date(Date.now()+60000).toISOString(),display:{quantity:10}};
+  }});
   return {get,document,listeners,calls,resolvePreview,unauthorize:()=>mode='unauthorized'};
 }
 test('discard fences a delayed exact preview',async()=>{
@@ -48,4 +51,34 @@ test('authentication failure clears old displayed state and command controls',as
   const f=fixture();await pause();await pause();f.unauthorize();await f.get('refresh').onclick();
   assert.equal(f.get('preview').disabled,true);assert.equal(f.get('halt').disabled,true);
   assert.equal(f.get('confirm').disabled,true);assert.match(f.get('status').textContent,/Unavailable/);
+});
+test('diagnostic absence is explicit and cannot start broker access',async()=>{
+  const f=fixture();await pause();await pause();
+  assert.match(f.get('kis-diagnostics').textContent,/No diagnostic source/);
+  assert.deepEqual(f.calls.map(c=>c.path),['/api/v2/session','/api/v2/host-state']);
+});
+test('diagnostic snapshot is cleared when authentication fails',async()=>{
+  const f=fixture();await pause();await pause();f.unauthorize();await f.get('refresh').onclick();
+  assert.match(f.get('kis-diagnostics').textContent,/Unavailable/);
+});
+test('hidden page clears the old diagnostic projection',async()=>{
+  const f=fixture();await pause();await pause();
+  f.document.hidden=true;f.listeners.visibilitychange();
+  assert.match(f.get('kis-diagnostics').textContent,/Unavailable/);
+});
+test('preview authentication failure clears diagnostics even with malformed JSON',async()=>{
+  for(const status of [401,403])for(const malformed of [false,true]) {
+    const f=fixture();await pause();await pause();
+    const operation=f.get('preview').onclick();await pause();
+    f.resolvePreview(status,malformed);await operation;
+    assert.match(f.get('kis-diagnostics').textContent,/Unavailable/);
+    assert.match(f.get('status').textContent,/Unavailable/);
+    assert.equal(f.get('confirm').disabled,true);
+  }
+});
+test('command authentication failure clears diagnostics without a refresh',async()=>{
+  const f=fixture();await pause();await pause();f.unauthorize();
+  await f.get('halt').onclick();
+  assert.match(f.get('kis-diagnostics').textContent,/Unavailable/);
+  assert.equal(f.get('halt').disabled,true);
 });

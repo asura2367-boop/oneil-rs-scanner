@@ -18,9 +18,13 @@ async function request(path, body) {
     'X-CSRF-Token':session.csrf_token,'X-Request-Timestamp':String(Math.floor(Date.now()/1000)),
     'X-Request-Nonce':token(),'Idempotency-Key':token()}});
   const response = await fetch(path, options);
+  if ([401,403].includes(response.status)) {
+    session=null; state=null;
+    write('kis-diagnostics','Unavailable. Refresh after authentication.');
+    write('status','Unavailable. No prior status is considered current.');
+  }
   const data = await response.json();
   if (!response.ok) {
-    if ([401,403].includes(response.status)) { session=null; state=null; }
     throw new Error(data.error || 'REQUEST_FAILED');
   }
   return data;
@@ -36,10 +40,12 @@ async function refresh() {
     session=auth; state=observed;
     write('connection','Authenticated for this local simulation process only. Production identity is unavailable.');
     write('status',state);
+    write('kis-diagnostics',state.kis_diagnostics || 'No diagnostic source is attached.');
     $('proposals').replaceChildren(...state.proposals.map(p => {const option=document.createElement('option');option.value=p.proposal_id;option.textContent=p.proposal_id;return option;}));
   } catch(error) {
     if (current !== generation) return;
     session=null; state=null; write('connection',error.message); write('status','Unavailable. No prior status is considered current.');
+    write('kis-diagnostics','Unavailable. Refresh after authentication.');
   } finally { controls(); }
 }
 async function action(work) {
@@ -69,6 +75,6 @@ $('confirm').onclick=()=>action(async()=>{
 });
 $('halt').onclick=()=>action(async()=>{discard();const result=await request('/api/v2/commands',{action:'halt',expected_revision:state.control_revision});write('receipt',result);await refresh();});
 $('cancel').onclick=()=>action(async()=>{discard();const result=await request('/api/v2/commands',{action:'cancel_pending',expected_revision:state.control_revision,request_id:$('cancel-id').value.trim()});write('receipt',result);await refresh();});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){generation++;discard();session=null;state=null;controls();}else action(refresh);});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){generation++;discard();session=null;state=null;write('kis-diagnostics','Unavailable. Refresh after returning.');controls();}else action(refresh);});
 setInterval(controls,500);
 refresh();

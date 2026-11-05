@@ -6,7 +6,29 @@ was accessed. No broker network/DNS/TCP/TLS request was made by these tests.
 GitHub access was used to recover and preserve the source, separately from the
 network-free application checks.
 
-## Source and current aggregate
+## Latest read-to-diagnostic verification
+
+Baseline remote `49fa9205` was verified to have tree
+`ff6136cb2f42fe4d3ca8d39e7ec32cce69b5727b`, identical to local `a6efb1e`.
+The latest network-free aggregate is **966 Python + 49 Node = 1,015 tests**,
+zero failures or skips, with all 142 public files required in the package.
+
+The 21 added Python cases cover actual polling/parsing, an actual authenticated
+source with synthetic provider/client replies, real isolated SQLite/WSGI host
+projection, no implicit start, expiry with either clock frozen, rollback latching,
+partial refresh invalidation, once-per-run unchanged holiday captures,
+inconsistent/malformed/truncated inputs, cross-thread cancellation, cleanup
+failure/interruption and pending/cancelled/expired cycle publication counters.
+Five added Node cases cover the absence of implicit broker requests and clearing
+the diagnostic display on authentication failure during refresh, preview or commands (including
+malformed authentication-error JSON), or a hidden page. They use DOM
+doubles, not a real browser. Independent review findings on premature counters
+and required package inventory were corrected with regression coverage.
+
+No real broker schema, provenance, credentials, network, native Windows,
+PostgreSQL or financial behavior was validated by these additions.
+
+## Earlier polling and console aggregate
 
 The current verified starting point is published draft
 `0f1512df0d95a2ab09a0e10a50dbede8f717d910`. Recovery independently reran its
@@ -14,7 +36,7 @@ The current verified starting point is published draft
 the polling and local dashboard described below are new implementations, not
 recovered missing commits. The old unpublished aggregate is not used as evidence.
 
-Current `python tools/run_monitor_v2_tests.py`: **945 Python + 44 Node = 989 tests**,
+Earlier `python tools/run_monitor_v2_tests.py`: **945 Python + 44 Node = 989 tests**,
 zero failures and zero skips. All offline suites are discovered once, and all
 public source/test/documentation files are required by the source ZIP inventory.
 The 37 PostgreSQL integration cases remain an explicit, unrun acceptance gate.

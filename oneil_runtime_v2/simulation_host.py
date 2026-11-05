@@ -90,6 +90,7 @@ class SupervisedSimulationHost:
         self.lock = None
         self.closed = False
         self._bootstraps = {}
+        self._kis_diagnostics = None
         try:
             self.lock = InstanceLock(self.supervisor.directory/'worker.lock')
             self.lock.__enter__()
@@ -222,10 +223,34 @@ class SupervisedSimulationHost:
         self._thread()
         return self.runtime.restore_pending(current_contexts)
 
+    def attach_kis_diagnostics(self, diagnostics):
+        """Trusted observer attachment only. Never constructs or starts a source.
+
+        This does not bind a real account to the fixed synthetic trading account,
+        register policy evidence, create credentials, or authorize any reads.
+        No browser route calls it and no default factory attaches a diagnostic.
+        """
+        from .kis_diagnostics import KisDiagnosticRun
+        self._thread()
+        require(type(diagnostics) is KisDiagnosticRun and self._kis_diagnostics is None
+                and not self.supervisor.status()['stop_requested'],
+                'EXPLICIT_KIS_DIAGNOSTIC_ATTACHMENT_REQUIRED')
+        self._kis_diagnostics = diagnostics
+
+    def _diagnostic_status(self):
+        from .kis_diagnostics import unavailable_diagnostics
+        if self._kis_diagnostics is None:
+            return unavailable_diagnostics()
+        if self.supervisor.status()['stop_requested']:
+            self._kis_diagnostics.stop()
+        return self._kis_diagnostics.snapshot()
+
     def tick(self):
         self._thread()
         try:
             if self.supervisor.status()['stop_requested']:
+                if self._kis_diagnostics is not None:
+                    self._kis_diagnostics.stop()
                 self.runtime.quiesce('SUPERVISED_CHILD_STOPPED')
                 return 'STOPPED'
             self.core.control(ACCOUNT)
@@ -280,6 +305,7 @@ class SupervisedSimulationHost:
                 payload = {'mode': MODE, 'live_capable': False, 'production_identity_available': False,
                     'runtime_phase': self.state.status(ACCOUNT)['phase'], 'control_revision': control['revision'],
                     'halted': control['halted'], 'proposals': proposals, 'stop_requested': bool(self.supervisor.status()['stop_requested']),
+                    'kis_diagnostics': self._diagnostic_status(),
                     'monitor': project_status(self.core.read_model(ACCOUNT), now=self.core.now(), broker_max_age_seconds=10)}
                 check(self._session(env) == session, 401, 'CURRENT_PROCESS_SESSION_REQUIRED')
                 return respond('200 OK', payload)
@@ -310,6 +336,8 @@ class SupervisedSimulationHost:
             return
         self.closed = True
         self._bootstraps.clear()
+        if self._kis_diagnostics is not None:
+            self._kis_diagnostics.stop()
         if self.runtime is not None:
             try:
                 self.runtime.quiesce('SUPERVISED_CHILD_STOPPED')

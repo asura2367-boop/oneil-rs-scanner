@@ -51,6 +51,7 @@ REQUIRED_FILES = TOOLS | {
         'README.md', 'ADMISSION.md', 'kis_pipeline.py', 'KIS_PIPELINE.md')
 } | {
     'oneil_runtime_v2/' + name for name in (
+        'kis_diagnostics.py', 'KIS_DIAGNOSTICS.md',
         '__init__.py', 'health.py', 'journal.py', 'preflight.py', 'restart.py',
         'windows_clock.py', 'simulation_store.py', 'simulation_host.py', 'SIMULATION_HOST.md',
         'local_dashboard.py', 'windows_storage.py', 'LOCAL_DASHBOARD.md',
@@ -75,6 +76,7 @@ REQUIRED_FILES = TOOLS | {
     'tests/policy_v2/test_policy_import.py', 'tests/policy_v2/test_policy_planner.py',
     'tests/policy_v2/test_policy_store_boundary.py', 'tests/policy_v2/test_kis_pipeline.py',
     'tests/runtime_v2/test_simulation_store.py', 'tests/runtime_v2/test_simulation_host.py',
+    'tests/runtime_v2/test_kis_diagnostics.py',
     'tests/runtime_v2/test_local_dashboard.py',
     'tests/monitor_v2/simulation-dashboard.test.mjs',
     'tests/monitor_v2/local-pairing.test.mjs',

@@ -22,6 +22,8 @@ KIS_EVIDENCE_FILES = {
     "tests/policy_v2/test_kis_pipeline.py",
 }
 INTEGRATED_FILES = {
+    'oneil_runtime_v2/kis_diagnostics.py', 'oneil_runtime_v2/KIS_DIAGNOSTICS.md',
+    'tests/runtime_v2/test_kis_diagnostics.py',
     'oneil_runtime_v2/local_dashboard.py', 'oneil_runtime_v2/windows_storage.py',
     'oneil_runtime_v2/LOCAL_DASHBOARD.md',
     'oneil_runtime_v2/web/pair.html', 'oneil_runtime_v2/web/pair.mjs',
