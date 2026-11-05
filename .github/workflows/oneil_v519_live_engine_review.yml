@@ -9,6 +9,8 @@ on:
     branches: [main]
     paths:
       - 'oneil_v519_live_engine.py'
+      - 'oneil_v519_market_session.py'
+      - 'tests/test_v519_market_session.py'
       - 'v519_pg_ledger.py'
       - 'tests/test_v519_live_engine.py'
       - 'v519_no_order_review.py'
@@ -79,6 +81,7 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_v519_live_engine.py' -v
       - name: Existing KIS pagination and safety regression tests
         run: |
+          python -m unittest discover -s tests -p 'test_v519_market_session.py' -v
           python -m unittest discover -s tests -p 'test_v519_no_order_review.py' -v
           python -m unittest discover -s tests -p 'test_v519_broker_recovery.py' -v
           python -m unittest discover -s tests -p 'test_v519_order_recovery.py' -v
@@ -178,11 +181,11 @@ jobs:
             observe) python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem ;;
             auto)
               # Schedule delays may start this job after trading closes.
-              # Keep monitoring until 20:00 without enabling order transport.
+              # KRX regular and after-market only; no auction or closing-gap orders.
               read -r weekday session_hhmm <<< "$(TZ=Asia/Seoul date '+%u %H%M')"
               # A stored approval for old source must not stop read-only account
               # refresh. Exact source approval is still required for execution.
-              if [ "$release_configured" = true ] && [ "$weekday" -le 5 ] && [ "$session_hhmm" -ge 900 ] && [ "$session_hhmm" -lt 1515 ]; then
+              if [ "$release_configured" = true ] && [ "$weekday" -le 5 ] && { { [ "$session_hhmm" -ge 900 ] && [ "$session_hhmm" -lt 1520 ]; } || { [ "$session_hhmm" -ge 1600 ] && [ "$session_hhmm" -lt 2000 ]; }; }; then
                 LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --run --execute --dashboard-public-key data/live/dashboard_public_key.pem
               else
                 python oneil_v519_live_engine.py --run --dashboard-public-key data/live/dashboard_public_key.pem

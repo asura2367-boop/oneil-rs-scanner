@@ -52,10 +52,11 @@ def balance(tok,key,secret,cano,prod):
             if not isinstance(code,str) or not CODE.fullmatch(code):raise Blocked("POSITION_INVALID")
             held.add(code)
     return cash,held
-def buying_power(tok,key,secret,cano,prod,ticker,price):
+def buying_power(tok,key,secret,cano,prod,ticker,price,*,ord_dvsn="00"):
+    if ord_dvsn not in ("00","41"):raise Blocked("ORDER_TYPE_INVALID")
     body=api("/uapi/domestic-stock/v1/trading/inquire-psbl-order",tok,key,secret,"TTTC8908R",
        params={"CANO":cano,"ACNT_PRDT_CD":prod,"PDNO":ticker,"ORD_UNPR":str(price),
-       "ORD_DVSN":"00","CMA_EVLU_AMT_ICLD_YN":"N","OVRS_ICLD_YN":"N"})
+       "ORD_DVSN":ord_dvsn,"CMA_EVLU_AMT_ICLD_YN":"N","OVRS_ICLD_YN":"N"})
     x=body.get("output")
     if not isinstance(x,dict):raise Blocked("POWER_MISSING")
     return min(strict_amount(x.get("nrcvb_buy_amt")),strict_amount(x.get("ord_psbl_cash"))),strict_amount(x.get("nrcvb_buy_qty"))

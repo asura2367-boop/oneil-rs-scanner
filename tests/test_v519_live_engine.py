@@ -94,6 +94,12 @@ class BrokerFixture:
         return {'rt_cd':'0','output':{'ODNO':f'{122+len(self.calls):06d}'}}
     def history(self,day): return self.rows.get(day,[])
 
+class RegularSessionClock(dt.datetime):
+    @classmethod
+    def now(cls,tz=None):
+        value=dt.datetime(2026,10,29,10,tzinfo=ZoneInfo('Asia/Seoul'))
+        return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+
 class RuntimeRiskTests(unittest.TestCase):
     def test_sell_control_is_independent_and_invalid_values_deny_sale(self):
         import io
@@ -120,12 +126,12 @@ class RuntimeRiskTests(unittest.TestCase):
     def test_take_profit_wire_ignores_stop_lock_but_requires_release_and_book(self):
         broker=object.__new__(KisBroker);broker.execution=True;broker.account='12345678';broker.product='01'
         broker.buy_control=lambda:{'sell':{'enabled':False,'connected':True,'revision':1}}
-        now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
-        broker.quote_evidence={('144960','SELL'):{'price':10000,'size':1,'at':now}}
+        now=RegularSessionClock.now(ZoneInfo('Asia/Seoul'))
+        broker.quote_evidence={('144960','SELL'):{'price':10000,'size':1,'at':now,'venue':'KRX','session':execution_session(now),'order_type':limit_order_code(execution_session(now))}}
         calls=[];broker.request=lambda *a,**k:(calls.append((a,k)) or ({},{'rt_cd':'0','output':{'ODNO':'000123'}}))
         plan=OrderPlan('144960','SELL',1,10000,'exit','TAKE_PROFIT')
         flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES'}
-        with patch('oneil_v519_live_engine.RELEASE_LIVE_APPROVED',True),patch.dict(os.environ,flags):
+        with patch('oneil_v519_live_engine.dt.datetime',RegularSessionClock),patch('oneil_v519_live_engine.RELEASE_LIVE_APPROVED',True),patch.dict(os.environ,flags):
             self.assertEqual(broker._send_verified(plan)['output']['ODNO'],'000123')
             self.assertEqual(len(calls),1)
             broker.quote_evidence={}
@@ -180,7 +186,9 @@ printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE
 ''');python.chmod(0o755)
             log=root/'calls'
             for session,approved,expected in [('4 0859','test',False),('4 0900','test',True),
-                    ('4 1514','test',True),('4 1515','test',False),('4 1910','test',False),
+                    ('4 1514','test',True),('4 1515','test',True),('4 1519','test',True),
+                    ('4 1520','test',False),('4 1540','test',False),('4 1559','test',False),
+                    ('4 1600','test',True),('4 1910','test',True),('4 1959','test',True),('4 2000','test',False),
                     ('6 1000','test',False),('4 1000','',False),('4 1000','stale-but-nonempty',False)]:
                 log.write_text('')
                 environment={**os.environ,'PATH':str(commands)+os.pathsep+os.environ['PATH'],
@@ -368,18 +376,19 @@ printf '%s|%s|%s|%s\\n' "$*" "$LIVE_ENABLED" "$KIS_ALLOW_ORDER" "$I_APPROVE_LIVE
         # intercepted; these fixtures do not establish KIS execution success.
         import io
         flags={'LIVE_ENABLED':'true','KIS_ALLOW_ORDER':'true','I_APPROVE_LIVE_KIS_ORDERS':'YES'}
-        now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
+        now=RegularSessionClock.now(ZoneInfo('Asia/Seoul'))
         broker=object.__new__(KisBroker)
         broker.execution=True;broker.account='12345678';broker.product='01'
         broker.access='fixture';broker.key='fixture';broker.secret='fixture'
         broker.buy_control=BrokerFixture().buy_control
         broker.quote_evidence={}
         for side,tr in (('BUY','TTTC0012U'),('SELL','TTTC0011U')):
-            broker.quote_evidence[('144960',side)]={'price':10000,'size':10,'at':now}
+            broker.quote_evidence[('144960',side)]={'price':10000,'size':10,'at':now,
+                'venue':'KRX','session':'REGULAR','order_type':'00'}
             response=io.BytesIO(b'{"rt_cd":"0","output":{"ODNO":"000123"}}')
             response.headers={}
             with patch('oneil_v519_live_engine.RELEASE_LIVE_APPROVED',True),patch.dict(os.environ,flags), \
-                    patch('urllib.request.urlopen',return_value=response) as wire:
+                    patch('oneil_v519_live_engine.dt.datetime',RegularSessionClock),patch('urllib.request.urlopen',return_value=response) as wire:
                 result=broker.submit(OrderPlan('144960',side,2,10000,'fixture','TEST'))
             request=wire.call_args.args[0]; body=json.loads(request.data)
             self.assertEqual(wire.call_count,1)
@@ -602,6 +611,22 @@ class PostgresRuntimeTests(unittest.TestCase):
         risk={'connected':True,'reserve_pct':reserve,'per_stock_pct':stock,'revision':revision}
         self.broker.buy_control=lambda:{**control,'risk':risk}
         return control,risk
+
+    def test_evening_real_ledger_commits_and_recovers_without_resubmit(self):
+        self.now=self.now.replace(hour=17)
+        result=self.cycle()
+        self.assertEqual(result['orders_sent'],1)
+        self.assertEqual(result['batch_stop_reason'],'PENDING_FILL_CONFIRMATION')
+        self.assertEqual(len(self.ledger.pending()),1)
+        self.assertEqual(self.cycle()['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(len(self.broker.calls),1)
+
+    def test_regular_unknown_order_remains_blocking_in_evening(self):
+        self.seed()
+        self.now=self.now.replace(hour=17)
+        self.assertEqual(self.cycle()['status'],'BLOCKED_UNRESOLVED_ORDERS')
+        self.assertEqual(self.broker.calls,[])
+        self.assertEqual(len(self.ledger.pending()),1)
 
     def test_manual_diagnostics_checkpoint_survives_final_failure_record(self):
         self.ledger.start_run('diagnostic-fixture')
@@ -2590,7 +2615,7 @@ class ManagedExitBatchTests(unittest.TestCase):
             self.setUp();control=self.broker.buy_control()
             def after(p):
                 if change=='halt':self.ledger.halt()
-                if change=='close':self.now=self.now.replace(hour=15,minute=15)
+                if change=='close':self.now=self.now.replace(hour=15,minute=20)
                 if change=='control':self.broker.buy_control=lambda:{**control,'sell':None}
             self.fill_exits(after=after)
             if change in ('halt','close'):
@@ -2763,11 +2788,15 @@ class CloseRuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(ledger.finish_run.call_count,2)
 
 class PreTransportProofTests(unittest.TestCase):
+    def setUp(self):
+        clock=patch('oneil_v519_live_engine.dt.datetime',RegularSessionClock)
+        clock.start();self.addCleanup(clock.stop)
     def broker(self, stale=True):
         broker=object.__new__(KisBroker);broker.execution=True
         broker.account='12345678';broker.product='01'
         now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
-        broker.quote_evidence={('144960','BUY'):{'price':10000,'size':100,'at':now-dt.timedelta(seconds=10 if stale else 0)}}
+        broker.quote_evidence={('144960','BUY'):{'price':10000,'size':100,'at':now-dt.timedelta(seconds=10 if stale else 0),'venue':'KRX',
+            'session':execution_session(now),'order_type':limit_order_code(execution_session(now))}}
         return broker
     def test_real_adapter_stale_and_oversized_never_enter_transport(self):
         from unittest.mock import Mock

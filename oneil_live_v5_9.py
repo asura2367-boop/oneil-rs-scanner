@@ -115,8 +115,10 @@ def analyze_candidates(path, now, min_rs=90, min_volume=1.0, max_channel=.75):
             if basis not in ('','PREVIOUS_CONFIRMED_SESSION','INTRADAY_KIS_SNAPSHOT'):
                 raise ValueError()
             if basis=='INTRADAY_KIS_SNAPSHOT':
-                # An intraday signal expires at the session boundary. It must
-                # never use the legacy four-day opening-signal grace period.
+                # The 08/11/14 refresh cadence produces a day-scoped RS rank,
+                # not an executable price. Keep its observation timestamp. It
+                # expires after the target day, including that day's after-market,
+                # and never uses the legacy four-day opening-signal grace period.
                 observed=dt.datetime.fromisoformat(row['observed_at_kst'])
                 local=now.astimezone(KST);at=observed.astimezone(KST)
                 if (observed.tzinfo is None or date!=local.date() or at.date()!=local.date()

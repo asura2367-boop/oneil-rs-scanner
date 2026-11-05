@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from contextlib import contextmanager
+from oneil_v519_market_session import execution_session, limit_order_code, session_close, TRADING_HOURS
 
 @contextmanager
 def read_stage(stage):
@@ -27,6 +28,9 @@ def read_stage(stage):
                           'elapsed_seconds':round(time.monotonic()-started,3)}),flush=True)
 
 class TradingBlocked(ValueError): pass
+class SessionInstrumentUnavailable(TradingBlocked):
+    """A broker-confirmed session exclusion, not missing or inferred evidence."""
+    pass
 class OrderNotSent(TradingBlocked):
     """Trusted adapter rejection before entering order transport; never infer from error text."""
     pass
@@ -145,7 +149,7 @@ class KisCashOrderAdapter:
     """
     def __init__(self,transport):
         self.transport=transport
-    def prepare(self,*,side,ticker,qty,limit_price_krw,cano,product):
+    def prepare(self,*,side,ticker,qty,limit_price_krw,cano,product,session='REGULAR'):
         if side not in ("BUY","SELL") or not CODE.fullmatch(ticker):raise TradingBlocked("ORDER_INVALID")
         if type(qty) is not int or qty<=0:raise TradingBlocked("QTY_INVALID")
         money(limit_price_krw)
@@ -157,7 +161,7 @@ class KisCashOrderAdapter:
             "path":"/uapi/domestic-stock/v1/trading/order-cash",
             "tr_id":"TTTC0012U" if side=="BUY" else "TTTC0011U",
             "body":{"CANO":cano,"ACNT_PRDT_CD":product,"PDNO":ticker,
-                    "ORD_DVSN":"00","ORD_QTY":str(qty),"ORD_UNPR":str(limit_price_krw)}}
+                    "ORD_DVSN":limit_order_code(session),"ORD_QTY":str(qty),"ORD_UNPR":str(limit_price_krw)}}
     def submit(self,*args,**kwargs):
         # Real orders are NOT available until a later separately approved activation.
         raise TradingBlocked("ACTUAL_ORDER_TRANSMISSION_LOCKED_AWAITING_FINAL_APPROVAL")
@@ -173,7 +177,7 @@ RELEASE_LIVE_APPROVED = False
 
 
 RELEASE_FILES = (
-    'oneil_v519_live_engine.py','v519_pg_ledger.py','v519_pg_reconcile.py',
+    'oneil_v519_live_engine.py','oneil_v519_market_session.py','v519_pg_ledger.py','v519_pg_reconcile.py',
     'v519_no_order_review.py',
     'v519_cash_policy.py','oneil_v519_live_runner.py','oneil_v519_history_observe.py',
     'oneil_v519_broker_recovery.py','oneil_v519_order_recovery.py',
@@ -249,7 +253,10 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
         avg = Decimal(str(pos['average']))
         if not avg.is_finite() or avg <= 0:
             raise TradingBlocked('COST_INVALID')
-        price = quote(ticker, 'SELL')
+        try:
+            price = quote(ticker, 'SELL')
+        except SessionInstrumentUnavailable:
+            continue
         money(price)
         if not price:
             raise TradingBlocked('PRICE_ZERO')
@@ -279,7 +286,10 @@ def plan_orders(candidates, snapshot, quote, power, *, stop_loss_pct=5, take_pro
         seen.add(ticker)
         if ticker in snapshot['positions'] or ticker in snapshot.get('bought_today', set()):
             continue
-        price = quote(ticker, 'BUY')
+        try:
+            price = quote(ticker, 'BUY')
+        except SessionInstrumentUnavailable:
+            continue
         if type(price) is not int or price <= 0:
             raise TradingBlocked('PRICE_INVALID')
         # Broker buying power cannot make a share fit a smaller hard cash cap.
@@ -303,6 +313,8 @@ KIS_READ_APIS = {
     ('/uapi/domestic-stock/v1/trading/inquire-balance','TTTC8434R'):'BALANCE',
     ('/uapi/domestic-stock/v1/quotations/inquire-daily-price','FHKST01010400'):'DAILY_PRICE',
     ('/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn','FHKST01010200'):'ORDER_BOOK',
+    ('/uapi/domestic-stock/v1/quotations/search-stock-info','CTPF1002R'):'STOCK_INFO',
+    ('/uapi/domestic-stock/v1/quotations/inquire-price','FHKST01010100'):'STOCK_STATUS',
 }
 
 
@@ -406,7 +418,8 @@ class KisBroker:
         from decimal import Decimal, ROUND_CEILING
         from oneil_v519_broker_recovery import exact_int
         from kis_safety_v3 import unfilled_codes
-        base = {'CANO':self.account, 'ACNT_PRDT_CD':self.product, 'AFHR_FLPR_YN':'N',
+        base = {'CANO':self.account, 'ACNT_PRDT_CD':self.product,
+                'AFHR_FLPR_YN':'Y' if execution_session(dt.datetime.now(ZoneInfo('Asia/Seoul'))) == 'AFTER' else 'N',
                 'OFL_YN':'', 'INQR_DVSN':'00', 'UNPR_DVSN':'01', 'FUND_STTL_ICLD_YN':'N',
                 'FNCG_AMT_AUTO_RDPT_YN':'N', 'PRCS_DVSN':'00'}
         positions = {}; totals = []; fk = nk = ''; seen = set()
@@ -494,11 +507,39 @@ class KisBroker:
             return self.reference_quote(ticker)
         return self.execution_quote(ticker,side)
 
+    def after_market_eligibility(self,ticker):
+        """Broker GET evidence only. A normal stock code is not eligibility proof."""
+        _,info=self.request('/uapi/domestic-stock/v1/quotations/search-stock-info',
+            'CTPF1002R',{'PRDT_TYPE_CD':'300','PDNO':ticker})
+        out=info.get('output')
+        if not isinstance(out,dict) or out.get('pdno')!=ticker:
+            raise TradingBlocked('AFTER_MARKET_INSTRUMENT_UNVERIFIED')
+        group=out.get('scty_grp_id_cd');market=out.get('mket_id_cd');halt=out.get('tr_stop_yn')
+        if group not in ('ST','EF','EN','FE','EW') or market not in ('STK','KSQ','KNX') or halt not in ('Y','N'):
+            raise TradingBlocked('AFTER_MARKET_INSTRUMENT_UNVERIFIED')
+        if group!='ST' or market not in ('STK','KSQ') or halt=='Y':
+            raise SessionInstrumentUnavailable('AFTER_MARKET_INSTRUMENT_NOT_ELIGIBLE')
+        _,status=self.request('/uapi/domestic-stock/v1/quotations/inquire-price',
+            'FHKST01010100',{'FID_COND_MRKT_DIV_CODE':'J','FID_INPUT_ISCD':ticker})
+        status=status.get('output')
+        if not isinstance(status,dict) or status.get('stck_shrn_iscd')!=ticker:
+            raise TradingBlocked('AFTER_MARKET_INSTRUMENT_UNVERIFIED')
+        flags=('temp_stop_yn','short_over_yn','sltr_yn')
+        if any(status.get(k) not in ('Y','N') for k in flags) or status.get('iscd_stat_cls_code') not in ('51','52','53','54','55','57','58','59'):
+            raise TradingBlocked('AFTER_MARKET_INSTRUMENT_UNVERIFIED')
+        if any(status[k]=='Y' for k in flags) or status['iscd_stat_cls_code'] not in ('55','57'):
+            raise SessionInstrumentUnavailable('AFTER_MARKET_TRADING_RESTRICTED')
+
     def execution_quote(self,ticker,side):
         from oneil_v519_broker_recovery import exact_int
         now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
-        if now.weekday()>=5 or not dt.time(9)<=now.time().replace(tzinfo=None)<dt.time(15,15):
-            raise TradingBlocked('OUTSIDE_KRX_CONTINUOUS_SESSION')
+        session=execution_session(now)
+        if session is None:
+            raise TradingBlocked('OUTSIDE_KRX_ORDER_SESSION')
+        # Never carry quote evidence from a failed re-check into a send.
+        self.quote_evidence.pop((ticker,side),None)
+        if session=='AFTER':
+            self.after_market_eligibility(ticker)
         # A current daily bar and a fresh KRX book are required together. Any
         # missing field or delayed/closed-market response blocks an order.
         _,daily=self.request('/uapi/domestic-stock/v1/quotations/inquire-daily-price',
@@ -512,6 +553,13 @@ class KisBroker:
         b=book.get('output1')
         if not isinstance(b,dict) or side not in ('BUY','SELL'):
             raise TradingBlocked('BOOK_INVALID')
+        if session=='AFTER':
+            # '20' is the documented in-session ordinary book. Unknown new
+            # codes are denied, never mapped from wall-clock time alone.
+            detail=book.get('output2')
+            if (b.get('new_mkop_cls_code')!='20' or not isinstance(detail,dict) or
+                    detail.get('stck_shrn_iscd')!=ticker or detail.get('vi_cls_code')!='N'):
+                raise TradingBlocked('AFTER_MARKET_SESSION_UNVERIFIED')
         raw=b.get('aspr_acpt_hour','')
         if not re.fullmatch('[0-9]{6}',raw):
             raise TradingBlocked('BOOK_TIME_MISSING')
@@ -524,13 +572,21 @@ class KisBroker:
         size=exact_int(b.get('askp_rsqn1' if side=='BUY' else 'bidp_rsqn1'))
         if size<1:
             raise TradingBlocked('EMPTY_BOOK')
-        self.quote_evidence[(ticker,side)]={'price':price,'size':size,'at':at}
+        if session=='AFTER' and (end-now).total_seconds()>15:
+            raise TradingBlocked('AFTER_MARKET_INSTRUMENT_UNVERIFIED')
+        if execution_session(end)!=session or execution_session(at)!=session:
+            raise TradingBlocked('ORDER_SESSION_CHANGED')
+        self.quote_evidence[(ticker,side)]={'price':price,'size':size,'at':at,
+            'venue':'KRX','session':session,'order_type':limit_order_code(session)}
         return price
 
     def power(self, ticker, price):
         from oneil_v519_live_runner import buying_power
         with read_stage('BUYING_POWER'):
-            return buying_power(self.access,self.key,self.secret,self.account,self.product,ticker,price)
+            session=execution_session(dt.datetime.now(ZoneInfo('Asia/Seoul')))
+            if self.execution and session is None:raise TradingBlocked('OUTSIDE_KRX_ORDER_SESSION')
+            return buying_power(self.access,self.key,self.secret,self.account,self.product,ticker,price,
+                ord_dvsn=limit_order_code(session or 'REGULAR'))
 
     def buy_control(self):
         return read_buy_control()
@@ -562,8 +618,13 @@ class KisBroker:
                 not 0<=(dt.datetime.now(ev['at'].tzinfo)-ev['at']).total_seconds()<=3 or
                 plan.quantity>ev['size']):
             raise OrderNotSent('EXECUTABLE_BOOK_REQUIRED')
+        current=dt.datetime.now(ZoneInfo('Asia/Seoul'));session=execution_session(current)
+        if (session is None or ev.get('venue')!='KRX' or ev.get('session')!=session or
+                ev.get('order_type')!=limit_order_code(session) or
+                current.date()!=ev['at'].astimezone(current.tzinfo).date()):
+            raise OrderNotSent('ORDER_SESSION_CHANGED')
         prepared = KisCashOrderAdapter(None).prepare(side=plan.side,ticker=plan.ticker,
-            qty=plan.quantity,limit_price_krw=plan.price,cano=self.account,product=self.product)
+            qty=plan.quantity,limit_price_krw=plan.price,cano=self.account,product=self.product,session=session)
         prepared['body'].update(EXCG_ID_DVSN_CD='KRX',
             SLL_TYPE='01' if plan.side=='SELL' else '',CNDT_PRIC='')
         try:
@@ -604,6 +665,9 @@ def audit_broker_evidence(broker, candidates, *, now, lookback_days=5):
         'restart_recovery_verified':False,'history_days_verified':0,'history_rows_verified':0,
         'fill_states_observed':{s:0 for s in ('ACKNOWLEDGED','PART_FILLED','FILLED','CANCELLED')},
         'account_read_verified':False,'fresh_book_verified':False,'buying_power_read_verified':False,
+        'venue':'KRX','order_session':execution_session(now),
+        'order_type':limit_order_code(execution_session(now)) if execution_session(now) else None,
+        'after_market_path_verified':False,
         'errors':[]}
     snapshot=broker.snapshot();result['account_read_verified']=True
     for offset in range(lookback_days):
@@ -636,13 +700,19 @@ def audit_broker_evidence(broker, candidates, *, now, lookback_days=5):
             price=broker.execution_quote(ticker,'BUY')
             broker.execution_quote(ticker,'SELL')
             result['fresh_book_verified']=True
+            if execution_session(dt.datetime.now(now.tzinfo))!=execution_session(now):
+                raise TradingBlocked('ORDER_SESSION_CHANGED')
             amount,qty=broker.power(ticker,price);money(amount);money(qty)
+            if execution_session(dt.datetime.now(now.tzinfo))!=execution_session(now):
+                raise TradingBlocked('ORDER_SESSION_CHANGED')
             result['buying_power_read_verified']=True
         except Exception as exc:
             result['errors'].append(str(exc) if isinstance(exc,TradingBlocked) else 'QUOTE_OR_POWER_READ_FAILED')
     else:
         result['errors'].append('NO_AUDIT_INSTRUMENT')
     if result['errors']:result['status']='BLOCKED_BROKER_EVIDENCE'
+    result['after_market_path_verified']=(execution_session(now)=='AFTER' and
+        result['fresh_book_verified'] and result['buying_power_read_verified'] and not result['errors'])
     return result
 
 
@@ -731,8 +801,8 @@ def _automatic_cycle(ledger, broker, candidates, *, execute=False, now=None,
         if current.tzinfo is None:raise TradingBlocked('CLOCK_INVALID')
         current=current.astimezone(ZoneInfo('Asia/Seoul'))
         if (current.date()!=now.date() or current.weekday()>=5 or
-                not dt.time(9)<=current.time()<dt.time(15,15)):
-            raise TradingBlocked('OUTSIDE_KRX_CONTINUOUS_SESSION')
+                execution_session(current) is None or execution_session(current)!=execution_session(now)):
+            raise TradingBlocked('OUTSIDE_KRX_ORDER_SESSION')
         return current
     def account_snapshot():
         snap=broker.snapshot()
@@ -1055,7 +1125,8 @@ def manual_buy_request(value, *, now, fingerprint, release):
             not 0<(expires-created).total_seconds()<=2400 or value['trading_day']!=local.date().isoformat() or
             created.astimezone(local.tzinfo).date()!=local.date() or
             expires.astimezone(local.tzinfo).date()!=local.date() or
-            expires.astimezone(local.tzinfo).time()>dt.time(15,15)):
+            execution_session(created) is None or execution_session(created)!=execution_session(now) or
+            expires>session_close(created)):
             raise ValueError()
     except Exception:raise TradingBlocked('MANUAL_REQUEST_EXPIRED_OR_INVALID')
     return value
@@ -1087,8 +1158,9 @@ def process_manual_buy(ledger,broker,requests,*,now,clock):
     from v519_cash_policy import limits
     def time_check():
         current=clock().astimezone(ZoneInfo('Asia/Seoul'))
-        if current.date()!=now.date() or current.weekday()>=5 or not dt.time(9)<=current.time()<dt.time(15,15):
-            raise TradingBlocked('OUTSIDE_KRX_CONTINUOUS_SESSION')
+        if (current.date()!=now.date() or current.weekday()>=5 or execution_session(current) is None or
+                execution_session(current)!=execution_session(now)):
+            raise TradingBlocked('OUTSIDE_KRX_ORDER_SESSION')
         return current
     with ledger.lock():
         current=time_check();require_live_release()
@@ -1272,7 +1344,7 @@ def failure_details(exc, *, _include_submission=True):
     broker_code=safe_kis_error_code({'msg_cd':getattr(exc,'broker_code',None)})
     if broker_code:data['broker_code']=broker_code
     frames=[];tb=exc.__traceback__
-    allowed={'oneil_v519_live_engine.py','v519_pg_ledger.py','oneil_live_v5_9.py',
+    allowed={'oneil_v519_live_engine.py','oneil_v519_market_session.py','v519_pg_ledger.py','oneil_live_v5_9.py',
              'oneil_v519_live_runner.py','kis_safety_v3.py','oneil_v519_broker_recovery.py',
              'oneil_v519_history_observe.py','kis_buying_power_readonly.py'}
     while tb:
@@ -1294,7 +1366,9 @@ def failure_details(exc, *, _include_submission=True):
     if isinstance(exc,TradingBlocked) and str(exc) in {
             'RELEASE_LOCKED_PENDING_OPERATOR_ACTIVATION','USER_APPROVAL_MISSING',
             'FRESH_EXECUTABLE_BOOK_REQUIRED','EXECUTABLE_BOOK_REQUIRED',
-            'BOOK_SIZE_EXCEEDED','OUTSIDE_KRX_CONTINUOUS_SESSION','BROKER_ACK_INVALID'}:
+            'BOOK_SIZE_EXCEEDED','OUTSIDE_KRX_ORDER_SESSION','BROKER_ACK_INVALID',
+            'AFTER_MARKET_INSTRUMENT_UNVERIFIED','AFTER_MARKET_SESSION_UNVERIFIED',
+            'AFTER_MARKET_TRADING_RESTRICTED','ORDER_SESSION_CHANGED'}:
         data['failure_code']=str(exc)
     return data
 
@@ -1374,7 +1448,16 @@ def scan_candidates(source, now):
     fatal={'SOURCE_FILE_MISSING','REQUIRED_COLUMNS_MISSING','INVALID_ROWS_PRESENT','STALE_SIGNAL_ROWS'}
     if fatal.intersection(report['reason_codes']):
         raise TradingBlocked('CANDIDATE_SOURCE_INVALID_OR_STALE')
-    return report['review_candidates']
+    rows=report['review_candidates']
+    if execution_session(now)=='AFTER' and any(c['date']!=now.astimezone(ZoneInfo('Asia/Seoul')).date().isoformat() for c in rows):
+        raise TradingBlocked('CANDIDATE_SOURCE_INVALID_OR_STALE')
+    return rows
+
+
+def activation_candidates(source,now):
+    """A missing buy list cannot turn read-only owner approval into an order."""
+    try:return scan_candidates(source,now),'VALID'
+    except Exception:return [],'BLOCKED_INVALID_OR_STALE_SOURCE'
 
 
 def read_buy_control(*, opener=None, now=None, access_token=None):
@@ -1462,7 +1545,7 @@ def dashboard_snapshot(ledger,result):
         'orders_enabled':armed,'halted':halted,
         'activation':{'expected_release':release_fingerprint(),'release_configured':approved,
             'account_activated':authorized,'halted':halted,'live_armed':armed,
-            'trading_hours':'09:00–15:15 KST','stop_loss_pct':5,'take_profit_pct':10,
+            'trading_hours':TRADING_HOURS,'stop_loss_pct':5,'take_profit_pct':10,
             'broker_receipt_observed':any(o['broker_order_id'] for o in orders),
             'broker_fill_recovery_observed':any(o['filled_quantity']>0 for o in orders),
             'restart_failure_drill_verified':False},
@@ -1553,8 +1636,8 @@ def runtime_main():
             requested_review=dashboard_release_env()
             if not requested_review:raise TradingBlocked('OWNER_RELEASE_REVIEW_CHANGED')
             local=dt.datetime.now(ZoneInfo('Asia/Seoul'))
-            if local.weekday()>=5 or not dt.time(9)<=local.time().replace(tzinfo=None)<dt.time(15,15):
-                raise TradingBlocked('OUTSIDE_KRX_CONTINUOUS_SESSION')
+            if not monitoring_open(local):
+                raise TradingBlocked('OUTSIDE_OWNER_REVIEW_WINDOW')
             args.activate=True
         if args.activate:
             if args.execute:raise TradingBlocked('ACTIVATION_CANNOT_SUBMIT')
@@ -1608,15 +1691,17 @@ def runtime_main():
                         broker=KisBroker(execution=args.execute and not pending_review,operator_activation=bool(args.activate or pending_review))
                         if pending_review:
                             now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
-                            candidates=scan_candidates(args.source,now)
+                            candidates,scanner_status=activation_candidates(args.source,now)
                             result=activate_live_account(ledger,broker,candidates,now=now,
                                 operator=review['operator'],acknowledged=True,dashboard_review=review)
+                            result['scanner_status']=scanner_status
                         elif args.activate:
                             now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
-                            candidates=scan_candidates(args.source,now)
+                            candidates,scanner_status=activation_candidates(args.source,now)
                             result=activate_live_account(ledger,broker,candidates,now=now,
                                 operator=requested_review['operator'] if requested_review else args.operator,
                                 acknowledged=args.acknowledge_live_risk,dashboard_review=requested_review)
+                            result['scanner_status']=scanner_status
                         elif args.broker_audit:
                             now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
                             try:candidates=scan_candidates(args.source,now)
