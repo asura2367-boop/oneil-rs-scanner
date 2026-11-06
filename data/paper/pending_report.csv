@@ -1,2 +1,4 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
-2026-11-04,BUY,055490,테이팩스,RS 95 + 수급/거래량/채널,2026-11-04,20550.0,20570.55,96,1974772.8,296.22,ESTIMATE ONLY; execution depends on next session close and available cash
+2026-11-06,SELL,055490,테이팩스,손절 신호 -5%,2026-11-06,18900.0,18881.1,43,811887.3,,SELL: estimated; actual close can differ
+2026-11-06,BUY,005430,한국공항,RS 94 + 수급/거래량/채널,2026-11-06,86800.0,86886.8,21,1824622.8,273.69,ESTIMATE ONLY; execution depends on next session close and available cash
+2026-11-06,BUY,100120,뷰웍스,RS 94 + 수급/거래량/채널,2026-11-06,28200.0,28228.2,67,1891289.4,283.69,ESTIMATE ONLY; execution depends on next session close and available cash
