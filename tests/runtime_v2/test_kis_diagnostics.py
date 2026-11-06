@@ -88,6 +88,28 @@ class DiagnosticTests(unittest.TestCase):
         self.assertNotIn('MUTATED', json.dumps(run.snapshot()))
         with self.assertRaises(Blocked): run.run()
 
+    def test_remaining_lifetime_decreases_by_both_clocks_and_is_zero_when_unavailable(self):
+        run = self.runner()
+        self.assertEqual(run.snapshot()['valid_for_seconds'], 0)
+        result = run.run()
+        ttl = result['valid_for_seconds']
+        self.assertGreater(ttl, 0)
+        self.assertLessEqual(ttl, 30)
+        self.seconds += 1
+        self.assertAlmostEqual(run.snapshot()['valid_for_seconds'], ttl - 1)
+        self.wall_offset += 1
+        self.assertAlmostEqual(run.snapshot()['valid_for_seconds'], ttl - 2)
+        run.stop()
+        self.assertEqual(run.snapshot()['valid_for_seconds'], 0)
+
+    def test_remaining_lifetime_never_extends_with_frozen_utc(self):
+        run = self.runner()
+        ttl = run.run()['valid_for_seconds']
+        self.seconds += 1; self.wall_offset -= 1
+        self.assertAlmostEqual(run.snapshot()['valid_for_seconds'], ttl - 1)
+        self.seconds += 30; self.wall_offset -= 30
+        self.assertEqual(run.snapshot()['valid_for_seconds'], 0)
+
     def test_malformed_body_is_incomplete_not_success_counter(self):
         original = self.source.reads['price'][0]
         self.source.reads['price'] = (replace(original, response=replace(original.response, body={})),)

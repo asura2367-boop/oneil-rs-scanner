@@ -46,13 +46,27 @@ See [runtime diagnostics](oneil_runtime_v2/KIS_DIAGNOSTICS.md). The default cons
 still has no broker connection. All real broker, native Windows and PostgreSQL
 acceptance gates below remain open.
 
+## Bounded dashboard status recovery
+
+Built on verified remote `a0467e8470ecd0a885f19a03d7ead0820415a3b5`. A stale
+browser view could previously retain its last status indefinitely. The console
+now clears old status before refresh and expires snapshots within 15 seconds of
+request start, shortened by the diagnostic's remaining UTC/monotonic validity.
+Five-second fetch/body timeouts release hung waits without retrying. Clock
+changes, hidden/navigation/restored pages, expired confirmations and late
+responses cannot revive old controls or status. Internal action checks remain
+fail-closed even when a browser timer has not run. POST timeout/abort does not
+claim rollback or automatic recovery of an unknown host outcome.
+
 ## Verification
 
-- Exact network-free aggregate: **966 Python and 49 Node tests passed**, zero
+- Exact network-free aggregate: **968 Python and 69 Node tests passed**, zero
   failures or skips. The package requires all 142 public rebuild files.
 - Independent review checked diagnostic publication, stale/cancel/deadline
-  handling, host projection and packaging. Committed-cycle counting and required
-  bundle inventory findings were fixed and covered by regressions.
+  handling, host projection and packaging. Browser review covers delayed reads,
+  old authentication failures, request/body timeouts, hidden/restored pages,
+  command completion after expiry and malformed confirmation expiry. All checks
+  use offline doubles; native browser behavior is not claimed as tested.
 - Tests include actual isolated SQLite, OS locks and Linux subprocess simulation.
   DNS/TCP/TLS, Windows APIs, broker responses and browser DOM are mocked.
 - Common secret/private-artifact patterns were checked before publication. Test

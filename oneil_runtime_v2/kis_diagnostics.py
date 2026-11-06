@@ -19,6 +19,7 @@ from oneil_policy_v2.kis_pipeline import KisOfflineInputSet, inspect_kis_inputs
 def unavailable_diagnostics(state='not_attached'):
     return {'mode': 'UNAUTHENTICATED_KIS_DIAGNOSTIC_ONLY', 'state': state,
             'current': False, 'completed_cycles': 0, 'report': None,
+            'valid_for_seconds': 0,
             'provenance_authenticated': False, 'policy_ready': False,
             'live_capable': False}
 
@@ -140,6 +141,9 @@ class KisDiagnosticRun:
             committed = self._report is not None and status.completed_cycles >= self._cycles
             value.update(completed_cycles=min(self._cycles, status.completed_cycles),
                          current=committed,
+                         valid_for_seconds=(max(0, min(self._cutoff - mono,
+                             self._age - (wall - self._oldest).total_seconds()))
+                             if committed else 0),
                          report=deepcopy(self._report) if committed else None)
             if self._report is not None and not committed:
                 value['state'] = 'collecting'

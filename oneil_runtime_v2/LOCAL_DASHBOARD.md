@@ -54,6 +54,35 @@ CSRF-protected revocation. Restart and host shutdown revoke all sessions. Pairin
 does not resume the core, activate the runtime, authorize real trading, or create
 market/policy proposals. Existing exact-preview/confirmation gates still apply.
 
+## Browser snapshot recovery
+
+The console is a manually refreshed snapshot, not a live feed. Every refresh
+clears the previous lifecycle status, diagnostics, proposals and confirmation
+before reading. A snapshot is usable for at most 15 seconds measured from the
+start of the refresh on both browser wall and monotonic clocks. A current KIS
+diagnostic may shorten that lifetime to its remaining server-projected validity;
+missing, nonfinite or invalid diagnostic validity fails closed. This diagnostic
+expiry is only a capture-age limit, not proof of broker as-of freshness.
+
+Expiry, clock reversal/disagreement, hiding/leaving the page and back-forward
+cache restoration clear both status displays and disable simulation actions.
+The clock/age check also runs inside every action, so a suspended browser timer
+cannot authorize an old click. Returning from a hidden page attempts a new read
+only if no operation remains in flight; otherwise refresh explicitly. Expired or
+interrupted previews and delayed command responses cannot restore current state.
+
+Each HTTP operation has a five-second timeout including JSON decoding. Elapsed
+wall/monotonic time is also checked after each response/body wait so a delayed
+timer cannot accept an overdue result. It aborts
+the request and releases the UI wait without retrying. Abort is not a rollback:
+a POST may have completed on the host, and an unknown result requires inspecting
+durable state rather than retrying with a new key. Superseded/late responses cannot
+overwrite a newer snapshot, including late authentication failures. Exception and
+server error text are not displayed. Browser timers are not hard-real-time and
+cannot execute while the browser is frozen; synchronous action checks run again
+when script execution resumes. Real Windows/browser sleep and restoration still
+require separate acceptance tests.
+
 ## Transport and storage boundaries
 
 The single-thread adapter owns HTTP framing: duplicate headers, absolute targets,

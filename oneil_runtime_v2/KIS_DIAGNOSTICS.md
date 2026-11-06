@@ -69,8 +69,12 @@ and diagnostic reports are not written to SQLite or other files. Restart drops
 the attachment; no prior account connection or diagnostic state is restored.
 
 The browser shows a clearly labeled snapshot from the last manual refresh,
-not an automatically updating live status. Authentication failure and hiding the
-page clear the diagnostic display. There are no broker start, attach, credential
+not an automatically updating live status. `valid_for_seconds` is the minimum
+remaining UTC/monotonic validity, or zero when no committed current report exists.
+The browser expires its entire status snapshot within 15 seconds of refresh start
+or at this diagnostic limit, whichever comes first; network transit never renews
+validity. Authentication failure, expiry, refresh, clock changes, hiding/leaving
+the page and back-forward cache restoration clear both status displays. There are no broker start, attach, credential
 entry, capture upload or override controls. The runtime's real production identity
 remains unavailable, and all provenance/policy/live flags remain false even after
 complete parsing.
