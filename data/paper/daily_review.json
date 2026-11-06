@@ -1,62 +1,53 @@
 {
-  "as_of": "2026-11-04",
+  "as_of": "2026-11-06",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-04",
+  "latest_processed": "2026-11-06",
   "initial_cash": 10000000.0,
-  "cash": 4788271.12,
-  "holdings_value": 5113005.0,
-  "equity": 9901276.12,
-  "daily_pnl_mark_to_market": -21872.98,
-  "daily_return_pct": -0.2204,
-  "cumulative_pnl": -98723.88,
-  "cumulative_return_pct": -0.9872,
-  "trade_count_today": 1,
-  "sell_trade_count_today": 1,
-  "trade_cost_today": 2257.11,
-  "realized_pnl_today": -224189.0,
-  "realized_pnl_cumulative": -130181.05,
+  "cash": 6694483.75,
+  "holdings_value": 2795000.0,
+  "equity": 9489483.75,
+  "daily_pnl_mark_to_market": -117308.24,
+  "daily_return_pct": -1.2211,
+  "cumulative_pnl": -510516.25,
+  "cumulative_return_pct": -5.1052,
+  "trade_count_today": 2,
+  "sell_trade_count_today": 2,
+  "trade_cost_today": 5962.3,
+  "realized_pnl_today": -502064.06,
+  "realized_pnl_cumulative": -632245.11,
   "realized_pnl_verified": true,
-  "sell_events": 2,
+  "sell_events": 4,
   "profitable_sell_events": 1,
-  "losing_sell_events": 1,
-  "sell_event_win_rate_pct": 50.0,
+  "losing_sell_events": 3,
+  "sell_event_win_rate_pct": 25.0,
   "realized_pnl_note": "Win rate counts SELL events (including partial sells), not completed positions.",
   "positions": [
-    {
-      "ticker": "048910",
-      "name": "대원미디어",
-      "qty": 249,
-      "last_close": 7870.0,
-      "entry": 7997.99,
-      "unrealized_pnl_before_sell_cost": -31869.51,
-      "unrealized_return_pct": -1.6003
-    },
     {
       "ticker": "052460",
       "name": "아이크래프트",
       "qty": 170,
-      "last_close": 6390.0,
+      "last_close": 6490.0,
       "entry": 5865.86,
-      "unrealized_pnl_before_sell_cost": 89103.8,
-      "unrealized_return_pct": 8.9354
+      "unrealized_pnl_before_sell_cost": 106103.8,
+      "unrealized_return_pct": 10.6402
     },
     {
-      "ticker": "069540",
-      "name": "빛과전자",
-      "qty": 319,
-      "last_close": 3925.0,
-      "entry": 4004.0,
-      "unrealized_pnl_before_sell_cost": -25201.0,
-      "unrealized_return_pct": -1.973
+      "ticker": "055490",
+      "name": "테이팩스",
+      "qty": 43,
+      "last_close": 18900.0,
+      "entry": 20020.0,
+      "unrealized_pnl_before_sell_cost": -48160.0,
+      "unrealized_return_pct": -5.5944
     },
     {
       "ticker": "121440",
       "name": "골프존홀딩스",
       "qty": 100,
-      "last_close": 8150.0,
+      "last_close": 8790.0,
       "entry": 8148.14,
-      "unrealized_pnl_before_sell_cost": 186.0,
-      "unrealized_return_pct": 0.0228
+      "unrealized_pnl_before_sell_cost": 64186.0,
+      "unrealized_return_pct": 7.8774
     }
   ],
   "next_session_strategy": {
@@ -65,8 +56,20 @@
       {
         "ticker": "055490",
         "name": "테이팩스",
+        "side": "SELL",
+        "reason": "손절 신호 -5%"
+      },
+      {
+        "ticker": "005430",
+        "name": "한국공항",
         "side": "BUY",
-        "reason": "RS 95 + 수급/거래량/채널"
+        "reason": "RS 94 + 수급/거래량/채널"
+      },
+      {
+        "ticker": "100120",
+        "name": "뷰웍스",
+        "side": "BUY",
+        "reason": "RS 94 + 수급/거래량/채널"
       }
     ],
     "checks": [

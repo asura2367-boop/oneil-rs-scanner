@@ -1,7 +1,7 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 4788271.1213605,
+  "cash": 6694483.7496315,
   "positions": {
     "052460": {
       "name": "아이크래프트",
@@ -9,23 +9,7 @@
       "entry": 5865.86,
       "entry_idx": 2,
       "partial": true,
-      "last_close": 6390.0
-    },
-    "048910": {
-      "name": "대원미디어",
-      "qty": 249,
-      "entry": 7997.989999999999,
-      "entry_idx": 2,
-      "partial": false,
-      "last_close": 7870.0
-    },
-    "069540": {
-      "name": "빛과전자",
-      "qty": 319,
-      "entry": 4003.9999999999995,
-      "entry_idx": 7,
-      "partial": false,
-      "last_close": 3925.0
+      "last_close": 6490.0
     },
     "121440": {
       "name": "골프존홀딩스",
@@ -33,18 +17,41 @@
       "entry": 8148.139999999999,
       "entry_idx": 8,
       "partial": false,
-      "last_close": 8150.0
+      "last_close": 8790.0
+    },
+    "055490": {
+      "name": "테이팩스",
+      "qty": 43,
+      "entry": 20019.999999999996,
+      "entry_idx": 10,
+      "partial": false,
+      "last_close": 18900.0
     }
   },
   "pending": [
     {
-      "signal_date": "2026-11-04",
-      "side": "BUY",
+      "signal_date": "2026-11-06",
+      "side": "SELL",
       "ticker": "055490",
       "name": "테이팩스",
-      "reason": "RS 95 + 수급/거래량/채널"
+      "qty": 43,
+      "reason": "손절 신호 -5%"
+    },
+    {
+      "signal_date": "2026-11-06",
+      "side": "BUY",
+      "ticker": "005430",
+      "name": "한국공항",
+      "reason": "RS 94 + 수급/거래량/채널"
+    },
+    {
+      "signal_date": "2026-11-06",
+      "side": "BUY",
+      "ticker": "100120",
+      "name": "뷰웍스",
+      "reason": "RS 94 + 수급/거래량/채널"
     }
   ],
-  "last_processed": "2026-11-04",
-  "session_index": 9
+  "last_processed": "2026-11-06",
+  "session_index": 11
 }
