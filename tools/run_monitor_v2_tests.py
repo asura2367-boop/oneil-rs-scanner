@@ -16,7 +16,7 @@ sys.path.insert(0,str(ROOT))
 def build_suite():
     """Discover the reviewed offline suites, never the PostgreSQL gate."""
     suite=unittest.TestSuite()
-    for pattern in ('test_domain.py','test_simulator.py','test_worker.py','test_kis_adapter.py','test_kis_evidence.py','test_kis_transport.py','test_kis_https.py','test_kis_authenticated.py','test_kis_local_authorization.py','test_kis_windows_credentials.py',
+    for pattern in ('test_domain.py','test_simulator.py','test_worker.py','test_kis_adapter.py','test_kis_evidence.py','test_kis_transport.py','test_kis_https.py','test_kis_authenticated.py','test_kis_local_authorization.py','test_kis_windows_credentials.py','test_kis_linux_credentials.py',
                     'test_kis_authenticated_https.py','test_kis_token_issuer.py','test_kis_polling.py','test_recovery.py'):
         suite.addTests(unittest.TestLoader().discover(str(ROOT/'tests/execution_v2'),pattern=pattern))
     # Use independent loaders/top-level paths to avoid inheriting discover state.

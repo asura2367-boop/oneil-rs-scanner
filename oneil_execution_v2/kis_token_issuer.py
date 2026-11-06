@@ -18,7 +18,7 @@ from .domain import Blocked
 from .kis_adapter import AccountBinding
 from .kis_authenticated import Cancellation, CredentialLease
 from .kis_local_authorization import LocalPermission
-from .kis_windows_credentials import AppCredentials
+from .kis_app_credentials import AppCredentials
 from .kis_transport import ReadLimits
 from . import kis_https as base
 from . import kis_authenticated_https as secure

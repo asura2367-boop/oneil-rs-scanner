@@ -25,6 +25,8 @@ INTEGRATED_FILES = {
     'oneil_runtime_v2/linux_clock.py', 'oneil_runtime_v2/linux_storage.py',
     'oneil_runtime_v2/linux_dashboard.py', 'oneil_runtime_v2/LINUX_DASHBOARD.md',
     'deploy/oracle/run_dashboard.py', 'tests/runtime_v2/test_linux_dashboard.py',
+    'oneil_execution_v2/kis_app_credentials.py', 'oneil_execution_v2/kis_linux_credentials.py',
+    'oneil_execution_v2/KIS_LINUX_AUTH.md', 'tests/execution_v2/test_kis_linux_credentials.py',
     'oneil_runtime_v2/kis_diagnostics.py', 'oneil_runtime_v2/KIS_DIAGNOSTICS.md',
     'tests/runtime_v2/test_kis_diagnostics.py',
     'oneil_runtime_v2/local_dashboard.py', 'oneil_runtime_v2/windows_storage.py',

@@ -33,6 +33,7 @@ REQUIRED_FILES = TOOLS | {
         'kis_https.py', 'KIS_HTTPS.md', 'KIS_PUBLIC_SPEC.md',
         'kis_authenticated.py', 'KIS_AUTHENTICATED.md',
         'kis_local_authorization.py', 'kis_windows_credentials.py', 'kis_authenticated_https.py',
+        'kis_app_credentials.py', 'kis_linux_credentials.py', 'KIS_LINUX_AUTH.md',
         'kis_token_issuer.py', 'KIS_WINDOWS_AUTH.md',
         'kis_polling.py', 'KIS_POLLING.md',
         'store.py', 'worker.py', 'schema.sql', 'README.md', 'KIS_ADAPTER.md', 'recovery.py', 'RECOVERY.md')
@@ -63,6 +64,7 @@ REQUIRED_FILES = TOOLS | {
         'test_domain.py', 'test_kis_adapter.py', 'test_kis_evidence.py', 'test_kis_transport.py',
         'test_kis_https.py', 'test_kis_authenticated.py',
         'test_kis_local_authorization.py', 'test_kis_windows_credentials.py',
+        'test_kis_linux_credentials.py',
         'test_kis_authenticated_https.py', 'test_kis_token_issuer.py',
         'test_kis_polling.py',
         'kis_evidence_fixtures.py', 'test_postgres.py',

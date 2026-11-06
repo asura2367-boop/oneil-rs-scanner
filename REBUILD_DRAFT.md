@@ -74,8 +74,8 @@ Measured peak RSS was about 16 MiB for this check, not an operating-service budg
 
 At this preparation baseline, the actual dashboard launcher, storage validation
 and credential integration remained Windows-specific. The Linux simulation
-foundation below now adds a separate launcher/storage/clock path; credentials
-remain inactive and Windows-specific. This kit is not a Linux trading port,
+foundation below now adds a separate launcher/storage/clock path. The inactive
+Linux credential input described below remains disconnected from that launcher. This kit is not a Linux trading port,
 installer or Oracle VM acceptance result. It downloads no dependencies and changes no existing
 host settings. An independent review's temporary-storage error finding was fixed
 and regression-tested so failures remain sanitized and fail closed.
@@ -92,22 +92,47 @@ intact. See [Linux dashboard boundaries](oneil_runtime_v2/LINUX_DASHBOARD.md).
 No Oracle server, secrets, TLS keys, broker or real account were accessed. No
 listener, installation, service, network exposure or real trading was activated.
 Mount acceptance and TLS use offline doubles; the actual development overlay
-filesystem is rejected. Independent review found and fixed Linux suspend extending pairing and request
-deadlines; both now use BOOTTIME with regression tests. Native Oracle/ext4/XFS,
-trusted browser/TLS, resource
-capacity, suspend/power-loss and broker authentication remain open gates.
+filesystem is rejected. Independent review found and fixed Linux suspend
+extending pairing and request deadlines; both now use BOOTTIME with regression
+tests. Native Oracle/ext4/XFS, trusted browser/TLS, resource capacity,
+suspend/power-loss and broker authentication remain open gates.
+
+## Combined Linux source-only draft
+
+This integration starts from published Linux dashboard commit
+`d9586a632f42ee87b49a9885c4b606711e64539c` and incorporates credential source
+commits `4d2cb24cabfbfd6d29d8268712513d247332206f` and
+`6974e049bf64c0b5fcb99e1c6ecdb77ca6ceae25`. The required bundle inventory and
+aggregate now include both foundations together, with no workflow changes.
+
+The [Linux credential input](oneil_execution_v2/KIS_LINUX_AUTH.md) reads only an
+explicitly supplied, current-user-owned, unlinked sealed descriptor after an
+exact-scope ephemeral permission check. Native synthetic memfd tests cover
+seals, bounded parsing, original-offset preservation, cancellation, revocation,
+late-result wiping, descriptor ownership and cleanup. The default credential
+deadline now uses suspend-inclusive BOOTTIME, with no fallback to awake time. The shared app-pair type
+retains the Windows compatibility alias and redaction/serialization guards.
+It supplies no writer, secret-entry UI, persistence, token or network method.
+
+Neither the Linux dashboard nor Oracle preparation imports or activates this
+credential input. Linux token issuance and authenticated HTTPS retain their
+existing blocking gates. No real credential, account, token, persistent access,
+server, listener, workflow or deployment was used. Sealing is not encryption;
+trusted provisioning, swap/dump policy, native target acceptance and all real
+broker/trading acceptance gates remain unresolved.
 
 ## Verification
 
-- Exact network-free aggregate: **1007 Python and 69 Node tests passed**, zero
-  failures or skips. The package requires all 152 public rebuild files.
+- Exact network-free aggregate: **1046 Python and 69 Node tests passed**, zero
+  failures or skips. The package requires all 156 public rebuild files.
 - Independent review checked diagnostic publication, stale/cancel/deadline
   handling, host projection and packaging. Browser review covers delayed reads,
   old authentication failures, request/body timeouts, hidden/restored pages,
   command completion after expiry and malformed confirmation expiry. All checks
   use offline doubles; native browser behavior is not claimed as tested.
 - Tests include actual isolated SQLite, OS locks and Linux subprocess simulation.
-  DNS/TCP/TLS, Windows APIs, broker responses and browser DOM are mocked.
+  Actual Linux sealed descriptors use synthetic app values. DNS/TCP/TLS,
+  Windows APIs, broker responses and browser DOM are mocked.
 - Common secret/private-artifact patterns were checked before publication. Test
   identities and app-key/app-secret/bearer values are synthetic.
 - All 89 inherited GitHub Actions workflows remain unchanged. Publication uses

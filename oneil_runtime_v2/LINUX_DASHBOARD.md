@@ -42,8 +42,10 @@ the literal loopback IP. Neither command creates credentials, installs trust,
 bypasses warnings or validates browser trust. Authentication is the existing
 one-use 120-second local-console pairing and 15-minute Secure/HttpOnly session,
 with exact origin and CSRF checks. This is only dashboard simulation
-identity, **not KIS authentication**. The Linux broker credential/token path
-remains unimplemented and inactive.
+identity, **not KIS authentication**. The separate
+[Linux sealed credential input](../oneil_execution_v2/KIS_LINUX_AUTH.md) remains
+inactive and is never imported or invoked by this dashboard. Linux token issuance
+and authenticated HTTPS remain blocked; no credential-to-runtime path is supplied.
 
 ## Linux-specific boundaries
 
@@ -59,10 +61,11 @@ remains unimplemented and inactive.
   `/tmp` is intentionally not an eligible profile parent even with its sticky bit.
   SELinux labels are left alone; a denial is not a reason to disable SELinux.
 - Mountinfo must identify one unambiguous writable ext4 or XFS filesystem, with
-  root `/`. Network, FUSE, overlay, tmpfs, read-only, bind/subtree and unknown
-  filesystems are unsupported. Matching a filesystem type is not a durability or
-  block-device-provenance proof. Snapshot preflight does not defend against a
-  hostile owner/root, later permission/mount changes, or all path TOCTOU races.
+  root `/`. Network, FUSE, overlay, tmpfs, read-only, subtree and unknown
+  filesystems are unsupported. A bind mount of an entire filesystem can also
+  report root `/`; this check does not establish bind-mount or block-device
+  provenance. Matching a filesystem type is not a durability proof. Snapshot
+  preflight does not defend against a hostile owner/root, later permission/mount changes, or all path TOCTOU races.
 - Native `CLOCK_BOOTTIME` includes suspend while `CLOCK_MONOTONIC` excludes it.
   Sampling pauses over 250 ms and reversed/inconsistent samples are rejected.
   Existing health checks halt on suspend, time disagreement and long loop gaps.

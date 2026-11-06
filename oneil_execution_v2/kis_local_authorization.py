@@ -1,6 +1,6 @@
 """Explicit, ephemeral local permission records; not a human-consent authority.
 
-The trusted Windows host must obtain the user's action-time permission before
+The trusted platform host must obtain the user's action-time permission before
 constructing these records. No UI, persisted grant, auto-approval, network or
 credential access is supplied. A Python caller controlling this process can
 construct/modify objects; this is a misuse guard, not a hostile-code boundary.
