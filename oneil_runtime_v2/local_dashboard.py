@@ -108,12 +108,14 @@ class BoundedServer(WSGIServer):
     timeout = 0.25
     def get_request(self):
         connection, address = self.socket.accept()
-        deadline = time.monotonic()+2
-        connection.settimeout(2)
         try:
+            clock = getattr(self, 'deadline_clock', None) or time.monotonic
+            deadline = clock()+2
+            connection.settimeout(2)
             require(address[0] == '127.0.0.1','LOOPBACK_REQUIRED')
             connection = self.tls_context.wrap_socket(connection,server_side=True)
             connection._oneil_deadline = deadline
+            connection._oneil_clock = clock
             return connection,address
         except BaseException:
             connection.close()
@@ -128,8 +130,9 @@ class QuietHandler(WSGIRequestHandler):
         # One total deadline covers TLS, headers, body, dispatch and response.
         connection = self.connection
         deadline = connection._oneil_deadline
+        clock = vars(connection).get('_oneil_clock', time.monotonic)
         def remaining():
-            left = deadline-time.monotonic()
+            left = deadline-clock()
             if left <= 0: raise TimeoutError('REQUEST_DEADLINE')
             connection.settimeout(left)
         try:
@@ -191,7 +194,7 @@ class QuietHandler(WSGIRequestHandler):
             return  # Silent bounded close, never request/error logging.
 
 
-def listener(app, port, cert, key, *, server_type=BoundedServer, context_factory=ssl.SSLContext):
+def listener(app, port, cert, key, *, server_type=BoundedServer, context_factory=ssl.SSLContext, monotonic=None):
     require(type(port) is int and 1024 <= port <= 65535,'EXPLICIT_UNPRIVILEGED_PORT_REQUIRED')
     context = context_factory(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -199,6 +202,7 @@ def listener(app, port, cert, key, *, server_type=BoundedServer, context_factory
     server = server_type(('127.0.0.1',port),QuietHandler,bind_and_activate=False)
     try:
         server.tls_context = context
+        server.deadline_clock = monotonic or time.monotonic
         server.set_app(app)
         server.server_bind()
         server.server_activate()
@@ -222,6 +226,11 @@ def check_profile(directory, cert, key, port):
 
 def run_dashboard(directory, cert, key, port):
     check_profile(directory,cert,key,port)
+    return _run_dashboard(directory,cert,key,port,clock=sample_windows_clock)
+
+
+def _run_dashboard(directory, cert, key, port, *, clock, deadline_clock=None):
+    """Shared lifecycle; callers must first enforce their native profile checks."""
     require(sys.stdout.isatty(),'PRIVATE_CONSOLE_REQUIRED')
     state = SupervisorState(directory)
     runtime = host = app = server = None
@@ -240,9 +249,9 @@ def run_dashboard(directory, cert, key, port):
             state.update(lease=json.dumps(asdict(lease)),pid=os.getpid())
             stopped = False
             try:
-                host = SupervisedSimulationHost(directory,lease,clock=sample_windows_clock)
-                app = PairingApplication(host)
-                server = listener(app,port,cert,key)
+                host = SupervisedSimulationHost(directory,lease,clock=clock)
+                app = PairingApplication(host, monotonic=deadline_clock) if deadline_clock else PairingApplication(host)
+                server = listener(app,port,cert,key,monotonic=deadline_clock)
                 state.update(phase='RUNNING',reason='LOCAL_SIMULATION_HTTPS_ONLY')
                 print(f'SIMULATION ONLY https://127.0.0.1:{port}/pair.html\nOne-use pairing code (120 seconds): {app.code}',flush=True)
                 while host.tick() != 'STOPPED':

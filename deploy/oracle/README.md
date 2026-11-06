@@ -1,10 +1,11 @@
 # Oracle Linux 9, 1 GB: offline preparation only
 
 This is a small preparation kit for a future Oracle Linux 9 x86_64 VM check. It
-is **not an installer, Linux dashboard port or trading service**. No Oracle VM
-has been accessed or validated. The existing actual dashboard launcher, trusted
-storage checks and credential adapter are Windows-specific and must not be
-bypassed by changing a platform flag.
+is **not an installer or trading service**. No Oracle VM has been accessed or
+validated. A separate [Linux simulation dashboard foundation](../../oneil_runtime_v2/LINUX_DASHBOARD.md)
+is now available in source with native Linux clock and private-storage checks.
+The preparation command below still never starts it. Broker credentials remain
+Windows-specific and inactive; no platform check may be bypassed.
 
 ## Minimal future operator workflow
 
@@ -71,8 +72,9 @@ certificate trust change or automatic transfer is included here.
 ## Still required before any operational installation
 
 - Confirm the actual Oracle host, resources, time sync and storage behavior.
-- Build and review a Linux-native runtime/clock/private-storage/dashboard path;
-  Windows-specific safety checks stay intact until replaced by verified equivalents.
+- Accept the new Linux-native runtime/clock/private-storage/dashboard path on
+  real ext4/XFS target storage and a trusted local HTTPS/browser flow. Source
+  checks do not replace target acceptance; Windows-specific checks stay intact.
 - Establish separately authorized access, authentication, trusted HTTPS and the
   intended access restrictions. Do not expose an unauthenticated public port.
 - Validate crash/restart/backup semantics, resource use over time and coexistence

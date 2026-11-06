@@ -72,16 +72,35 @@ Actual Linux smoke checks verified halted state before/after, zero simulated
 order calls, lock exclusion, journal reopening and temporary-state cleanup.
 Measured peak RSS was about 16 MiB for this check, not an operating-service budget.
 
-The actual dashboard launcher, storage validation and credential integration
-remain Windows-specific. This kit is not a Linux trading port, installer or
-Oracle VM acceptance result. It downloads no dependencies and changes no existing
+At this preparation baseline, the actual dashboard launcher, storage validation
+and credential integration remained Windows-specific. The Linux simulation
+foundation below now adds a separate launcher/storage/clock path; credentials
+remain inactive and Windows-specific. This kit is not a Linux trading port,
+installer or Oracle VM acceptance result. It downloads no dependencies and changes no existing
 host settings. An independent review's temporary-storage error finding was fixed
 and regression-tested so failures remain sanitized and fail closed.
 
+## Linux simulation dashboard foundation
+
+Built on verified Oracle preparation commit
+`3e248754ca51cd18b640f835793a3ea5db24a4fe`. A separate explicit Linux entry point
+adds private POSIX ownership/mode/ACL and ext4/XFS mount inspection, native
+suspend-aware clocks, restrictive creation of synthetic state and the shared
+simulation-only loopback HTTPS/pairing lifecycle. Existing Windows gates remain
+intact. See [Linux dashboard boundaries](oneil_runtime_v2/LINUX_DASHBOARD.md).
+
+No Oracle server, secrets, TLS keys, broker or real account were accessed. No
+listener, installation, service, network exposure or real trading was activated.
+Mount acceptance and TLS use offline doubles; the actual development overlay
+filesystem is rejected. Independent review found and fixed Linux suspend extending pairing and request
+deadlines; both now use BOOTTIME with regression tests. Native Oracle/ext4/XFS,
+trusted browser/TLS, resource
+capacity, suspend/power-loss and broker authentication remain open gates.
+
 ## Verification
 
-- Exact network-free aggregate: **985 Python and 69 Node tests passed**, zero
-  failures or skips. The package requires all 146 public rebuild files.
+- Exact network-free aggregate: **1007 Python and 69 Node tests passed**, zero
+  failures or skips. The package requires all 152 public rebuild files.
 - Independent review checked diagnostic publication, stale/cancel/deadline
   handling, host projection and packaging. Browser review covers delayed reads,
   old authentication failures, request/body timeouts, hidden/restored pages,

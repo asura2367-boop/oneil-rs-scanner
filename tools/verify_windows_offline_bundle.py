@@ -55,6 +55,7 @@ REQUIRED_FILES = TOOLS | {
         '__init__.py', 'health.py', 'journal.py', 'preflight.py', 'restart.py',
         'windows_clock.py', 'simulation_store.py', 'simulation_host.py', 'SIMULATION_HOST.md',
         'local_dashboard.py', 'windows_storage.py', 'LOCAL_DASHBOARD.md',
+        'linux_clock.py', 'linux_storage.py', 'linux_dashboard.py', 'LINUX_DASHBOARD.md',
         'web/pair.html', 'web/pair.mjs', 'web/logout.html', 'web/logout.mjs',
         'web/index.html', 'web/simulation.mjs', 'web/simulation.css', 'worker_child.py', 'rehearsal_store.py', 'supervisor.py', 'observer_child.py', 'intent.py', 'state.py', 'orchestrator.py', 'ownership.py', 'ORCHESTRATION.md', 'COMPOSITION.md', 'README.md')
 } | {
@@ -77,7 +78,7 @@ REQUIRED_FILES = TOOLS | {
     'tests/policy_v2/test_policy_store_boundary.py', 'tests/policy_v2/test_kis_pipeline.py',
     'tests/runtime_v2/test_simulation_store.py', 'tests/runtime_v2/test_simulation_host.py',
     'tests/runtime_v2/test_kis_diagnostics.py',
-    'tests/runtime_v2/test_local_dashboard.py',
+    'tests/runtime_v2/test_local_dashboard.py', 'tests/runtime_v2/test_linux_dashboard.py',
     'tests/monitor_v2/simulation-dashboard.test.mjs',
     'tests/monitor_v2/local-pairing.test.mjs',
     'tests/runtime_v2/test_supervisor.py', 'tests/runtime_v2/test_worker_composition.py', 'tests/runtime_v2/test_bundle.py', 'tests/runtime_v2/test_health.py',
@@ -87,7 +88,8 @@ REQUIRED_FILES = TOOLS | {
     'deploy/windows/SUPERVISOR.md',
     'deploy/windows/INTEGRATION.md',
     'deploy/oracle/README.md', 'deploy/oracle/prepare_offline.py',
-    'deploy/oracle/rehearse_offline.py', 'tests/runtime_v2/test_oracle_preparation.py',
+    'deploy/oracle/rehearse_offline.py', 'deploy/oracle/run_dashboard.py',
+    'tests/runtime_v2/test_oracle_preparation.py',
 }
 DEVICES = {'CON', 'PRN', 'AUX', 'NUL'} | {f'{p}{i}' for p in ('COM', 'LPT') for i in range(1, 10)}
 

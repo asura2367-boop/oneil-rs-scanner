@@ -22,6 +22,9 @@ KIS_EVIDENCE_FILES = {
     "tests/policy_v2/test_kis_pipeline.py",
 }
 INTEGRATED_FILES = {
+    'oneil_runtime_v2/linux_clock.py', 'oneil_runtime_v2/linux_storage.py',
+    'oneil_runtime_v2/linux_dashboard.py', 'oneil_runtime_v2/LINUX_DASHBOARD.md',
+    'deploy/oracle/run_dashboard.py', 'tests/runtime_v2/test_linux_dashboard.py',
     'oneil_runtime_v2/kis_diagnostics.py', 'oneil_runtime_v2/KIS_DIAGNOSTICS.md',
     'tests/runtime_v2/test_kis_diagnostics.py',
     'oneil_runtime_v2/local_dashboard.py', 'oneil_runtime_v2/windows_storage.py',
