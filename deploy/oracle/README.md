@@ -5,8 +5,9 @@ is **not an installer or trading service**. No Oracle VM has been accessed or
 validated. A separate [Linux simulation dashboard foundation](../../oneil_runtime_v2/LINUX_DASHBOARD.md)
 is now available in source with native Linux clock and private-storage checks.
 The preparation command below still never starts it. The separate [Linux sealed credential input](../../oneil_execution_v2/KIS_LINUX_AUTH.md)
-is inactive and disconnected from this kit and dashboard. Token issuance and
-authenticated HTTPS remain Windows-gated; no platform check may be bypassed.
+is inactive and disconnected from this kit and dashboard. Separate
+[Linux authenticated-read source](../../oneil_execution_v2/KIS_LINUX_READS.md) is also
+inactive and disconnected. Original Windows entrypoints remain Windows-gated.
 
 ## Minimal future operator workflow
 

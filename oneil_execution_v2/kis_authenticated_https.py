@@ -26,7 +26,7 @@ _POLL = 0.1
 _DNS_SLOT = threading.BoundedSemaphore(1)
 _CODES = frozenset(('KIS_AUTH_HTTPS_GRANT_INVALID', 'KIS_AUTH_HTTPS_CANCELLED',
                     'KIS_AUTH_HTTPS_REQUEST_BLOCKED', 'KIS_AUTH_HTTPS_IO_FAILED',
-                    'KIS_AUTH_HTTPS_WINDOWS_REQUIRED'))
+                    'KIS_AUTH_HTTPS_WINDOWS_REQUIRED', 'KIS_AUTH_HTTPS_LINUX_REQUIRED'))
 
 
 class _Failure(Exception):
@@ -157,9 +157,14 @@ class _Stream:
 
 def _connect(host, port, deadline, connect_seconds, read_seconds):
     """Internal socket helper, not an HTTP API. Caller validates official origin."""
+    _check(sys.platform == 'win32', 'KIS_AUTH_HTTPS_WINDOWS_REQUIRED')
+    return _connect_official(host, port, deadline, connect_seconds, read_seconds)
+
+
+def _connect_official(host, port, deadline, connect_seconds, read_seconds):
+    """Shared private socket mechanics. Platform entrypoints enforce their gates."""
     raw = None; secured = None
     try:
-        _check(sys.platform == 'win32', 'KIS_AUTH_HTTPS_WINDOWS_REQUIRED')
         base._check((host, port) in (('openapi.koreainvestment.com', 9443),
                     ('openapivts.koreainvestment.com', 29443)), 'KIS_HTTPS_REQUEST_BLOCKED')
         deadline.check(); context = base._tls_context(); deadline.check()
@@ -241,10 +246,16 @@ class KisAuthenticatedHttpsGetClient:
         except Exception:
             raise _Failure('KIS_AUTH_HTTPS_GRANT_INVALID') from None
 
+    def _check_platform(self):
+        _check(sys.platform == 'win32', 'KIS_AUTH_HTTPS_WINDOWS_REQUIRED')
+
+    def _connect(self, host, port, deadline, connect_seconds, read_seconds):
+        return _connect(host, port, deadline, connect_seconds, read_seconds)
+
     def open_authenticated_get(self, envelope):
         stream = None; wire = None
         try:
-            _check(sys.platform == 'win32', 'KIS_AUTH_HTTPS_WINDOWS_REQUIRED')
+            self._check_platform()
             _check(type(envelope) is AuthenticatedGet and type(envelope.cancellation) is Cancellation,
                     'KIS_AUTH_HTTPS_REQUEST_BLOCKED')
             host, port, public_wire = base._request_target(envelope.request, self._binding)
@@ -253,7 +264,7 @@ class KisAuthenticatedHttpsGetClient:
                 _check(type(secret) is str and re.fullmatch(r'[A-Za-z0-9._~+/=-]{8,4096}', secret),
                         'KIS_AUTH_HTTPS_REQUEST_BLOCKED')
             deadline = _Deadline(envelope.request, self._clock, envelope.cancellation, self._check_grant)
-            stream = _connect(host, port, deadline, envelope.request.limits.connect_seconds,
+            stream = self._connect(host, port, deadline, envelope.request.limits.connect_seconds,
                               envelope.request.limits.read_seconds)
             deadline.check()
             wire = public_wire[:-2] + (f'authorization: Bearer {envelope.bearer}\r\n'

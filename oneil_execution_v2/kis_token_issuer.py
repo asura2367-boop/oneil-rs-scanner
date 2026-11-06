@@ -139,11 +139,17 @@ class KisTokenIssuer:
         self._last_utc = value; self._last_tick = tick
         return value, tick
 
+    def _check_platform(self):
+        _check(sys.platform == 'win32', 'KIS_TOKEN_PLATFORM_BLOCKED')
+
+    def _connect(self, host, port, deadline, connect_seconds, read_seconds):
+        return secure._connect(host, port, deadline, connect_seconds, read_seconds)
+
     def issue(self, binding, credentials, *, permission, minimum_validity_seconds,
               deadline_monotonic, cancellation):
         stream = None; body = None; wire = None; reserved = False; locked = False
         try:
-            _check(sys.platform == 'win32', 'KIS_TOKEN_PLATFORM_BLOCKED')
+            self._check_platform()
             _check(type(binding) is AccountBinding and type(credentials) is AppCredentials and
                    type(permission) is LocalPermission and type(cancellation) is Cancellation and
                    _number(minimum_validity_seconds, 0, 86400) and
@@ -170,7 +176,7 @@ class KisTokenIssuer:
             deadline = secure._Deadline(request, self._clock, cancellation, operation.check)
             host, port = (('openapi.koreainvestment.com', 9443) if binding.environment == 'real'
                           else ('openapivts.koreainvestment.com', 29443))
-            stream = secure._connect(host, port, deadline, limits.connect_seconds, limits.read_seconds)
+            stream = self._connect(host, port, deadline, limits.connect_seconds, limits.read_seconds)
             deadline.check()
             body = json.dumps({'grant_type': 'client_credentials', 'appkey': credentials.app_key,
                                'appsecret': credentials.app_secret}, separators=(',', ':')).encode('ascii')

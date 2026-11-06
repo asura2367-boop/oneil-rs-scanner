@@ -9,10 +9,11 @@ implement or test this source.
 
 The Windows Credential Manager implementation remains Windows-gated. Its
 `AppCredentials` value type has moved to the inert `kis_app_credentials` module;
-the old Windows import is retained as the same class for compatibility. The token
-issuer uses that shared type but retains its existing Windows gate. The
-authenticated HTTPS client and token issuance are still blocked on Linux. This
-foundation does not bypass either gate or enable orders.
+the old Windows import is retained as the same class for compatibility. The original token
+issuer uses that shared type and retains its Windows gate, as does the original
+authenticated HTTPS client. Separate explicit Linux implementations now exist in
+[KIS_LINUX_READS.md](KIS_LINUX_READS.md); this input alone neither starts them nor
+changes the original Windows gates or enables orders.
 
 ## Explicit descriptor boundary
 
@@ -104,6 +105,6 @@ Linux and are not a Windows native-acceptance test.
 Before any operational credential integration, still needed: trusted secret
 entry and actual user authorization, reviewed provisioning and lifecycle rules,
 actual Oracle kernel/Python/identity acceptance, explicit swap/dump/memory threat
-model, Linux token/HTTPS implementation and review, broker response/provenance
-acceptance, machine-wide identity/exclusion, and separately authorized deployment.
+model, real Linux token/HTTPS acceptance beyond the offline implementation,
+broker response/provenance acceptance, machine-wide identity/exclusion, and separately authorized deployment.
 The offline runtime remains nonpermitting and cannot submit live orders.

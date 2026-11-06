@@ -115,16 +115,37 @@ retains the Windows compatibility alias and redaction/serialization guards.
 It supplies no writer, secret-entry UI, persistence, token or network method.
 
 Neither the Linux dashboard nor Oracle preparation imports or activates this
-credential input. Linux token issuance and authenticated HTTPS retain their
-existing blocking gates. No real credential, account, token, persistent access,
+credential input. The original Windows token issuer and authenticated HTTPS retain their
+platform gates. Separate inactive Linux implementations are described below. No real credential, account, token, persistent access,
 server, listener, workflow or deployment was used. Sealing is not encryption;
 trusted provisioning, swap/dump policy, native target acceptance and all real
 broker/trading acceptance gates remain unresolved.
 
+## Inactive Linux broker-read foundation
+
+Built on `884d1e7a084242a318be9421c54b39836d7dc4e7`, this source adds a separate
+[Linux authenticated-read composition](oneil_execution_v2/KIS_LINUX_READS.md).
+Only explicitly supplied sealed input and separately granted read/token/GET
+permissions can reach its operation entrypoints. The token grant is consumed once;
+no automatic renewal permission, persistence, generic HTTP or order method exists.
+All default Linux deadlines and permission clocks are suspend-inclusive BOOTTIME.
+The seven canonical GET recipes, strict framing/TLS controls and nonpermitting
+capture contract are retained. Original Windows entrypoints remain Windows-gated.
+
+No dashboard, Oracle command, runtime or worker imports or starts this source.
+Tests use only synthetic memfd input and fake DNS/TCP/TLS. No real credentials,
+account, token, broker request, server, listener, service, deployment or live
+trading activation occurred. Broker tokens are not broker-enforced read-only;
+actual user consent, trusted provisioning, real broker acceptance and all existing
+production gates remain open. This source publication does not meet those gates.
+
 ## Verification
 
-- Exact network-free aggregate: **1046 Python and 69 Node tests passed**, zero
-  failures or skips. The package requires all 156 public rebuild files.
+- Exact network-free aggregate: **1121 Python and 69 Node tests passed**, zero
+  failures or skips. The package requires all 159 public rebuild files.
+- Independent Linux-read review found and fixed native-test selection on non-Linux
+  platforms. The 75-test Linux suite and three portable refusal tests pass;
+  actual Windows execution is not claimed.
 - Independent review checked diagnostic publication, stale/cancel/deadline
   handling, host projection and packaging. Browser review covers delayed reads,
   old authentication failures, request/body timeouts, hidden/restored pages,

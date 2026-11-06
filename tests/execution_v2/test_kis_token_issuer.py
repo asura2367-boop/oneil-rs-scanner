@@ -51,21 +51,26 @@ class Stream:
 
 
 class TokenIssuerTests(unittest.TestCase):
+    issuer_type = issuer.KisTokenIssuer
+    platform = 'win32'
+    blocked_platform = 'linux'
+    connector_module = secure
     def setUp(self):
         self.tick = 100.; self.now = NOW; self.token = Cancellation(); self.stream = Stream()
-        self.patches = [patch.object(issuer.sys, 'platform', 'win32'),
+        self.patches = [patch.object(issuer.sys, 'platform', self.platform),
             patch.object(issuer, '_ISSUE_LIMITER', issuer._IssueLimiter()),
-            patch.object(secure, '_connect', return_value=self.stream),
+            patch.object(self.connector_module, '_connect', return_value=self.stream),
             patch('socket.socket', side_effect=AssertionError('REAL_SOCKET_FORBIDDEN')),
             patch('socket.getaddrinfo', side_effect=AssertionError('REAL_DNS_FORBIDDEN'))]
         _, _, self.connect, *_ = [p.start() for p in self.patches]
         for p in self.patches: self.addCleanup(p.stop)
-        self.subject = issuer.KisTokenIssuer(monotonic=lambda: self.tick, utc_now=lambda: self.now)
+        self.clock = lambda: self.tick
+        self.subject = self.issuer_type(monotonic=self.clock, utc_now=lambda: self.now)
         self.permission = self.grant()
 
     def grant(self, binding=BINDING, actions=('issue_token', 'read_app_credentials', 'authenticated_get')):
         return LocalPermission(binding, actions=actions, issued_at=NOW,
-            expires_at=NOW+timedelta(minutes=5), monotonic=lambda: self.tick, utc_now=lambda: self.now)
+            expires_at=NOW+timedelta(minutes=5), monotonic=self.clock, utc_now=lambda: self.now)
 
     def issue(self, **updates):
         args = dict(permission=self.permission, minimum_validity_seconds=60,
@@ -74,7 +79,7 @@ class TokenIssuerTests(unittest.TestCase):
         return self.subject.issue(BINDING, CREDS, **args)
 
     def test_constructor_is_inactive(self):
-        issuer.KisTokenIssuer(); self.connect.assert_not_called()
+        self.issuer_type(); self.connect.assert_not_called()
 
     def test_only_exact_real_token_post_and_minimum_body(self):
         lease = self.issue()
@@ -104,7 +109,7 @@ class TokenIssuerTests(unittest.TestCase):
         self.connect.assert_not_called()
 
     def test_non_windows_and_precancel_block_before_network(self):
-        with patch.object(issuer.sys, 'platform', 'linux'):
+        with patch.object(issuer.sys, 'platform', self.blocked_platform):
             with self.assertRaisesRegex(Blocked, 'PLATFORM_BLOCKED'): self.issue()
         self.token.cancel()
         with self.assertRaisesRegex(Blocked, 'CANCELLED'): self.issue()

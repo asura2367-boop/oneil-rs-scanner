@@ -63,6 +63,11 @@ class Context:
 
 
 class AuthenticatedHttpsTests(unittest.TestCase):
+    client_type = h.KisAuthenticatedHttpsGetClient
+    platform = 'win32'
+    blocked_platform = 'linux'
+    platform_error = 'KIS_AUTH_HTTPS_WINDOWS_REQUIRED'
+    connect = staticmethod(h._connect)
     def setUp(self):
         self.tick = 100.; self.now = NOW
         self.clock = lambda: self.tick
@@ -74,11 +79,11 @@ class AuthenticatedHttpsTests(unittest.TestCase):
                         patch.object(h.select, 'select', side_effect=lambda r,w,x,t: (r,w,[])),
                         patch.object(h, '_DNS_SLOT', threading.BoundedSemaphore(1)),
                         patch.dict('os.environ', {}, clear=True),
-                        patch.object(h.sys, 'platform', 'win32')]
+                        patch.object(h.sys, 'platform', self.platform)]
         self.dns, self.tcp, self.ctx, self.select, *_ = [p.start() for p in self.patches]
         for p in self.patches: self.addCleanup(p.stop)
         self.permission = self.grant()
-        self.client = h.KisAuthenticatedHttpsGetClient(BINDING, permission=self.permission, monotonic=self.clock)
+        self.client = self.client_type(BINDING, permission=self.permission, monotonic=self.clock)
         self.request = self.request_for(prepare_history_query(HistoryQuery(BINDING, '2026-11-05')))
         self.cancel = Cancellation()
         self.envelope = AuthenticatedGet(self.request, SECRET+'KEY', SECRET+'APP', SECRET+'TOKEN', self.cancel)
@@ -103,8 +108,8 @@ class AuthenticatedHttpsTests(unittest.TestCase):
 
     def test_construction_no_io_and_no_ungranted_default(self):
         self.dns.assert_not_called(); self.tcp.assert_not_called(); self.ctx.assert_not_called()
-        with self.assertRaises(TypeError): h.KisAuthenticatedHttpsGetClient(BINDING)
-        with self.assertRaises(Blocked): h.KisAuthenticatedHttpsGetClient(BINDING, permission=None)
+        with self.assertRaises(TypeError): self.client_type(BINDING)
+        with self.assertRaises(Blocked): self.client_type(BINDING, permission=None)
 
     def test_exact_get_auth_headers_and_direct_tls(self):
         response = self.client.open_authenticated_get(self.envelope)
@@ -126,9 +131,9 @@ class AuthenticatedHttpsTests(unittest.TestCase):
 
     def test_wrong_scope_binding_expired_or_revoked_grant(self):
         for permission in [self.grant(actions=()), self.grant(replace(BINDING, cano='87654321'))]:
-            self.client = h.KisAuthenticatedHttpsGetClient(BINDING, permission=permission, monotonic=self.clock)
+            self.client = self.client_type(BINDING, permission=permission, monotonic=self.clock)
             self.error(code='KIS_AUTH_HTTPS_GRANT_INVALID')
-        self.client = h.KisAuthenticatedHttpsGetClient(BINDING, permission=self.permission, monotonic=self.clock)
+        self.client = self.client_type(BINDING, permission=self.permission, monotonic=self.clock)
         self.permission.revoke(); self.error(code='KIS_AUTH_HTTPS_GRANT_INVALID')
         self.dns.assert_not_called(); self.tcp.assert_not_called()
 
@@ -283,7 +288,7 @@ class AuthenticatedHttpsTests(unittest.TestCase):
 
     def test_demo_exact_origin_sni_and_account(self):
         binding=replace(BINDING,environment='demo')
-        client=h.KisAuthenticatedHttpsGetClient(binding,permission=self.grant(binding),monotonic=self.clock)
+        client=self.client_type(binding,permission=self.grant(binding),monotonic=self.clock)
         request=self.request_for(prepare_history_query(HistoryQuery(binding,'2026-11-05')), 'demo')
         self.dns.return_value=[(*self.address[:4],('8.8.8.8',29443))]
         client.open_authenticated_get(replace(self.envelope,request=request)).close()
@@ -291,12 +296,12 @@ class AuthenticatedHttpsTests(unittest.TestCase):
         self.assertIn(b'tr_id: VTTC0081R',b''.join(self.tls.sent))
 
     def test_internal_connection_rejects_arbitrary_host_before_io(self):
-        with self.assertRaises(Exception): h._connect('evil.example',443,None,3,3)
+        with self.assertRaises(Exception): self.connect('evil.example',443,None,3,3)
         self.ctx.assert_not_called(); self.dns.assert_not_called()
 
     def test_non_windows_blocks_before_any_network(self):
-        with patch.object(h.sys, 'platform', 'linux'):
-            self.error(code='KIS_AUTH_HTTPS_WINDOWS_REQUIRED')
+        with patch.object(h.sys, 'platform', self.blocked_platform):
+            self.error(code=self.platform_error)
         self.dns.assert_not_called(); self.tcp.assert_not_called(); self.ctx.assert_not_called()
 
     def test_all_seven_exact_read_recipes_and_no_arbitrary_query(self):
