@@ -177,7 +177,7 @@ class BundleTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         folders = ['oneil_' + name + '_v2' for name in ('execution', 'control', 'monitor', 'policy', 'runtime')]
         folders += ['tests/' + name + '_v2' for name in ('execution', 'control', 'monitor', 'policy', 'runtime')]
-        folders += ['deploy/windows', 'tools']
+        folders += ['deploy/windows', 'deploy/oracle', 'tools']
         actual = {str(p.relative_to(root)).replace('\\', '/') for folder in folders
                   for p in (root/folder).rglob('*') if p.is_file() and allowed(p.relative_to(root).as_posix())}
         self.assertEqual(actual, REQUIRED_FILES)

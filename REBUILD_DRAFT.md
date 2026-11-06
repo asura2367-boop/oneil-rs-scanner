@@ -58,10 +58,30 @@ responses cannot revive old controls or status. Internal action checks remain
 fail-closed even when a browser timer has not run. POST timeout/abort does not
 claim rollback or automatic recovery of an unknown host outcome.
 
+## Oracle Linux offline preparation
+
+Built on verified remote `100be3887bc9a300abf5785684cf1f65213876a2`. The
+[Oracle preparation kit](deploy/oracle/README.md) groups host checks and one
+explicit temporary SQLite rehearsal into a single command for a future authorized
+operator session. No server access, upload, installation or deployment occurred.
+The read-only checker reports Oracle Linux 9, Python, SQLite, Korea timezone data,
+host available memory and temporary disk space. The fixed smoke child has a
+256 MiB address-space limit, a 30-second CPU cap and a 45-second parent deadline.
+It never resumes or activates anything, opens a listener or calls a broker.
+Actual Linux smoke checks verified halted state before/after, zero simulated
+order calls, lock exclusion, journal reopening and temporary-state cleanup.
+Measured peak RSS was about 16 MiB for this check, not an operating-service budget.
+
+The actual dashboard launcher, storage validation and credential integration
+remain Windows-specific. This kit is not a Linux trading port, installer or
+Oracle VM acceptance result. It downloads no dependencies and changes no existing
+host settings. An independent review's temporary-storage error finding was fixed
+and regression-tested so failures remain sanitized and fail closed.
+
 ## Verification
 
-- Exact network-free aggregate: **968 Python and 69 Node tests passed**, zero
-  failures or skips. The package requires all 142 public rebuild files.
+- Exact network-free aggregate: **985 Python and 69 Node tests passed**, zero
+  failures or skips. The package requires all 146 public rebuild files.
 - Independent review checked diagnostic publication, stale/cancel/deadline
   handling, host projection and packaging. Browser review covers delayed reads,
   old authentication failures, request/body timeouts, hidden/restored pages,

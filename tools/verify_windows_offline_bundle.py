@@ -17,7 +17,7 @@ MAX_BYTES = 16 * 1024 * 1024
 MAX_FILES = 1000
 PREFIXES = ('oneil_execution_v2/', 'oneil_control_v2/', 'oneil_monitor_v2/',
             'oneil_runtime_v2/', 'oneil_policy_v2/', 'tests/policy_v2/', 'tests/execution_v2/', 'tests/control_v2/',
-            'tests/monitor_v2/', 'tests/runtime_v2/', 'deploy/windows/')
+            'tests/monitor_v2/', 'tests/runtime_v2/', 'deploy/windows/', 'deploy/oracle/')
 TOOLS = {'tools/run_monitor_v2_tests.py', 'tools/monitor_v2_test_response.py',
          'tools/build_monitor_v2_mock.py', 'tools/build_windows_offline_bundle.py',
          'tools/verify_windows_offline_bundle.py', 'tools/run_execution_v2_tests.py',
@@ -86,6 +86,8 @@ REQUIRED_FILES = TOOLS | {
     'deploy/windows/Start-OfflineRehearsal.ps1', 'deploy/windows/run_offline.py',
     'deploy/windows/SUPERVISOR.md',
     'deploy/windows/INTEGRATION.md',
+    'deploy/oracle/README.md', 'deploy/oracle/prepare_offline.py',
+    'deploy/oracle/rehearse_offline.py', 'tests/runtime_v2/test_oracle_preparation.py',
 }
 DEVICES = {'CON', 'PRN', 'AUX', 'NUL'} | {f'{p}{i}' for p in ('COM', 'LPT') for i in range(1, 10)}
 
