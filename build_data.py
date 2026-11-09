@@ -2,7 +2,7 @@
 import os
 import json
 import time
-from datetime import datetime, timedelta, time as clock_time
+from datetime import date, datetime, timedelta, time as clock_time
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
@@ -165,18 +165,51 @@ def recent_ohlc_ready(history):
                 and (values.high>=values.close).all())
 
 
-def collection_plan(universe, existing, expected, *, bootstrap_limit=3000, refresh_limit=3000):
+def pending_paper_symbols(path, expected):
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return set()
+    except (OSError, UnicodeError, ValueError):
+        print('모의매매 대기 목록을 읽지 못해 기본 일봉 수집 순서를 사용합니다.', flush=True)
+        return set()
+    if not isinstance(state, dict) or state.get('mode') != 'paper_only_v1':
+        return set()
+    pending = state.get('pending')
+    if not isinstance(pending, list):
+        return set()
+    symbols = set()
+    for order in pending:
+        if not isinstance(order, dict):
+            continue
+        code = str(order.get('ticker', '')).zfill(6)
+        if len(code) != 6 or not code.isascii() or not code.isdigit() or code == '000000':
+            continue
+        try:
+            signal_date = date.fromisoformat(order.get('signal_date'))
+        except (TypeError, ValueError):
+            continue
+        if signal_date < expected:
+            symbols.add(code)
+    return symbols
+
+
+def collection_plan(universe, existing, expected, *, bootstrap_limit=3000, refresh_limit=3000,
+                    priority_symbols=()):
     latest=existing.groupby('ticker')['date'].max().to_dict() if not existing.empty else {}
     missing=[item for item in universe if item[0] not in latest]
+    missing.sort(key=lambda item: item[0] not in priority_symbols)
     ohlc_ready={c for c,g in existing.groupby('ticker') if recent_ohlc_ready(g)} if not existing.empty else set()
     stale=[item for item in universe if item[0] in latest and (latest[item[0]].date()<expected or item[0] not in ohlc_ready)]
-    stale.sort(key=lambda item:(latest[item[0]],item[0]))
+    stale.sort(key=lambda item:(item[0] not in priority_symbols,latest[item[0]],item[0]))
     # Backfill progresses every run; daily refresh no longer waits three days or
     # loses all but five slots to new symbols. An execution budget bounds work.
     new=missing[:bootstrap_limit]
     # Bootstrap a small first tranche, refresh all existing symbols, then
     # continue the rest of the registered universe within the bounded budget.
-    return new[:100]+stale[:refresh_limit]+new[100:]
+    plan = new[:100]+stale[:refresh_limit]+new[100:]
+    # Give due paper symbols the first reads without expanding either limit.
+    return sorted(plan, key=lambda item: item[0] not in priority_symbols)
 
 
 def fetch_incremental(session,key,secret,token,code,history,start,end):
@@ -263,7 +296,9 @@ def main(shared_token=None):
     batch_size=max(1,min(int(os.getenv('KIS_BATCH_SIZE','3000')),5000))
     refresh_limit=max(1,min(int(os.getenv('KIS_DAILY_REFRESH_LIMIT','3000')),5000))
     max_seconds=max(60,min(int(os.getenv('KIS_COLLECTION_SECONDS','4800')),5400))
-    batch=collection_plan(universe,existing,expected,bootstrap_limit=batch_size,refresh_limit=refresh_limit)
+    priority = pending_paper_symbols(OUT/'paper'/'state.json', expected)
+    batch=collection_plan(universe,existing,expected,bootstrap_limit=batch_size,refresh_limit=refresh_limit,
+                          priority_symbols=priority)
     latest=existing.groupby('ticker')['date'].max().to_dict() if not existing.empty else {}
     missing=[item for item in universe if item[0] not in latest]
     print(f'확정 거래일 {expected}; 신규 이력 최대 {batch_size}; 기존 일봉 갱신 최대 {refresh_limit}',flush=True)
