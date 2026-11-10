@@ -1,4 +1,2 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
-2026-11-09,SELL,052460,아이크래프트,10거래일 청산,2026-11-09,6440.0,6433.56,170,1093705.2,,SELL: estimated; actual close can differ
-2026-11-09,SELL,121440,골프존홀딩스,1차 익절 신호 +8%,2026-11-09,8810.0,8801.19,50,440059.5,,SELL: estimated; actual close can differ
-2026-11-09,BUY,053800,안랩,RS 99 + 수급/거래량/채널,2026-11-09,105900.0,106005.9,17,1802100.3,270.32,ESTIMATE ONLY; execution depends on next session close and available cash
+2026-11-10,BUY,247660,나노씨엠에스,RS 95 + 수급/거래량/채널,2026-11-10,4410.0,4414.41,430,1898196.3,284.73,ESTIMATE ONLY; execution depends on next session close and available cash
