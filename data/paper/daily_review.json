@@ -1,84 +1,72 @@
 {
-  "as_of": "2026-11-09",
+  "as_of": "2026-11-10",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-09",
+  "latest_processed": "2026-11-10",
   "initial_cash": 10000000.0,
-  "cash": 4851087.79,
-  "holdings_value": 4600600.0,
-  "equity": 9451687.79,
-  "daily_pnl_mark_to_market": -37795.96,
-  "daily_return_pct": -0.3983,
-  "cumulative_pnl": -548312.21,
-  "cumulative_return_pct": -5.4831,
+  "cash": 5356643.48,
+  "holdings_value": 4157200.0,
+  "equity": 9513843.48,
+  "daily_pnl_mark_to_market": 62155.69,
+  "daily_return_pct": 0.6576,
+  "cumulative_pnl": -486156.52,
+  "cumulative_return_pct": -4.8616,
   "trade_count_today": 3,
-  "sell_trade_count_today": 1,
-  "trade_cost_today": 2084.25,
-  "realized_pnl_today": -76566.17,
-  "realized_pnl_cumulative": -708811.28,
+  "sell_trade_count_today": 2,
+  "trade_cost_today": 3576.52,
+  "realized_pnl_today": 179981.65,
+  "realized_pnl_cumulative": -528829.63,
   "realized_pnl_verified": true,
-  "sell_events": 5,
-  "profitable_sell_events": 1,
+  "sell_events": 7,
+  "profitable_sell_events": 3,
   "losing_sell_events": 4,
-  "sell_event_win_rate_pct": 20.0,
+  "sell_event_win_rate_pct": 42.86,
   "realized_pnl_note": "Win rate counts SELL events (including partial sells), not completed positions.",
   "positions": [
     {
       "ticker": "005430",
       "name": "한국공항",
       "qty": 14,
-      "last_close": 92000.0,
+      "last_close": 96000.0,
       "entry": 92092.0,
-      "unrealized_pnl_before_sell_cost": -1288.0,
-      "unrealized_return_pct": -0.0999
+      "unrealized_pnl_before_sell_cost": 54712.0,
+      "unrealized_return_pct": 4.2436
     },
     {
-      "ticker": "052460",
-      "name": "아이크래프트",
-      "qty": 170,
-      "last_close": 6440.0,
-      "entry": 5865.86,
-      "unrealized_pnl_before_sell_cost": 97603.8,
-      "unrealized_return_pct": 9.7878
+      "ticker": "053800",
+      "name": "안랩",
+      "qty": 10,
+      "last_close": 107800.0,
+      "entry": 107907.8,
+      "unrealized_pnl_before_sell_cost": -1078.0,
+      "unrealized_return_pct": -0.0999
     },
     {
       "ticker": "100120",
       "name": "뷰웍스",
       "qty": 48,
-      "last_close": 27850.0,
+      "last_close": 26900.0,
       "entry": 27877.85,
-      "unrealized_pnl_before_sell_cost": -1336.8,
-      "unrealized_return_pct": -0.0999
+      "unrealized_pnl_before_sell_cost": -46936.8,
+      "unrealized_return_pct": -3.5076
     },
     {
       "ticker": "121440",
       "name": "골프존홀딩스",
-      "qty": 100,
-      "last_close": 8810.0,
+      "qty": 50,
+      "last_close": 8880.0,
       "entry": 8148.14,
-      "unrealized_pnl_before_sell_cost": 66186.0,
-      "unrealized_return_pct": 8.1228
+      "unrealized_pnl_before_sell_cost": 36593.0,
+      "unrealized_return_pct": 8.9819
     }
   ],
   "next_session_strategy": {
     "mode": "REVIEW_ONLY",
     "pending_orders": [
       {
-        "ticker": "052460",
-        "name": "아이크래프트",
-        "side": "SELL",
-        "reason": "10거래일 청산"
-      },
-      {
-        "ticker": "121440",
-        "name": "골프존홀딩스",
-        "side": "SELL",
-        "reason": "1차 익절 신호 +8%"
-      },
-      {
-        "ticker": "053800",
-        "name": "안랩",
+        "ticker": "247660",
+        "name": "나노씨엠에스",
         "side": "BUY",
-        "reason": "RS 99 + 수급/거래량/채널"
+        "reason": "RS 95 + 수급/거래량/채널"
       }
     ],
     "checks": [

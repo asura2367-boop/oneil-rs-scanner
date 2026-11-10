@@ -1,23 +1,15 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 4851087.7927465,
+  "cash": 5356643.4791165,
   "positions": {
-    "052460": {
-      "name": "아이크래프트",
-      "qty": 170,
-      "entry": 5865.86,
-      "entry_idx": 2,
-      "partial": true,
-      "last_close": 6440.0
-    },
     "121440": {
       "name": "골프존홀딩스",
-      "qty": 100,
+      "qty": 50,
       "entry": 8148.139999999999,
       "entry_idx": 8,
-      "partial": false,
-      "last_close": 8810.0
+      "partial": true,
+      "last_close": 8880.0
     },
     "005430": {
       "name": "한국공항",
@@ -25,7 +17,7 @@
       "entry": 92091.99999999999,
       "entry_idx": 12,
       "partial": false,
-      "last_close": 92000.0
+      "last_close": 96000.0
     },
     "100120": {
       "name": "뷰웍스",
@@ -33,34 +25,26 @@
       "entry": 27877.85,
       "entry_idx": 12,
       "partial": false,
-      "last_close": 27850.0
+      "last_close": 26900.0
+    },
+    "053800": {
+      "name": "안랩",
+      "qty": 10,
+      "entry": 107907.79999999999,
+      "entry_idx": 13,
+      "partial": false,
+      "last_close": 107800.0
     }
   },
   "pending": [
     {
-      "signal_date": "2026-11-09",
-      "side": "SELL",
-      "ticker": "052460",
-      "name": "아이크래프트",
-      "qty": 170,
-      "reason": "10거래일 청산"
-    },
-    {
-      "signal_date": "2026-11-09",
-      "side": "SELL",
-      "ticker": "121440",
-      "name": "골프존홀딩스",
-      "qty": 50,
-      "reason": "1차 익절 신호 +8%"
-    },
-    {
-      "signal_date": "2026-11-09",
+      "signal_date": "2026-11-10",
       "side": "BUY",
-      "ticker": "053800",
-      "name": "안랩",
-      "reason": "RS 99 + 수급/거래량/채널"
+      "ticker": "247660",
+      "name": "나노씨엠에스",
+      "reason": "RS 95 + 수급/거래량/채널"
     }
   ],
-  "last_processed": "2026-11-09",
-  "session_index": 12
+  "last_processed": "2026-11-10",
+  "session_index": 13
 }
