@@ -41,6 +41,17 @@ jobs:
           git add data/paper/
           if ! git diff --cached --quiet; then
             git commit -m 'Paper trading after successful daily collection'
-            git pull --rebase origin main
-            git push origin HEAD:main
+            # Other workflows also update main between pull and push.
+            # Rebase conflicts remain fatal to preserve concurrent paper records.
+            for attempt in 1 2 3; do
+              git pull --rebase origin main
+              if git push origin HEAD:main; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo 'Paper record push failed after 3 attempts' >&2
+                exit 1
+              fi
+              sleep "$((attempt * 2))"
+            done
           fi
