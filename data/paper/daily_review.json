@@ -1,19 +1,19 @@
 {
-  "as_of": "2026-11-10",
+  "as_of": "2026-11-11",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-10",
+  "latest_processed": "2026-11-11",
   "initial_cash": 10000000.0,
-  "cash": 5356643.48,
-  "holdings_value": 4157200.0,
-  "equity": 9513843.48,
-  "daily_pnl_mark_to_market": 62155.69,
-  "daily_return_pct": 0.6576,
-  "cumulative_pnl": -486156.52,
-  "cumulative_return_pct": -4.8616,
-  "trade_count_today": 3,
-  "sell_trade_count_today": 2,
-  "trade_cost_today": 3576.52,
-  "realized_pnl_today": 179981.65,
+  "cash": 4393141.58,
+  "holdings_value": 5222995.0,
+  "equity": 9616136.58,
+  "daily_pnl_mark_to_market": 102293.1,
+  "daily_return_pct": 1.0752,
+  "cumulative_pnl": -383863.42,
+  "cumulative_return_pct": -3.8386,
+  "trade_count_today": 1,
+  "sell_trade_count_today": 0,
+  "trade_cost_today": 144.5,
+  "realized_pnl_today": 0.0,
   "realized_pnl_cumulative": -528829.63,
   "realized_pnl_verified": true,
   "sell_events": 7,
@@ -26,19 +26,19 @@
       "ticker": "005430",
       "name": "한국공항",
       "qty": 14,
-      "last_close": 96000.0,
+      "last_close": 97100.0,
       "entry": 92092.0,
-      "unrealized_pnl_before_sell_cost": 54712.0,
-      "unrealized_return_pct": 4.2436
+      "unrealized_pnl_before_sell_cost": 70112.0,
+      "unrealized_return_pct": 5.438
     },
     {
       "ticker": "053800",
       "name": "안랩",
       "qty": 10,
-      "last_close": 107800.0,
+      "last_close": 116600.0,
       "entry": 107907.8,
-      "unrealized_pnl_before_sell_cost": -1078.0,
-      "unrealized_return_pct": -0.0999
+      "unrealized_pnl_before_sell_cost": 86922.0,
+      "unrealized_return_pct": 8.0552
     },
     {
       "ticker": "100120",
@@ -57,16 +57,25 @@
       "entry": 8148.14,
       "unrealized_pnl_before_sell_cost": 36593.0,
       "unrealized_return_pct": 8.9819
+    },
+    {
+      "ticker": "247660",
+      "name": "나노씨엠에스",
+      "qty": 217,
+      "last_close": 4435.0,
+      "entry": 4439.435,
+      "unrealized_pnl_before_sell_cost": -962.39,
+      "unrealized_return_pct": -0.0999
     }
   ],
   "next_session_strategy": {
     "mode": "REVIEW_ONLY",
     "pending_orders": [
       {
-        "ticker": "247660",
-        "name": "나노씨엠에스",
-        "side": "BUY",
-        "reason": "RS 95 + 수급/거래량/채널"
+        "ticker": "053800",
+        "name": "안랩",
+        "side": "SELL",
+        "reason": "1차 익절 신호 +8%"
       }
     ],
     "checks": [

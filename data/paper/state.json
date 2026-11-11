@@ -1,7 +1,7 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 5356643.4791165,
+  "cash": 4393141.5805072505,
   "positions": {
     "121440": {
       "name": "골프존홀딩스",
@@ -17,7 +17,7 @@
       "entry": 92091.99999999999,
       "entry_idx": 12,
       "partial": false,
-      "last_close": 96000.0
+      "last_close": 97100.0
     },
     "100120": {
       "name": "뷰웍스",
@@ -33,18 +33,27 @@
       "entry": 107907.79999999999,
       "entry_idx": 13,
       "partial": false,
-      "last_close": 107800.0
+      "last_close": 116600.0
+    },
+    "247660": {
+      "name": "나노씨엠에스",
+      "qty": 217,
+      "entry": 4439.4349999999995,
+      "entry_idx": 14,
+      "partial": false,
+      "last_close": 4435.0
     }
   },
   "pending": [
     {
-      "signal_date": "2026-11-10",
-      "side": "BUY",
-      "ticker": "247660",
-      "name": "나노씨엠에스",
-      "reason": "RS 95 + 수급/거래량/채널"
+      "signal_date": "2026-11-11",
+      "side": "SELL",
+      "ticker": "053800",
+      "name": "안랩",
+      "qty": 5,
+      "reason": "1차 익절 신호 +8%"
     }
   ],
-  "last_processed": "2026-11-10",
-  "session_index": 13
+  "last_processed": "2026-11-11",
+  "session_index": 14
 }

@@ -1,2 +1,2 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
-2026-11-10,BUY,247660,나노씨엠에스,RS 95 + 수급/거래량/채널,2026-11-10,4410.0,4414.41,430,1898196.3,284.73,ESTIMATE ONLY; execution depends on next session close and available cash
+2026-11-11,SELL,053800,안랩,1차 익절 신호 +8%,2026-11-11,116600.0,116483.4,5,582417.0,,SELL: estimated; actual close can differ

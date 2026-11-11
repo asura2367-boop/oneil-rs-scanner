@@ -1,11 +1,11 @@
 {
-  "report_generated_at_kst": "2026-11-10T21:45:29.342453+09:00",
-  "last_processed": "2026-11-10",
+  "report_generated_at_kst": "2026-11-11T20:50:55.602783+09:00",
+  "last_processed": "2026-11-11",
   "initial_cash": 10000000.0,
-  "cash": 5356643.4791165,
-  "equity": 9513843.48,
-  "total_return_pct": -4.862,
-  "positions": 4,
+  "cash": 4393141.5805072505,
+  "equity": 9616136.58,
+  "total_return_pct": -3.839,
+  "positions": 5,
   "pending_orders": 1,
   "closed_lots": 7,
   "wins": 3,
@@ -15,18 +15,18 @@
   "estimate_warning": "Pending prices/quantities are indicative only, not live quotes or actual fills.",
   "pending": [
     {
-      "signal_date": "2026-11-10",
-      "side": "BUY",
-      "ticker": "247660",
-      "name": "나노씨엠에스",
-      "reason": "RS 95 + 수급/거래량/채널",
-      "reference_date": "2026-11-10",
-      "reference_close": 4410.0,
-      "indicative_price": 4414.41,
-      "estimated_qty": 430,
-      "estimated_gross": 1898196.3,
-      "estimated_fee": 284.73,
-      "note": "ESTIMATE ONLY; execution depends on next session close and available cash"
+      "signal_date": "2026-11-11",
+      "side": "SELL",
+      "ticker": "053800",
+      "name": "안랩",
+      "reason": "1차 익절 신호 +8%",
+      "reference_date": "2026-11-11",
+      "reference_close": 116600.0,
+      "indicative_price": 116483.4,
+      "estimated_qty": 5,
+      "estimated_gross": 582417.0,
+      "estimated_fee": "",
+      "note": "SELL: estimated; actual close can differ"
     }
   ]
 }
