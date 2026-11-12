@@ -1,7 +1,7 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 4393141.5805072505,
+  "cash": 4968823.69713225,
   "positions": {
     "121440": {
       "name": "골프존홀딩스",
@@ -9,7 +9,7 @@
       "entry": 8148.139999999999,
       "entry_idx": 8,
       "partial": true,
-      "last_close": 8880.0
+      "last_close": 8550.0
     },
     "005430": {
       "name": "한국공항",
@@ -17,7 +17,7 @@
       "entry": 92091.99999999999,
       "entry_idx": 12,
       "partial": false,
-      "last_close": 97100.0
+      "last_close": 105300.0
     },
     "100120": {
       "name": "뷰웍스",
@@ -25,15 +25,15 @@
       "entry": 27877.85,
       "entry_idx": 12,
       "partial": false,
-      "last_close": 26900.0
+      "last_close": 27350.0
     },
     "053800": {
       "name": "안랩",
-      "qty": 10,
+      "qty": 5,
       "entry": 107907.79999999999,
       "entry_idx": 13,
-      "partial": false,
-      "last_close": 116600.0
+      "partial": true,
+      "last_close": 115500.0
     },
     "247660": {
       "name": "나노씨엠에스",
@@ -46,14 +46,14 @@
   },
   "pending": [
     {
-      "signal_date": "2026-11-11",
+      "signal_date": "2026-11-12",
       "side": "SELL",
-      "ticker": "053800",
-      "name": "안랩",
-      "qty": 5,
+      "ticker": "005430",
+      "name": "한국공항",
+      "qty": 7,
       "reason": "1차 익절 신호 +8%"
     }
   ],
-  "last_processed": "2026-11-11",
-  "session_index": 14
+  "last_processed": "2026-11-12",
+  "session_index": 15
 }

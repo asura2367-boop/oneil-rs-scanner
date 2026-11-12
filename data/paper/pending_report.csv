@@ -1,2 +1,2 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
-2026-11-11,SELL,053800,안랩,1차 익절 신호 +8%,2026-11-11,116600.0,116483.4,5,582417.0,,SELL: estimated; actual close can differ
+2026-11-12,SELL,005430,한국공항,1차 익절 신호 +8%,2026-11-12,105300.0,105194.7,7,736362.9,,SELL: estimated; actual close can differ
