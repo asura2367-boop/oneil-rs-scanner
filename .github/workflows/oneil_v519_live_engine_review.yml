@@ -25,9 +25,11 @@ on:
       - '.github/workflows/v10_collect_auto.yml'
       - '.github/workflows/oneil_v519_live_engine_review.yml'
   schedule:
-    # KST weekdays only; 09:00–19:40 every 20 minutes; 20:00 closes new-order intake.
+    # KST weekdays only; 09:00–19:55 every 5 minutes; 20:00 closes new-order intake.
     # Automatic trading requires an exact reviewed release hash AND account activation. Best effort.
+    # Retain the original ticks so additional checks do not multiply artifact storage.
     - cron: '0,20,40 0-10 * * 1-5'
+    - cron: '5,10,15,25,30,35,45,50,55 0-10 * * 1-5'
     - cron: '0 11 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -258,7 +260,9 @@ jobs:
               url:`https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`};
             await publish('data/live/dashboard_status.json',JSON.stringify(status),'Update sanitized V5.19 runtime status [skip ci]');
       - name: Save sanitized result
-        if: always()
+        # Additional 5-minute ticks retain the job summary and encrypted latest
+        # snapshot, but no extra metered artifact storage. Original ticks remain.
+        if: always() && (github.event_name != 'schedule' || github.event.schedule == '0,20,40 0-10 * * 1-5' || github.event.schedule == '0 11 * * 1-5')
         uses: actions/upload-artifact@v4
         with:
           name: v519-integrated-result-${{ github.run_id }}

@@ -26,9 +26,15 @@ activation were performed to implement or test this change.
 - Existing unresolved regular-session orders still block evening orders. Missing
   history is not assumed to mean cancelled. No automatic order retries were added.
 
-The existing GitHub schedule runs every 20 minutes from 09:00 through 19:40 with a
-20:00 close. GitHub delays and gaps remain possible; this is not continuous or
-instantaneous monitoring. The close stops new submissions, not a forced liquidation.
+The GitHub schedule requests checks every 5 minutes from 09:00 through 19:55 with a
+20:00 close. The original 0/20/40-minute ticks and additional ticks are disjoint.
+Additional ticks skip artifact uploads to avoid multiplying metered storage; all
+checks still publish a job summary and the latest encrypted dashboard snapshot.
+GitHub delays, dropped/pending-replaced runs and setup time remain possible; this
+is not continuous, instantaneous or guaranteed 5-minute monitoring. Account jobs
+remain serialized without cancelling a running job. The close stops new
+submissions, not a forced liquidation. Owner approval and activation of the exact
+changed source are still required; existing manual-request expiry is unchanged.
 
 ## Candidate strategy and read-only activation
 
