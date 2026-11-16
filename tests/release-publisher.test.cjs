@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),assert=require('assert/strict'),crypto=require('crypto');
-const root=path.resolve(__dirname,'..'),yaml=fs.readFileSync(path.join(__dirname,'fixtures/release-publisher.yml'),'utf8');
+const root=path.resolve(__dirname,'..'),yaml=fs.readFileSync(path.join(root,'.github/workflows/oneil_v519_release_attest.yml'),'utf8');
 const script=yaml.split('          script: |\n')[1].split('\n').map(l=>l.slice(12)).join('\n');
 const runScript=new (Object.getPrototypeOf(async function(){}).constructor)('github','context','core','process','fetch','require',script);
 const expected=[...fs.readFileSync(root+'/oneil_v519_live_engine.py','utf8').match(/RELEASE_FILES = \(([\s\S]*?)\n\)/)[1].matchAll(/'([^']+)'/g)].map(m=>m[1]);
@@ -26,5 +26,47 @@ conclusion='success';status='completed';
 await runScript(earlyGithub,earlyContext,core,{env:{EARLY_PROOF:'true',SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);
 assert.equal(sent.at(-1).run_status,'in_progress');assert.equal(sent.at(-1).workflow_conclusion,'pending');assert.equal(earlySent.length,1);assert.equal(earlySent[0].path,'data/live/release_review.json');assert.equal(JSON.parse(Buffer.from(earlySent[0].content,'base64')).review_run_id,123);
 conclusion='failure';await runScript(earlyGithub,earlyContext,core,{env:{EARLY_PROOF:'true',SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'}},fetcher,require);assert.equal(sent.at(-1).test_conclusion,'failure');assert.equal(earlySent.length,2);
+const env={EARLY_PROOF:'true',SITE_ACCESS:'fixture',GITHUB_RUN_ATTEMPT:'1'};
+const conflict=Object.assign(new Error('main moved'),{status:409});
+const reads=[],writes=[];
+let current={sha:'existing'};
+earlyGithub.rest.repos.getContent=async args=>{reads.push(args);return{data:current};};
+earlyGithub.rest.repos.createOrUpdateFileContents=async args=>{
+  writes.push(args);
+  if(writes.length===1)throw conflict;
+};
+const initialPosts=sent.length;
+await runScript(earlyGithub,earlyContext,core,{env},fetcher,require);
+assert.equal(sent.length,initialPosts+1);
+assert.equal(writes.length,2);
+assert.deepEqual(writes[0],writes[1]);
+assert.equal(reads.length,2);
+assert.ok(reads.every(args=>args.ref==='main'&&args.headers['cache-control']==='no-cache'));
+
+let conflictingWrites=0;
+earlyGithub.rest.repos.createOrUpdateFileContents=async()=>{
+  conflictingWrites++;
+  current={sha:'changed'};
+  throw conflict;
+};
+await assert.rejects(runScript(earlyGithub,earlyContext,core,{env},fetcher,require),/EVIDENCE_MANIFEST_CHANGED/);
+assert.equal(conflictingWrites,1);
+
+current={sha:'existing',content:writes[0].content};
+await runScript(earlyGithub,earlyContext,core,{env},fetcher,require);
+assert.equal(conflictingWrites,1);
+
+current={sha:'existing'};
+let failedWrites=0;
+earlyGithub.rest.repos.createOrUpdateFileContents=async()=>{failedWrites++;throw conflict;};
+await assert.rejects(runScript(earlyGithub,earlyContext,core,{env},fetcher,require),error=>error===conflict);
+assert.equal(failedWrites,3);
+
+const forbidden=Object.assign(new Error('forbidden'),{status:403});
+failedWrites=0;
+earlyGithub.rest.repos.createOrUpdateFileContents=async()=>{failedWrites++;throw forbidden;};
+await assert.rejects(runScript(earlyGithub,earlyContext,core,{env},fetcher,require),error=>error===forbidden);
+assert.equal(failedWrites,1);
+console.log('PASS manifest retries branch conflicts, preserves concurrent updates, and stops after the retry limit');
 console.log('PASS isolated publisher checks actual run/test completion, binds exact source files, sends failures as failures, excludes PRs, and only posts public verification evidence');
 })().catch(e=>{console.error(e);process.exitCode=1});
