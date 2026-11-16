@@ -1,44 +1,35 @@
 {
-  "as_of": "2026-11-13",
+  "as_of": "2026-11-16",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-13",
+  "latest_processed": "2026-11-16",
   "initial_cash": 10000000.0,
-  "cash": 5722443.92,
-  "holdings_value": 4053365.0,
-  "equity": 9775808.92,
-  "daily_pnl_mark_to_market": 52590.22,
-  "daily_return_pct": 0.5409,
-  "cumulative_pnl": -224191.08,
-  "cumulative_return_pct": -2.2419,
+  "cash": 6451641.27,
+  "holdings_value": 3267865.0,
+  "equity": 9719506.27,
+  "daily_pnl_mark_to_market": -56302.65,
+  "daily_return_pct": -0.5759,
+  "cumulative_pnl": -280493.73,
+  "cumulative_return_pct": -2.8049,
   "trade_count_today": 1,
   "sell_trade_count_today": 1,
-  "trade_cost_today": 1623.77,
-  "realized_pnl_today": 108879.53,
-  "realized_pnl_cumulative": -383887.91,
+  "trade_cost_today": 1571.15,
+  "realized_pnl_today": 84456.65,
+  "realized_pnl_cumulative": -299431.25,
   "realized_pnl_verified": true,
-  "sell_events": 9,
-  "profitable_sell_events": 5,
+  "sell_events": 10,
+  "profitable_sell_events": 6,
   "losing_sell_events": 4,
-  "sell_event_win_rate_pct": 55.56,
+  "sell_event_win_rate_pct": 60.0,
   "realized_pnl_note": "Win rate counts SELL events (including partial sells), not completed positions.",
   "positions": [
-    {
-      "ticker": "005430",
-      "name": "한국공항",
-      "qty": 7,
-      "last_close": 108000.0,
-      "entry": 92092.0,
-      "unrealized_pnl_before_sell_cost": 111356.0,
-      "unrealized_return_pct": 17.274
-    },
     {
       "ticker": "053800",
       "name": "안랩",
       "qty": 5,
-      "last_close": 111400.0,
+      "last_close": 105500.0,
       "entry": 107907.8,
-      "unrealized_pnl_before_sell_cost": 17461.0,
-      "unrealized_return_pct": 3.2363
+      "unrealized_pnl_before_sell_cost": -12039.0,
+      "unrealized_return_pct": -2.2313
     },
     {
       "ticker": "100120",
@@ -72,10 +63,10 @@
     "mode": "REVIEW_ONLY",
     "pending_orders": [
       {
-        "ticker": "005430",
-        "name": "한국공항",
-        "side": "SELL",
-        "reason": "익절 신호 +15%"
+        "ticker": "159010",
+        "name": "아스플로",
+        "side": "BUY",
+        "reason": "RS 99 + 수급/거래량/채널"
       }
     ],
     "checks": [

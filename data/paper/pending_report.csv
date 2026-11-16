@@ -1,2 +1,2 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
-2026-11-13,SELL,005430,한국공항,익절 신호 +15%,2026-11-13,108000.0,107892.0,7,755244.0,,SELL: estimated; actual close can differ
+2026-11-16,BUY,159010,아스플로,RS 99 + 수급/거래량/채널,2026-11-16,32900.0,32932.9,59,1943041.1,291.46,ESTIMATE ONLY; execution depends on next session close and available cash
