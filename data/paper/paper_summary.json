@@ -1,11 +1,11 @@
 {
-  "report_generated_at_kst": "2026-11-16T23:43:30.904517+09:00",
-  "last_processed": "2026-11-16",
+  "report_generated_at_kst": "2026-11-17T20:55:53.808267+09:00",
+  "last_processed": "2026-11-17",
   "initial_cash": 10000000.0,
-  "cash": 6451641.27025725,
-  "equity": 9719506.27,
-  "total_return_pct": -2.805,
-  "positions": 4,
+  "cash": 5303722.508267251,
+  "equity": 9702867.51,
+  "total_return_pct": -2.971,
+  "positions": 5,
   "pending_orders": 1,
   "closed_lots": 10,
   "wins": 6,
@@ -15,18 +15,18 @@
   "estimate_warning": "Pending prices/quantities are indicative only, not live quotes or actual fills.",
   "pending": [
     {
-      "signal_date": "2026-11-16",
-      "side": "BUY",
-      "ticker": "159010",
-      "name": "아스플로",
-      "reason": "RS 99 + 수급/거래량/채널",
-      "reference_date": "2026-11-16",
-      "reference_close": 32900.0,
-      "indicative_price": 32932.9,
-      "estimated_qty": 59,
-      "estimated_gross": 1943041.1,
-      "estimated_fee": 291.46,
-      "note": "ESTIMATE ONLY; execution depends on next session close and available cash"
+      "signal_date": "2026-11-17",
+      "side": "SELL",
+      "ticker": "121440",
+      "name": "골프존홀딩스",
+      "reason": "10거래일 청산",
+      "reference_date": "2026-11-17",
+      "reference_close": 8830.0,
+      "indicative_price": 8821.17,
+      "estimated_qty": 50,
+      "estimated_gross": 441058.5,
+      "estimated_fee": "",
+      "note": "SELL: estimated; actual close can differ"
     }
   ]
 }
