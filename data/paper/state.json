@@ -1,7 +1,7 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 6451641.27025725,
+  "cash": 5303722.508267251,
   "positions": {
     "121440": {
       "name": "골프존홀딩스",
@@ -9,7 +9,7 @@
       "entry": 8148.139999999999,
       "entry_idx": 8,
       "partial": true,
-      "last_close": 8880.0
+      "last_close": 8830.0
     },
     "100120": {
       "name": "뷰웍스",
@@ -17,7 +17,7 @@
       "entry": 27877.85,
       "entry_idx": 12,
       "partial": false,
-      "last_close": 28650.0
+      "last_close": 27750.0
     },
     "053800": {
       "name": "안랩",
@@ -33,18 +33,27 @@
       "entry": 4439.4349999999995,
       "entry_idx": 14,
       "partial": false,
-      "last_close": 4245.0
+      "last_close": 4385.0
+    },
+    "159010": {
+      "name": "아스플로",
+      "qty": 39,
+      "entry": 29429.399999999998,
+      "entry_idx": 18,
+      "partial": false,
+      "last_close": 29400.0
     }
   },
   "pending": [
     {
-      "signal_date": "2026-11-16",
-      "side": "BUY",
-      "ticker": "159010",
-      "name": "아스플로",
-      "reason": "RS 99 + 수급/거래량/채널"
+      "signal_date": "2026-11-17",
+      "side": "SELL",
+      "ticker": "121440",
+      "name": "골프존홀딩스",
+      "qty": 50,
+      "reason": "10거래일 청산"
     }
   ],
-  "last_processed": "2026-11-16",
-  "session_index": 17
+  "last_processed": "2026-11-17",
+  "session_index": 18
 }
