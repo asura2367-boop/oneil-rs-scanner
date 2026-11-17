@@ -29,8 +29,8 @@
   "quote_universe": 1693,
   "quotes_observed": 1692,
   "no_current_trade": 1,
-  "collection_started_at_kst": "2026-11-17T11:43:41.881388+09:00",
-  "collection_finished_at_kst": "2026-11-17T11:49:20.015090+09:00",
+  "collection_started_at_kst": "2026-11-17T14:50:33.137380+09:00",
+  "collection_finished_at_kst": "2026-11-17T14:56:11.500353+09:00",
   "registered_universe_symbols": 2675,
   "uncollected_symbols": 0,
   "rs_cohort": 1692,
@@ -40,6 +40,6 @@
   "rs_formula": "0.4*R63+0.2*R126+0.2*R189+0.2*R252",
   "volume_basis": "ACTUAL_CUMULATIVE_VS_CONFIRMED_20D_DAILY",
   "rs_90": 171,
-  "refreshed_at_kst": "2026-11-17T11:49:23.162077+09:00",
-  "archive": "candidates_2026-11-17_refresh_44005027663_1.csv"
+  "refreshed_at_kst": "2026-11-17T14:56:16.303579+09:00",
+  "archive": "candidates_2026-11-17_refresh_44026809151_1.csv"
 }
