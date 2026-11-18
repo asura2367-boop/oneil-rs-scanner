@@ -1,25 +1,25 @@
 {
-  "as_of": "2026-11-17",
+  "as_of": "2026-11-18",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-17",
+  "latest_processed": "2026-11-18",
   "initial_cash": 10000000.0,
-  "cash": 5303722.51,
-  "holdings_value": 4399145.0,
-  "equity": 9702867.51,
-  "daily_pnl_mark_to_market": -16638.76,
-  "daily_return_pct": -0.1712,
-  "cumulative_pnl": -297132.49,
-  "cumulative_return_pct": -2.9713,
+  "cash": 5745328.01,
+  "holdings_value": 3948045.0,
+  "equity": 9693373.01,
+  "daily_pnl_mark_to_market": -9494.5,
+  "daily_return_pct": -0.0979,
+  "cumulative_pnl": -306626.99,
+  "cumulative_return_pct": -3.0663,
   "trade_count_today": 1,
-  "sell_trade_count_today": 0,
-  "trade_cost_today": 172.16,
-  "realized_pnl_today": 0.0,
-  "realized_pnl_cumulative": -299431.25,
+  "sell_trade_count_today": 1,
+  "trade_cost_today": 951.5,
+  "realized_pnl_today": 34137.39,
+  "realized_pnl_cumulative": -265293.86,
   "realized_pnl_verified": true,
-  "sell_events": 10,
-  "profitable_sell_events": 6,
+  "sell_events": 11,
+  "profitable_sell_events": 7,
   "losing_sell_events": 4,
-  "sell_event_win_rate_pct": 60.0,
+  "sell_event_win_rate_pct": 63.64,
   "realized_pnl_note": "Win rate counts SELL events (including partial sells), not completed positions.",
   "positions": [
     {
@@ -35,19 +35,10 @@
       "ticker": "100120",
       "name": "뷰웍스",
       "qty": 48,
-      "last_close": 27750.0,
+      "last_close": 27550.0,
       "entry": 27877.85,
-      "unrealized_pnl_before_sell_cost": -6136.8,
-      "unrealized_return_pct": -0.4586
-    },
-    {
-      "ticker": "121440",
-      "name": "골프존홀딩스",
-      "qty": 50,
-      "last_close": 8830.0,
-      "entry": 8148.14,
-      "unrealized_pnl_before_sell_cost": 34093.0,
-      "unrealized_return_pct": 8.3683
+      "unrealized_pnl_before_sell_cost": -15736.8,
+      "unrealized_return_pct": -1.176
     },
     {
       "ticker": "159010",
@@ -72,10 +63,10 @@
     "mode": "REVIEW_ONLY",
     "pending_orders": [
       {
-        "ticker": "121440",
-        "name": "골프존홀딩스",
-        "side": "SELL",
-        "reason": "10거래일 청산"
+        "ticker": "290550",
+        "name": "디케이티",
+        "side": "BUY",
+        "reason": "RS 99 + 수급/거래량/채널"
       }
     ],
     "checks": [

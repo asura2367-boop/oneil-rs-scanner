@@ -1,2 +1,2 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
-2026-11-17,SELL,121440,골프존홀딩스,10거래일 청산,2026-11-17,8830.0,8821.17,50,441058.5,,SELL: estimated; actual close can differ
+2026-11-18,BUY,290550,디케이티,RS 99 + 수급/거래량/채널,2026-11-18,29850.0,29879.85,64,1912310.4,286.85,ESTIMATE ONLY; execution depends on next session close and available cash
