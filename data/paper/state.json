@@ -1,7 +1,7 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 5745328.01071725,
+  "cash": 4731363.138797251,
   "positions": {
     "100120": {
       "name": "뷰웍스",
@@ -17,7 +17,7 @@
       "entry": 107907.79999999999,
       "entry_idx": 13,
       "partial": true,
-      "last_close": 105500.0
+      "last_close": 117200.0
     },
     "247660": {
       "name": "나노씨엠에스",
@@ -25,7 +25,7 @@
       "entry": 4439.4349999999995,
       "entry_idx": 14,
       "partial": false,
-      "last_close": 4385.0
+      "last_close": 4635.0
     },
     "159010": {
       "name": "아스플로",
@@ -33,18 +33,18 @@
       "entry": 29429.399999999998,
       "entry_idx": 18,
       "partial": false,
-      "last_close": 29400.0
+      "last_close": 29000.0
+    },
+    "290550": {
+      "name": "디케이티",
+      "qty": 32,
+      "entry": 31681.649999999998,
+      "entry_idx": 20,
+      "partial": false,
+      "last_close": 31650.0
     }
   },
-  "pending": [
-    {
-      "signal_date": "2026-11-18",
-      "side": "BUY",
-      "ticker": "290550",
-      "name": "디케이티",
-      "reason": "RS 99 + 수급/거래량/채널"
-    }
-  ],
-  "last_processed": "2026-11-18",
-  "session_index": 19
+  "pending": [],
+  "last_processed": "2026-11-19",
+  "session_index": 20
 }

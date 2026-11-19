@@ -1,19 +1,19 @@
 {
-  "as_of": "2026-11-18",
+  "as_of": "2026-11-19",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-18",
+  "latest_processed": "2026-11-19",
   "initial_cash": 10000000.0,
-  "cash": 5745328.01,
-  "holdings_value": 3948045.0,
-  "equity": 9693373.01,
-  "daily_pnl_mark_to_market": -9494.5,
-  "daily_return_pct": -0.0979,
-  "cumulative_pnl": -306626.99,
-  "cumulative_return_pct": -3.0663,
+  "cash": 4731363.14,
+  "holdings_value": 5057995.0,
+  "equity": 9789358.14,
+  "daily_pnl_mark_to_market": 95985.13,
+  "daily_return_pct": 0.9902,
+  "cumulative_pnl": -210641.86,
+  "cumulative_return_pct": -2.1064,
   "trade_count_today": 1,
-  "sell_trade_count_today": 1,
-  "trade_cost_today": 951.5,
-  "realized_pnl_today": 34137.39,
+  "sell_trade_count_today": 0,
+  "trade_cost_today": 152.07,
+  "realized_pnl_today": 0.0,
   "realized_pnl_cumulative": -265293.86,
   "realized_pnl_verified": true,
   "sell_events": 11,
@@ -26,10 +26,10 @@
       "ticker": "053800",
       "name": "안랩",
       "qty": 5,
-      "last_close": 105500.0,
+      "last_close": 117200.0,
       "entry": 107907.8,
-      "unrealized_pnl_before_sell_cost": -12039.0,
-      "unrealized_return_pct": -2.2313
+      "unrealized_pnl_before_sell_cost": 46461.0,
+      "unrealized_return_pct": 8.6112
     },
     {
       "ticker": "100120",
@@ -44,31 +44,33 @@
       "ticker": "159010",
       "name": "아스플로",
       "qty": 39,
-      "last_close": 29400.0,
+      "last_close": 29000.0,
       "entry": 29429.4,
-      "unrealized_pnl_before_sell_cost": -1146.6,
-      "unrealized_return_pct": -0.0999
+      "unrealized_pnl_before_sell_cost": -16746.6,
+      "unrealized_return_pct": -1.4591
     },
     {
       "ticker": "247660",
       "name": "나노씨엠에스",
       "qty": 217,
-      "last_close": 4385.0,
+      "last_close": 4635.0,
       "entry": 4439.435,
-      "unrealized_pnl_before_sell_cost": -11812.39,
-      "unrealized_return_pct": -1.2262
+      "unrealized_pnl_before_sell_cost": 42437.61,
+      "unrealized_return_pct": 4.4052
+    },
+    {
+      "ticker": "290550",
+      "name": "디케이티",
+      "qty": 32,
+      "last_close": 31650.0,
+      "entry": 31681.65,
+      "unrealized_pnl_before_sell_cost": -1012.8,
+      "unrealized_return_pct": -0.0999
     }
   ],
   "next_session_strategy": {
     "mode": "REVIEW_ONLY",
-    "pending_orders": [
-      {
-        "ticker": "290550",
-        "name": "디케이티",
-        "side": "BUY",
-        "reason": "RS 99 + 수급/거래량/채널"
-      }
-    ],
+    "pending_orders": [],
     "checks": [
       "Confirm priority OHLCV for positions and pending tickers",
       "Check next-session liquidity, flow, RS and gap before action",
