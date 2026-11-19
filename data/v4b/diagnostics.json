@@ -1,8 +1,8 @@
 {
   "universe_symbols": 2675,
-  "latest_signal_day": "2026-11-18",
+  "latest_signal_day": "2026-11-19",
   "latest_history_day": "2026-11-18",
-  "source_basis": "PREVIOUS_CONFIRMED_SESSION",
+  "source_basis": "INTRADAY_KIS_SNAPSHOT",
   "target_date": "2026-11-19",
   "valid_history": 985,
   "missing_history": 40,
@@ -26,6 +26,11 @@
   "legacy_selected": 0,
   "technical_bb_not_breaking_out": 0,
   "technical_ichimoku_not_bullish": 0,
+  "quote_universe": 985,
+  "quotes_observed": 985,
+  "no_current_trade": 0,
+  "collection_started_at_kst": "2026-11-19T11:43:32.157113+09:00",
+  "collection_finished_at_kst": "2026-11-19T11:46:48.744327+09:00",
   "registered_universe_symbols": 2675,
   "uncollected_symbols": 0,
   "rs_cohort": 985,
@@ -35,6 +40,6 @@
   "rs_formula": "0.4*R63+0.2*R126+0.2*R189+0.2*R252",
   "volume_basis": "ACTUAL_CUMULATIVE_VS_CONFIRMED_20D_DAILY",
   "rs_90": 100,
-  "refreshed_at_kst": "2026-11-19T08:43:22.317721+09:00",
-  "archive": "candidates_2026-11-19.csv"
+  "refreshed_at_kst": "2026-11-19T11:46:52.390142+09:00",
+  "archive": "candidates_2026-11-19_refresh_44446281795_1.csv"
 }
