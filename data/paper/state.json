@@ -9,7 +9,7 @@
       "entry": 27877.85,
       "entry_idx": 12,
       "partial": false,
-      "last_close": 27550.0
+      "last_close": 25950.0
     },
     "053800": {
       "name": "안랩",
@@ -44,7 +44,16 @@
       "last_close": 31650.0
     }
   },
-  "pending": [],
-  "last_processed": "2026-11-19",
-  "session_index": 20
+  "pending": [
+    {
+      "signal_date": "2026-11-23",
+      "side": "SELL",
+      "ticker": "100120",
+      "name": "뷰웍스",
+      "qty": 48,
+      "reason": "손절 신호 -5%"
+    }
+  ],
+  "last_processed": "2026-11-23",
+  "session_index": 22
 }

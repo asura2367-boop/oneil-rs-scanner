@@ -1,18 +1,18 @@
 {
-  "as_of": "2026-11-19",
+  "as_of": "2026-11-23",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-19",
+  "latest_processed": "2026-11-23",
   "initial_cash": 10000000.0,
   "cash": 4731363.14,
-  "holdings_value": 5057995.0,
-  "equity": 9789358.14,
-  "daily_pnl_mark_to_market": 95985.13,
-  "daily_return_pct": 0.9902,
-  "cumulative_pnl": -210641.86,
-  "cumulative_return_pct": -2.1064,
-  "trade_count_today": 1,
+  "holdings_value": 4981195.0,
+  "equity": 9712558.14,
+  "daily_pnl_mark_to_market": -36000.0,
+  "daily_return_pct": -0.3693,
+  "cumulative_pnl": -287441.86,
+  "cumulative_return_pct": -2.8744,
+  "trade_count_today": 0,
   "sell_trade_count_today": 0,
-  "trade_cost_today": 152.07,
+  "trade_cost_today": 0,
   "realized_pnl_today": 0.0,
   "realized_pnl_cumulative": -265293.86,
   "realized_pnl_verified": true,
@@ -35,10 +35,10 @@
       "ticker": "100120",
       "name": "뷰웍스",
       "qty": 48,
-      "last_close": 27550.0,
+      "last_close": 25950.0,
       "entry": 27877.85,
-      "unrealized_pnl_before_sell_cost": -15736.8,
-      "unrealized_return_pct": -1.176
+      "unrealized_pnl_before_sell_cost": -92536.8,
+      "unrealized_return_pct": -6.9153
     },
     {
       "ticker": "159010",
@@ -70,7 +70,14 @@
   ],
   "next_session_strategy": {
     "mode": "REVIEW_ONLY",
-    "pending_orders": [],
+    "pending_orders": [
+      {
+        "ticker": "100120",
+        "name": "뷰웍스",
+        "side": "SELL",
+        "reason": "손절 신호 -5%"
+      }
+    ],
     "checks": [
       "Confirm priority OHLCV for positions and pending tickers",
       "Check next-session liquidity, flow, RS and gap before action",
