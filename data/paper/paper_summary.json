@@ -1,17 +1,32 @@
 {
-  "report_generated_at_kst": "2026-11-19T21:53:21.211481+09:00",
-  "last_processed": "2026-11-19",
+  "report_generated_at_kst": "2026-11-23T21:01:32.264516+09:00",
+  "last_processed": "2026-11-23",
   "initial_cash": 10000000.0,
   "cash": 4731363.138797251,
-  "equity": 9789358.14,
-  "total_return_pct": -2.106,
+  "equity": 9712558.14,
+  "total_return_pct": -2.874,
   "positions": 5,
-  "pending_orders": 0,
+  "pending_orders": 1,
   "closed_lots": 11,
   "wins": 7,
   "win_rate_pct": 63.64,
   "realized_pnl": -265293.86,
   "max_drawdown_pct": -6.67,
   "estimate_warning": "Pending prices/quantities are indicative only, not live quotes or actual fills.",
-  "pending": []
+  "pending": [
+    {
+      "signal_date": "2026-11-23",
+      "side": "SELL",
+      "ticker": "100120",
+      "name": "뷰웍스",
+      "reason": "손절 신호 -5%",
+      "reference_date": "2026-11-23",
+      "reference_close": 25950.0,
+      "indicative_price": 25924.05,
+      "estimated_qty": 48,
+      "estimated_gross": 1244354.4,
+      "estimated_fee": "",
+      "note": "SELL: estimated; actual close can differ"
+    }
+  ]
 }

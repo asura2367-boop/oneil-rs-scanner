@@ -1,1 +1,2 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
+2026-11-23,SELL,100120,뷰웍스,손절 신호 -5%,2026-11-23,25950.0,25924.05,48,1244354.4,,SELL: estimated; actual close can differ
