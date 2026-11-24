@@ -1,81 +1,84 @@
 {
-  "as_of": "2026-11-23",
+  "as_of": "2026-11-24",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-23",
+  "latest_processed": "2026-11-24",
   "initial_cash": 10000000.0,
-  "cash": 4731363.14,
-  "holdings_value": 4981195.0,
-  "equity": 9712558.14,
-  "daily_pnl_mark_to_market": -36000.0,
-  "daily_return_pct": -0.3693,
-  "cumulative_pnl": -287441.86,
-  "cumulative_return_pct": -2.8744,
-  "trade_count_today": 0,
-  "sell_trade_count_today": 0,
-  "trade_cost_today": 0,
-  "realized_pnl_today": 0.0,
-  "realized_pnl_cumulative": -265293.86,
+  "cash": 5980219.51,
+  "holdings_value": 3696450.0,
+  "equity": 9676669.51,
+  "daily_pnl_mark_to_market": -35888.63,
+  "daily_return_pct": -0.3695,
+  "cumulative_pnl": -323330.49,
+  "cumulative_return_pct": -3.2333,
+  "trade_count_today": 1,
+  "sell_trade_count_today": 1,
+  "trade_cost_today": 2690.83,
+  "realized_pnl_today": -89481.15,
+  "realized_pnl_cumulative": -354775.01,
   "realized_pnl_verified": true,
-  "sell_events": 11,
+  "sell_events": 12,
   "profitable_sell_events": 7,
-  "losing_sell_events": 4,
-  "sell_event_win_rate_pct": 63.64,
+  "losing_sell_events": 5,
+  "sell_event_win_rate_pct": 58.33,
   "realized_pnl_note": "Win rate counts SELL events (including partial sells), not completed positions.",
   "positions": [
     {
       "ticker": "053800",
       "name": "안랩",
       "qty": 5,
-      "last_close": 117200.0,
+      "last_close": 121500.0,
       "entry": 107907.8,
-      "unrealized_pnl_before_sell_cost": 46461.0,
-      "unrealized_return_pct": 8.6112
-    },
-    {
-      "ticker": "100120",
-      "name": "뷰웍스",
-      "qty": 48,
-      "last_close": 25950.0,
-      "entry": 27877.85,
-      "unrealized_pnl_before_sell_cost": -92536.8,
-      "unrealized_return_pct": -6.9153
+      "unrealized_pnl_before_sell_cost": 67961.0,
+      "unrealized_return_pct": 12.5961
     },
     {
       "ticker": "159010",
       "name": "아스플로",
       "qty": 39,
-      "last_close": 29000.0,
+      "last_close": 27800.0,
       "entry": 29429.4,
-      "unrealized_pnl_before_sell_cost": -16746.6,
-      "unrealized_return_pct": -1.4591
+      "unrealized_pnl_before_sell_cost": -63546.6,
+      "unrealized_return_pct": -5.5366
     },
     {
       "ticker": "247660",
       "name": "나노씨엠에스",
       "qty": 217,
-      "last_close": 4635.0,
+      "last_close": 4350.0,
       "entry": 4439.435,
-      "unrealized_pnl_before_sell_cost": 42437.61,
-      "unrealized_return_pct": 4.4052
+      "unrealized_pnl_before_sell_cost": -19407.39,
+      "unrealized_return_pct": -2.0146
     },
     {
       "ticker": "290550",
       "name": "디케이티",
       "qty": 32,
-      "last_close": 31650.0,
+      "last_close": 33150.0,
       "entry": 31681.65,
-      "unrealized_pnl_before_sell_cost": -1012.8,
-      "unrealized_return_pct": -0.0999
+      "unrealized_pnl_before_sell_cost": 46987.2,
+      "unrealized_return_pct": 4.6347
     }
   ],
   "next_session_strategy": {
     "mode": "REVIEW_ONLY",
     "pending_orders": [
       {
-        "ticker": "100120",
-        "name": "뷰웍스",
+        "ticker": "053800",
+        "name": "안랩",
+        "side": "SELL",
+        "reason": "10거래일 청산"
+      },
+      {
+        "ticker": "159010",
+        "name": "아스플로",
         "side": "SELL",
         "reason": "손절 신호 -5%"
+      },
+      {
+        "ticker": "396300",
+        "name": "HT로보틱스",
+        "side": "BUY",
+        "reason": "RS 98 + 수급/거래량/채널"
       }
     ],
     "checks": [

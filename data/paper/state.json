@@ -1,23 +1,15 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 4731363.138797251,
+  "cash": 5980219.5123172505,
   "positions": {
-    "100120": {
-      "name": "뷰웍스",
-      "qty": 48,
-      "entry": 27877.85,
-      "entry_idx": 12,
-      "partial": false,
-      "last_close": 25950.0
-    },
     "053800": {
       "name": "안랩",
       "qty": 5,
       "entry": 107907.79999999999,
       "entry_idx": 13,
       "partial": true,
-      "last_close": 117200.0
+      "last_close": 121500.0
     },
     "247660": {
       "name": "나노씨엠에스",
@@ -25,7 +17,7 @@
       "entry": 4439.4349999999995,
       "entry_idx": 14,
       "partial": false,
-      "last_close": 4635.0
+      "last_close": 4350.0
     },
     "159010": {
       "name": "아스플로",
@@ -33,7 +25,7 @@
       "entry": 29429.399999999998,
       "entry_idx": 18,
       "partial": false,
-      "last_close": 29000.0
+      "last_close": 27800.0
     },
     "290550": {
       "name": "디케이티",
@@ -41,19 +33,34 @@
       "entry": 31681.649999999998,
       "entry_idx": 20,
       "partial": false,
-      "last_close": 31650.0
+      "last_close": 33150.0
     }
   },
   "pending": [
     {
-      "signal_date": "2026-11-23",
+      "signal_date": "2026-11-24",
       "side": "SELL",
-      "ticker": "100120",
-      "name": "뷰웍스",
-      "qty": 48,
+      "ticker": "053800",
+      "name": "안랩",
+      "qty": 5,
+      "reason": "10거래일 청산"
+    },
+    {
+      "signal_date": "2026-11-24",
+      "side": "SELL",
+      "ticker": "159010",
+      "name": "아스플로",
+      "qty": 39,
       "reason": "손절 신호 -5%"
+    },
+    {
+      "signal_date": "2026-11-24",
+      "side": "BUY",
+      "ticker": "396300",
+      "name": "HT로보틱스",
+      "reason": "RS 98 + 수급/거래량/채널"
     }
   ],
-  "last_processed": "2026-11-23",
-  "session_index": 22
+  "last_processed": "2026-11-24",
+  "session_index": 23
 }

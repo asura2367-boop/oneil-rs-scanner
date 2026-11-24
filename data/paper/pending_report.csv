@@ -1,2 +1,4 @@
 ﻿signal_date,side,ticker,name,reason,reference_date,reference_close,indicative_price,estimated_qty,estimated_gross,estimated_fee,note
-2026-11-23,SELL,100120,뷰웍스,손절 신호 -5%,2026-11-23,25950.0,25924.05,48,1244354.4,,SELL: estimated; actual close can differ
+2026-11-24,SELL,053800,안랩,10거래일 청산,2026-11-24,121500.0,121378.5,5,606892.5,,SELL: estimated; actual close can differ
+2026-11-24,SELL,159010,아스플로,손절 신호 -5%,2026-11-24,27800.0,27772.2,39,1083115.8,,SELL: estimated; actual close can differ
+2026-11-24,BUY,396300,HT로보틱스,RS 98 + 수급/거래량/채널,2026-11-24,6400.0,6406.4,302,1934732.8,290.21,ESTIMATE ONLY; execution depends on next session close and available cash
