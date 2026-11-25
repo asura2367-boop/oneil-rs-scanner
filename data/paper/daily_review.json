@@ -1,53 +1,35 @@
 {
-  "as_of": "2026-11-24",
+  "as_of": "2026-11-25",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-24",
+  "latest_processed": "2026-11-25",
   "initial_cash": 10000000.0,
-  "cash": 5980219.51,
-  "holdings_value": 3696450.0,
-  "equity": 9676669.51,
-  "daily_pnl_mark_to_market": -35888.63,
-  "daily_return_pct": -0.3695,
-  "cumulative_pnl": -323330.49,
-  "cumulative_return_pct": -3.2333,
-  "trade_count_today": 1,
-  "sell_trade_count_today": 1,
-  "trade_cost_today": 2690.83,
-  "realized_pnl_today": -89481.15,
-  "realized_pnl_cumulative": -354775.01,
+  "cash": 6329874.93,
+  "holdings_value": 3377415.0,
+  "equity": 9707289.93,
+  "daily_pnl_mark_to_market": 30620.42,
+  "daily_return_pct": 0.3164,
+  "cumulative_pnl": -292710.07,
+  "cumulative_return_pct": -2.9271,
+  "trade_count_today": 3,
+  "sell_trade_count_today": 2,
+  "trade_cost_today": 3943.01,
+  "realized_pnl_today": 46136.72,
+  "realized_pnl_cumulative": -308638.29,
   "realized_pnl_verified": true,
-  "sell_events": 12,
-  "profitable_sell_events": 7,
-  "losing_sell_events": 5,
-  "sell_event_win_rate_pct": 58.33,
+  "sell_events": 14,
+  "profitable_sell_events": 8,
+  "losing_sell_events": 6,
+  "sell_event_win_rate_pct": 57.14,
   "realized_pnl_note": "Win rate counts SELL events (including partial sells), not completed positions.",
   "positions": [
-    {
-      "ticker": "053800",
-      "name": "안랩",
-      "qty": 5,
-      "last_close": 121500.0,
-      "entry": 107907.8,
-      "unrealized_pnl_before_sell_cost": 67961.0,
-      "unrealized_return_pct": 12.5961
-    },
-    {
-      "ticker": "159010",
-      "name": "아스플로",
-      "qty": 39,
-      "last_close": 27800.0,
-      "entry": 29429.4,
-      "unrealized_pnl_before_sell_cost": -63546.6,
-      "unrealized_return_pct": -5.5366
-    },
     {
       "ticker": "247660",
       "name": "나노씨엠에스",
       "qty": 217,
-      "last_close": 4350.0,
+      "last_close": 4305.0,
       "entry": 4439.435,
-      "unrealized_pnl_before_sell_cost": -19407.39,
-      "unrealized_return_pct": -2.0146
+      "unrealized_pnl_before_sell_cost": -29172.39,
+      "unrealized_return_pct": -3.0282
     },
     {
       "ticker": "290550",
@@ -57,26 +39,35 @@
       "entry": 31681.65,
       "unrealized_pnl_before_sell_cost": 46987.2,
       "unrealized_return_pct": 4.6347
+    },
+    {
+      "ticker": "396300",
+      "name": "HT로보틱스",
+      "qty": 227,
+      "last_close": 6090.0,
+      "entry": 6096.09,
+      "unrealized_pnl_before_sell_cost": -1382.43,
+      "unrealized_return_pct": -0.0999
     }
   ],
   "next_session_strategy": {
     "mode": "REVIEW_ONLY",
     "pending_orders": [
       {
-        "ticker": "053800",
-        "name": "안랩",
+        "ticker": "247660",
+        "name": "나노씨엠에스",
         "side": "SELL",
         "reason": "10거래일 청산"
       },
       {
-        "ticker": "159010",
-        "name": "아스플로",
-        "side": "SELL",
-        "reason": "손절 신호 -5%"
+        "ticker": "071200",
+        "name": "인피니트헬스케어",
+        "side": "BUY",
+        "reason": "RS 98 + 수급/거래량/채널"
       },
       {
-        "ticker": "396300",
-        "name": "HT로보틱스",
+        "ticker": "348030",
+        "name": "모비릭스",
         "side": "BUY",
         "reason": "RS 98 + 수급/거래량/채널"
       }

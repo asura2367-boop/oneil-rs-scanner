@@ -1,31 +1,15 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 5980219.5123172505,
+  "cash": 6329874.927125251,
   "positions": {
-    "053800": {
-      "name": "안랩",
-      "qty": 5,
-      "entry": 107907.79999999999,
-      "entry_idx": 13,
-      "partial": true,
-      "last_close": 121500.0
-    },
     "247660": {
       "name": "나노씨엠에스",
       "qty": 217,
       "entry": 4439.4349999999995,
       "entry_idx": 14,
       "partial": false,
-      "last_close": 4350.0
-    },
-    "159010": {
-      "name": "아스플로",
-      "qty": 39,
-      "entry": 29429.399999999998,
-      "entry_idx": 18,
-      "partial": false,
-      "last_close": 27800.0
+      "last_close": 4305.0
     },
     "290550": {
       "name": "디케이티",
@@ -34,33 +18,40 @@
       "entry_idx": 20,
       "partial": false,
       "last_close": 33150.0
+    },
+    "396300": {
+      "name": "HT로보틱스",
+      "qty": 227,
+      "entry": 6096.089999999999,
+      "entry_idx": 24,
+      "partial": false,
+      "last_close": 6090.0
     }
   },
   "pending": [
     {
-      "signal_date": "2026-11-24",
+      "signal_date": "2026-11-25",
       "side": "SELL",
-      "ticker": "053800",
-      "name": "안랩",
-      "qty": 5,
+      "ticker": "247660",
+      "name": "나노씨엠에스",
+      "qty": 217,
       "reason": "10거래일 청산"
     },
     {
-      "signal_date": "2026-11-24",
-      "side": "SELL",
-      "ticker": "159010",
-      "name": "아스플로",
-      "qty": 39,
-      "reason": "손절 신호 -5%"
+      "signal_date": "2026-11-25",
+      "side": "BUY",
+      "ticker": "071200",
+      "name": "인피니트헬스케어",
+      "reason": "RS 98 + 수급/거래량/채널"
     },
     {
-      "signal_date": "2026-11-24",
+      "signal_date": "2026-11-25",
       "side": "BUY",
-      "ticker": "396300",
-      "name": "HT로보틱스",
+      "ticker": "348030",
+      "name": "모비릭스",
       "reason": "RS 98 + 수급/거래량/채널"
     }
   ],
-  "last_processed": "2026-11-24",
-  "session_index": 23
+  "last_processed": "2026-11-25",
+  "session_index": 24
 }
