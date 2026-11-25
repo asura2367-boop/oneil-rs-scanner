@@ -25,17 +25,19 @@ on:
       - '.github/workflows/v10_collect_auto.yml'
       - '.github/workflows/oneil_v519_live_engine_review.yml'
   schedule:
-    # KST weekdays only; 09:00–19:40 every 20 minutes; 20:00 closes new-order intake.
+    # KST weekdays only; 09:00–19:55 every 5 minutes; 20:00 closes new-order intake.
     # Automatic trading requires an exact reviewed release hash AND account activation. Best effort.
+    # Retain the original ticks so additional checks do not multiply artifact storage.
     - cron: '0,20,40 0-10 * * 1-5'
+    - cron: '5,10,15,25,30,35,45,50,55 0-10 * * 1-5'
     - cron: '0 11 * * 1-5'
   workflow_dispatch:
     inputs:
       operation:
         type: choice
-        options: [observe, recover, halt, migrate, close, broker-audit, activate, apply-approval, trade]
+        options: [observe, recover, halt, migrate, close, broker-audit, activate, apply-approval, trade, manual-buy]
         default: observe
-        description: 'observe=조회 / activate=소유자 활성화 / trade=수동 1회 거래'
+        description: 'observe=조회 / activate=소유자 활성화 / manual-buy=선택한 추가매수 요청만 처리 / trade=통합 거래'
       confirm_live_activation:
         type: boolean
         default: false
@@ -43,11 +45,15 @@ on:
       approved_release:
         type: string
         default: ''
-        description: 'apply-approval 전용: 대시보드에 저장된 소스 확인값'
+        description: 'apply-approval/manual-buy: 대시보드에 저장된 소스 확인값'
       approval_revision:
         type: string
         default: ''
-        description: 'apply-approval 전용: 저장된 승인 기록 번호'
+        description: 'apply-approval/manual-buy: 저장된 승인 기록 번호'
+      manual_request_id:
+        type: string
+        default: ''
+        description: 'manual-buy 전용: 소유자가 확인한 추가매수 요청 UUID 1개'
       resume_halt:
         type: boolean
         default: false
@@ -162,6 +168,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Mask private manual request identifier
+        if: env.OPERATION == 'manual-buy'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const requestId = context.payload.inputs?.manual_request_id;
+            if (typeof requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) {
+              throw new Error('Invalid manual request identifier');
+            }
+            core.setSecret(requestId);
+            core.exportVariable('REQUESTED_MANUAL_REQUEST_ID', requestId);
       - name: Load latest shared encrypted session (no token issuance)
         if: needs.session.outputs.ready == 'true'
         run: |
@@ -177,7 +194,7 @@ jobs:
         if: github.event_name == 'push'
         run: python oneil_v519_live_engine.py --migrate
       - name: Resolve dashboard owner review without changing repository variables
-        if: env.OPERATION == 'auto' || env.OPERATION == 'apply-approval'
+        if: env.OPERATION == 'auto' || env.OPERATION == 'apply-approval' || env.OPERATION == 'manual-buy'
         run: python oneil_v519_live_engine.py --dashboard-release-env
       - name: Run existing integrated engine
         id: engine_runtime
@@ -217,6 +234,11 @@ jobs:
               [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
               [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
               LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --activate --operator "$GITHUB_ACTOR" --acknowledge-live-risk --dashboard-public-key data/live/dashboard_public_key.pem ;;
+            manual-buy)
+              # Consume exactly the saved owner request. Never activate, clear halt,
+              # run automatic candidates/exits, or fall back to a different UUID.
+              [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] && [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ] && [ "$GITHUB_REF" = 'refs/heads/main' ] || { echo 'Explicit owner main dispatch required'; exit 2; }
+              LIVE_ENABLED=true KIS_ALLOW_ORDER=true I_APPROVE_LIVE_KIS_ORDERS=YES V519_APPROVED_RELEASE="$APPROVED_RELEASE" python oneil_v519_live_engine.py --manual-buy --manual-request-id "$REQUESTED_MANUAL_REQUEST_ID" --execute --dashboard-public-key data/live/dashboard_public_key.pem ;;
             trade)
               [ "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER" ] || { echo 'Repository owner required'; exit 2; }
               [ "$OPERATOR_CONFIRMED" = 'true' ] || { echo 'Operator checkbox required'; exit 2; }
@@ -258,7 +280,9 @@ jobs:
               url:`https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`};
             await publish('data/live/dashboard_status.json',JSON.stringify(status),'Update sanitized V5.19 runtime status [skip ci]');
       - name: Save sanitized result
-        if: always()
+        # Additional 5-minute ticks retain the job summary and encrypted latest
+        # snapshot, but no extra metered artifact storage. Original ticks remain.
+        if: always() && (github.event_name != 'schedule' || github.event.schedule == '0,20,40 0-10 * * 1-5' || github.event.schedule == '0 11 * * 1-5')
         uses: actions/upload-artifact@v4
         with:
           name: v519-integrated-result-${{ github.run_id }}

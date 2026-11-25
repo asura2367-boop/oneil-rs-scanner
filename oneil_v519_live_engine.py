@@ -1184,7 +1184,24 @@ def manual_buy_plan(request,snapshot,allocation,price,power,bought_today):
     return OrderPlan(ticker,'BUY',request['quantity'],price,'owner:'+request['id'],'OWNER_AVERAGING')
 
 
-def process_manual_buy(ledger,broker,requests,*,now,clock):
+def refresh_manual_buy_quote(broker,plan):
+    """One fresh read before POST, never reprice an already reserved intent."""
+    try:
+        price=broker.execution_quote(plan.ticker,plan.side)
+    except Exception as exc:
+        # This scope contains GET quote reads only. Transport submission is
+        # deliberately outside it; no POST failure can acquire this marker.
+        blocked=OrderNotSent('MANUAL_FINAL_QUOTE_UNAVAILABLE')
+        blocked._submission_exception=exc
+        raise blocked from None
+    evidence=broker.quote_evidence.get((plan.ticker,plan.side))
+    if price!=plan.price:
+        raise OrderNotSent('MANUAL_FINAL_PRICE_CHANGED')
+    if not evidence or evidence.get('price')!=plan.price or plan.quantity>evidence.get('size',0):
+        raise OrderNotSent('BOOK_SIZE_EXCEEDED')
+
+
+def process_manual_buy(ledger,broker,requests,*,now,clock,owner_dispatch=None):
     from v519_cash_policy import limits
     def time_check():
         current=clock().astimezone(ZoneInfo('Asia/Seoul'))
@@ -1198,6 +1215,7 @@ def process_manual_buy(ledger,broker,requests,*,now,clock):
         recovery=recover_pending(ledger,broker)
         if recovery['unresolved']:raise TradingBlocked('UNRESOLVED_ORDERS')
         control=broker.buy_control();risk=risk_policy(control)
+        if owner_dispatch:owner_dispatch(control)
         if not control.get('connected') or not control.get('enabled') or not risk['connected'] or (control.get('release') or {}).get('approved_release')!=release_fingerprint():raise TradingBlocked('MANUAL_BUY_CONTROL_UNAVAILABLE')
         live=control.get('manual_buys',[])
         request=next((r for r in requests if any(x.get('id')==r.get('id') for x in live if isinstance(x,dict))),None)
@@ -1214,38 +1232,61 @@ def process_manual_buy(ledger,broker,requests,*,now,clock):
         plan=manual_buy_plan(request,snap,allocation,price,broker.power,bought)
         if isinstance(broker,KisBroker) and plan.quantity>broker.quote_evidence[(plan.ticker,'BUY')]['size']:raise TradingBlocked('BOOK_SIZE_EXCEEDED')
         latest=broker.buy_control()
+        if owner_dispatch:owner_dispatch(latest)
         if (not latest.get('connected') or not latest.get('enabled') or latest.get('revision')!=request['buy_revision'] or
             not same_risk(risk,risk_policy(latest)) or (latest.get('release') or {}).get('approved_release')!=release_fingerprint() or not any(x==request for x in latest.get('manual_buys',[]))):raise TradingBlocked('MANUAL_SETTINGS_CHANGED')
         manual_buy_request(request,now=time_check(),fingerprint=ledger.fingerprint,release=release_fingerprint())
         if ledger.halted() or not ledger.release_authorized(release_fingerprint()):raise TradingBlocked('MANUAL_ACCOUNT_NOT_READY')
         # Durable daily/ticker key is unchanged. A second ID cannot evade the daily cap.
-        ident=ledger.reserve_plan(plan,now.date());uncertain=False
+        ident=ledger.reserve_plan(plan,now.date());uncertain=False;submission_stage='SEND_GUARD'
         ledger.dashboard_state.update(snapshot=snap,allocation=allocation,plans=[plan],at=current)
         try:
             with ledger.send_guard():
                 require_live_release()
                 latest=broker.buy_control()
+                if owner_dispatch:owner_dispatch(latest)
                 if (not latest.get('connected') or not latest.get('enabled') or latest.get('revision')!=request['buy_revision'] or
                     not same_risk(risk,risk_policy(latest)) or (latest.get('release') or {}).get('approved_release')!=release_fingerprint() or
                     not any(x==request for x in latest.get('manual_buys',[]))):raise TradingBlocked('MANUAL_SETTINGS_CHANGED')
                 if not ledger.release_authorized(release_fingerprint()):raise TradingBlocked('MANUAL_ACCOUNT_NOT_READY')
                 manual_buy_request(request,now=time_check(),fingerprint=ledger.fingerprint,release=release_fingerprint())
-                uncertain=True;response=broker.submit(plan)
+                if isinstance(broker,KisBroker):
+                    refresh_manual_buy_quote(broker,plan)
+                    # Slow quote reads cannot extend the owner window/session.
+                    try:manual_buy_request(request,now=time_check(),fingerprint=ledger.fingerprint,release=release_fingerprint())
+                    except TradingBlocked as exc:raise OrderNotSent(str(exc)) from None
+                uncertain=True;submission_stage='SUBMIT';response=broker.submit(plan)
+                submission_stage='ACK_VALIDATE'
                 out=response.get('output') if isinstance(response,dict) else None
                 order_id=out.get('ODNO') if isinstance(out,dict) else None
                 if str(response.get('rt_cd'))!='0' or not isinstance(order_id,str) or not re.fullmatch('[0-9]{1,20}',order_id):raise TradingBlocked('BROKER_ACK_INVALID')
-            ledger.ack(ident,order_id);uncertain=False
+            submission_stage='LEDGER_ACK';ledger.ack(ident,order_id);uncertain=False
         except Exception as exc:
             if isinstance(exc,OrderNotSent):
                 try:
                     ledger.void_unsent_order(ident)
                 except Exception as void_error:
-                    ledger.halt()
                     void_error.execution_progress={'orders_sent':0,'confirmed_orders_sent':0,'order_attempts':1}
+                    void_error._submission_exception=exc
+                    try:ledger.halt()
+                    except Exception as halt_error:
+                        halt_error.execution_progress=void_error.execution_progress
+                        halt_error._submission_exception=void_error
+                        raise
                     raise
                 return {'status':'MANUAL_PRE_SUBMIT_REJECTED','orders_sent':0,'order_attempts':1,
                     'gate':'DENY','manual_buy_reason':str(exc),'pre_send_cancelled':True}
-            ledger.halt();exc.execution_progress={'orders_sent':None if uncertain else 0,'confirmed_orders_sent':0,'order_attempts':1};raise
+            # Persist uncertainty before attempting the secondary halt write.
+            # A halt/storage failure cannot turn a possibly sent order into zero.
+            exc.execution_progress={'orders_sent':None if uncertain else 0,'confirmed_orders_sent':0,'order_attempts':1}
+            exc.submission_stage=submission_stage
+            try:ledger.halt()
+            except Exception as halt_error:
+                halt_error.execution_progress=exc.execution_progress
+                halt_error._submission_exception=exc
+                halt_error.submission_stage=submission_stage
+                raise
+            raise
         if isinstance(broker,KisBroker):broker.history_cache.pop(now.strftime('%Y%m%d'),None)
         # Acknowledgement is not a fill. Existing recovery owns every fill transition.
         try:
@@ -1258,6 +1299,114 @@ def process_manual_buy(ledger,broker,requests,*,now,clock):
 
 class ManualDiagnosticCheckpointError(RuntimeError):
     pass
+
+
+
+def require_manual_buy_dispatch(request_id, control=None, *, expected_review=None):
+    """An owner click may consume one immutable request, never activate trading."""
+    if (not isinstance(request_id,str) or not re.fullmatch(
+            r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',request_id)
+            or os.getenv('GITHUB_ACTIONS')!='true'
+            or os.getenv('GITHUB_EVENT_NAME')!='workflow_dispatch'
+            or os.getenv('GITHUB_REF')!='refs/heads/main'
+            or os.getenv('GITHUB_REPOSITORY')!='asura2367-boop/oneil-rs-scanner'
+            or os.getenv('GITHUB_REPOSITORY_OWNER')!='asura2367-boop'
+            or os.getenv('GITHUB_ACTOR')!='asura2367-boop'
+            or os.getenv('GITHUB_TRIGGERING_ACTOR')!='asura2367-boop'
+            or os.getenv('GITHUB_WORKFLOW_REF')!='asura2367-boop/oneil-rs-scanner/.github/workflows/oneil_v519_live_engine_review.yml@refs/heads/main'
+            or os.getenv('OPERATION')!='manual-buy'
+            or os.getenv('REQUESTED_MANUAL_REQUEST_ID')!=request_id):
+        raise TradingBlocked('OWNER_MANUAL_DISPATCH_REQUIRED')
+    control=read_buy_control() if control is None else control
+    review=release_review_policy(control.get('release'))
+    if (not control.get('connected') or not review
+            or review['approved_release']!=release_fingerprint()
+            or os.getenv('REQUESTED_RELEASE')!=review['approved_release']
+            or os.getenv('REQUESTED_APPROVAL_REVISION')!=str(review['revision'])
+            or (expected_review is not None and review!=expected_review)):
+        raise TradingBlocked('OWNER_RELEASE_REVIEW_CHANGED')
+    return review
+
+
+def manual_buy_cycle(ledger,broker,request_id,*,now=None,clock=None,expected_review=None):
+    """History/recovery and one selected owner request only; no automatic cycle."""
+    import copy
+    from v519_cash_policy import limits
+    clock=clock or (lambda:dt.datetime.now(ZoneInfo('Asia/Seoul')))
+    now=now or clock()
+    if now.tzinfo is None:raise TradingBlocked('CLOCK_INVALID')
+    now=now.astimezone(ZoneInfo('Asia/Seoul'))
+    result={'status':'MANUAL_REQUEST_BLOCKED','gate':'DENY','orders_sent':0,'order_attempts':0,
+            'execution_requested':True,'manual_only':True,'candidate_count':0,'planned_buys':0,'planned_sells':0}
+    request=None;processing_started=False
+    ledger.dashboard_state=None
+    def record_check(check, *, progress=None, cause=None):
+        check={'id':request_id,**check}
+        if isinstance(request,dict) and CODE.fullmatch(str(request.get('ticker',''))):check['ticker']=request['ticker']
+        checks=[check]
+        if getattr(ledger,'dashboard_state',None):ledger.dashboard_state['manual_buy_checks']=checks
+        checkpoint=getattr(ledger,'manual_check_checkpoint',None)
+        if callable(checkpoint):
+            try:checkpoint(checks)
+            except Exception:
+                failed=cause or ManualDiagnosticCheckpointError('MANUAL_DIAGNOSTIC_CHECKPOINT_FAILED')
+                failed.manual_diagnostic_checkpoint_failed=True
+                if progress is not None:
+                    failed.execution_progress={key:progress[key] for key in
+                        ('orders_sent','confirmed_orders_sent','order_attempts') if key in progress}
+                raise failed from None
+    with ledger.lock():
+        try:
+            # Keep the unconditional current-day history gate from the normal
+            # caller, even when there are no pending local intents to recover.
+            today_history=broker.history(now.strftime('%Y%m%d'))
+            if not isinstance(today_history,list):raise TradingBlocked('BROKER_HISTORY_INCOMPLETE')
+            recovery=recover_pending(ledger,broker)
+            result.update(recovery=recovery,broker_history_read_verified=True,history_rows_observed=len(today_history))
+            if recovery['unresolved']:
+                result['status']='BLOCKED_UNRESOLVED_ORDERS'
+                record_check({'status':'BLOCKED','reason':'UNRESOLVED_ORDERS'},progress=result)
+                return result
+            control=broker.buy_control()
+            review=require_manual_buy_dispatch(request_id,control,expected_review=expected_review)
+            risk=risk_policy(control)
+            snapshot=broker.snapshot();snapshot['managed']=ledger.managed();snapshot['bought_today']=ledger.bought_today(now.date())
+            allocation=limits(snapshot['cash'],snapshot['invested'],snapshot['cash'],reserve_pct=risk['reserve_pct'],per_stock_pct=risk['per_stock_pct'])
+            ledger.dashboard_state={'snapshot':snapshot,'plans':[],'candidates':[],'allocation':allocation,'at':now,
+                'buy_control':control,'risk_control':risk,'sell_control':sell_policy(control)}
+            matching=[r for r in control.get('manual_buys',[]) if isinstance(r,dict) and r.get('id')==request_id]
+            if len(matching)!=1:raise TradingBlocked('MANUAL_REQUEST_NOT_UNIQUE_OR_MISSING')
+            # Never replace this immutable payload with a later same-ID value.
+            request=copy.deepcopy(matching[0])
+            manual_buy_request(request,now=clock(),fingerprint=ledger.fingerprint,release=release_fingerprint())
+            processing_started=True
+            sent=process_manual_buy(ledger,broker,[request],now=now,clock=clock,
+                owner_dispatch=lambda latest:require_manual_buy_dispatch(request_id,latest,expected_review=review))
+            result.update(sent,manual_buy_status=sent['status'])
+            record_check({'status':sent['status'],**({'reason':sent['manual_buy_reason']} if 'manual_buy_reason' in sent else {})},progress=result)
+            return result
+        except ManualDiagnosticCheckpointError:
+            raise
+        except TradingBlocked as exc:
+            record_check({'status':'BLOCKED','reason':str(exc),
+                **({'limit_reasons':exc.manual_limit_reasons} if hasattr(exc,'manual_limit_reasons') else {})},
+                progress=getattr(exc,'execution_progress',result),cause=exc)
+            if getattr(exc,'execution_progress',None):raise
+            # Validation failures before account collection cannot publish a
+            # fresh snapshot. Preserve the original block, not a missing-state error.
+            if not getattr(ledger,'dashboard_state',None):
+                exc.execution_progress={'orders_sent':0,'order_attempts':0}
+                raise
+            result.update(manual_buy_status='BLOCKED',manual_buy_reason=str(exc))
+            return result
+        except Exception as exc:
+            if not hasattr(exc,'execution_progress'):
+                # An unexpected lock/adapter/storage failure after entry may
+                # occur after POST; absent typed proof, never claim no send.
+                exc.execution_progress={'orders_sent':None if processing_started else 0,
+                    'order_attempts':1 if processing_started else 0}
+            record_check({'status':'SUBMISSION_CHECK_FAILED'},progress=exc.execution_progress,cause=exc)
+            raise
 
 
 def integrated_cycle(ledger,broker,candidates,*,execute=False,now=None,stop_loss_pct=5,take_profit_pct=10,clock=None):
@@ -1475,8 +1624,10 @@ def release_review_policy(value):
 def dashboard_release_env(control=None):
     """Resolve a human review for this schedule; never change GitHub variables."""
     if not (os.getenv('GITHUB_ACTIONS')=='true' and os.getenv('GITHUB_REF')=='refs/heads/main'
-            and os.getenv('GITHUB_REPOSITORY')=='asura2367-boop/oneil-rs-scanner' and os.getenv('OPERATION') in {'auto','apply-approval'}):
+            and os.getenv('GITHUB_REPOSITORY')=='asura2367-boop/oneil-rs-scanner' and os.getenv('OPERATION') in {'auto','apply-approval','manual-buy'}):
         return None
+    if os.getenv('OPERATION')=='manual-buy':
+        return require_manual_buy_dispatch(os.getenv('REQUESTED_MANUAL_REQUEST_ID'),control)
     review=release_review_policy((read_buy_control() if control is None else control).get('release'))
     if review and review['approved_release']==release_fingerprint():
         if os.getenv('OPERATION')=='apply-approval' and (
@@ -1600,7 +1751,7 @@ def dashboard_snapshot(ledger,result):
     approved=release_is_approved();authorized=ledger.release_authorized(release_fingerprint())
     control=ledger.halt_state();halted=control['halted'];armed=approved and authorized and not halted
     return {'schema_version':1,'generated_at':state['at'].isoformat(),
-        'account_reference':ledger.fingerprint,'manual_buy_supported':True,
+        'account_reference':ledger.fingerprint,'manual_buy_supported':True,'manual_immediate_supported':True,
         'manual_buy_checks':state.get('manual_buy_checks',[]),
         'mode':('LIVE_EXECUTION' if result.get('execution_requested') else 'LIVE_ARMED') if armed else 'OBSERVE_ONLY',
         'orders_enabled':armed,'halted':halted,
@@ -1613,7 +1764,7 @@ def dashboard_snapshot(ledger,result):
         'monitoring_open':monitoring_open(state['at']) and not result.get('session_closed',False) and result.get('status')!='DAILY_CLOSED',
         'buy_control':state['buy_control'],'risk_control':state.get('risk_control'),
         'sell_control':state.get('sell_control'),'sell_alerts':ledger.sell_alerts(),
-        'monitor_hours':'09:00–20:00 KST','poll_minutes':20,'venue':'KRX',
+        'monitor_hours':'09:00–20:00 KST','poll_minutes':5,'venue':'KRX',
         'result':result,'allocation':state['allocation'],
         'account':{'cash':snap['cash'],'equity':snap.get('equity'),
             'valuation':snap.get('valuation'),
@@ -1663,9 +1814,11 @@ def runtime_main():
     modes.add_argument('--broker-audit',action='store_true')
     modes.add_argument('--activate',action='store_true')
     modes.add_argument('--apply-owner-approval',action='store_true')
+    modes.add_argument('--manual-buy',action='store_true')
     modes.add_argument('--release-info',action='store_true')
     modes.add_argument('--release-review',action='store_true')
     modes.add_argument('--dashboard-release-env',action='store_true')
+    p.add_argument('--manual-request-id')
     p.add_argument('--resume-halt',action='store_true')
     p.add_argument('--expected-halt-revision')
     p.add_argument('--operator')
@@ -1698,6 +1851,11 @@ def runtime_main():
             print(json.dumps({'expected_release':release_fingerprint(),'release_configured':release_is_approved(),'orders_sent':0}))
             return
         requested_review=None
+        if args.manual_request_id is not None and not args.manual_buy:
+            raise TradingBlocked('OWNER_MANUAL_DISPATCH_REQUIRED')
+        if args.manual_buy:
+            if not args.execute:raise TradingBlocked('MANUAL_EXECUTION_FLAG_REQUIRED')
+            requested_review=require_manual_buy_dispatch(args.manual_request_id)
         if args.apply_owner_approval:
             if args.execute:raise TradingBlocked('ACTIVATION_CANNOT_SUBMIT')
             requested_review=dashboard_release_env()
@@ -1713,10 +1871,10 @@ def runtime_main():
             require_live_release()
         if args.execute:
             require_live_release()  # deny before DB, token or any network order
-        if not any((args.run,args.migrate,args.halt,args.recover,args.close,args.broker_audit,args.activate)):
+        if not any((args.run,args.migrate,args.halt,args.recover,args.close,args.broker_audit,args.activate,args.manual_buy)):
             print(json.dumps(result))
             return
-        if (args.run or args.close or args.activate or args.broker_audit) and weekend_closed(dt.datetime.now(ZoneInfo('Asia/Seoul'))):
+        if (args.run or args.close or args.activate or args.broker_audit or args.manual_buy) and weekend_closed(dt.datetime.now(ZoneInfo('Asia/Seoul'))):
             result=market_closed_result()
             Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
             print(json.dumps(result,ensure_ascii=False))
@@ -1771,6 +1929,10 @@ def runtime_main():
                                 acknowledged=args.acknowledge_live_risk,dashboard_review=requested_review,
                                 resume_halt=args.resume_halt,expected_halt_revision=args.expected_halt_revision)
                             result['scanner_status']=scanner_status
+                        elif args.manual_buy:
+                            result=manual_buy_cycle(ledger,broker,args.manual_request_id,
+                                expected_review=requested_review)
+                            if result.get('gate')!='ALLOW' and result.get('status')!='MANUAL_ALREADY_RECORDED':code=2
                         elif args.broker_audit:
                             now=dt.datetime.now(ZoneInfo('Asia/Seoul'))
                             try:candidates=scan_candidates(args.source,now)
