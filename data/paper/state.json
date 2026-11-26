@@ -1,23 +1,15 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 6329874.927125251,
+  "cash": 4655765.806098251,
   "positions": {
-    "247660": {
-      "name": "나노씨엠에스",
-      "qty": 217,
-      "entry": 4439.4349999999995,
-      "entry_idx": 14,
-      "partial": false,
-      "last_close": 4305.0
-    },
     "290550": {
       "name": "디케이티",
       "qty": 32,
       "entry": 31681.649999999998,
       "entry_idx": 20,
       "partial": false,
-      "last_close": 33150.0
+      "last_close": 33750.0
     },
     "396300": {
       "name": "HT로보틱스",
@@ -25,33 +17,34 @@
       "entry": 6096.089999999999,
       "entry_idx": 24,
       "partial": false,
-      "last_close": 6090.0
+      "last_close": 6070.0
+    },
+    "071200": {
+      "name": "인피니트헬스케어",
+      "qty": 116,
+      "entry": 11221.21,
+      "entry_idx": 25,
+      "partial": false,
+      "last_close": 11210.0
+    },
+    "348030": {
+      "name": "모비릭스",
+      "qty": 296,
+      "entry": 4399.3949999999995,
+      "entry_idx": 25,
+      "partial": false,
+      "last_close": 4395.0
     }
   },
   "pending": [
     {
-      "signal_date": "2026-11-25",
-      "side": "SELL",
-      "ticker": "247660",
-      "name": "나노씨엠에스",
-      "qty": 217,
-      "reason": "10거래일 청산"
-    },
-    {
-      "signal_date": "2026-11-25",
+      "signal_date": "2026-11-26",
       "side": "BUY",
-      "ticker": "071200",
-      "name": "인피니트헬스케어",
-      "reason": "RS 98 + 수급/거래량/채널"
-    },
-    {
-      "signal_date": "2026-11-25",
-      "side": "BUY",
-      "ticker": "348030",
-      "name": "모비릭스",
-      "reason": "RS 98 + 수급/거래량/채널"
+      "ticker": "042510",
+      "name": "라온시큐어",
+      "reason": "RS 99 + 수급/거래량/채널"
     }
   ],
-  "last_processed": "2026-11-25",
-  "session_index": 24
+  "last_processed": "2026-11-26",
+  "session_index": 25
 }

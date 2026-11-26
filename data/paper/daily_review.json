@@ -1,75 +1,72 @@
 {
-  "as_of": "2026-11-25",
+  "as_of": "2026-11-26",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-25",
+  "latest_processed": "2026-11-26",
   "initial_cash": 10000000.0,
-  "cash": 6329874.93,
-  "holdings_value": 3377415.0,
-  "equity": 9707289.93,
-  "daily_pnl_mark_to_market": 30620.42,
-  "daily_return_pct": 0.3164,
-  "cumulative_pnl": -292710.07,
-  "cumulative_return_pct": -2.9271,
+  "cash": 4655765.81,
+  "holdings_value": 5059170.0,
+  "equity": 9714935.81,
+  "daily_pnl_mark_to_market": 7645.88,
+  "daily_return_pct": 0.0788,
+  "cumulative_pnl": -285064.19,
+  "cumulative_return_pct": -2.8506,
   "trade_count_today": 3,
-  "sell_trade_count_today": 2,
-  "trade_cost_today": 3943.01,
-  "realized_pnl_today": 46136.72,
-  "realized_pnl_cumulative": -308638.29,
+  "sell_trade_count_today": 1,
+  "trade_cost_today": 2394.74,
+  "realized_pnl_today": -33339.16,
+  "realized_pnl_cumulative": -341977.45,
   "realized_pnl_verified": true,
-  "sell_events": 14,
+  "sell_events": 15,
   "profitable_sell_events": 8,
-  "losing_sell_events": 6,
-  "sell_event_win_rate_pct": 57.14,
+  "losing_sell_events": 7,
+  "sell_event_win_rate_pct": 53.33,
   "realized_pnl_note": "Win rate counts SELL events (including partial sells), not completed positions.",
   "positions": [
     {
-      "ticker": "247660",
-      "name": "나노씨엠에스",
-      "qty": 217,
-      "last_close": 4305.0,
-      "entry": 4439.435,
-      "unrealized_pnl_before_sell_cost": -29172.39,
-      "unrealized_return_pct": -3.0282
+      "ticker": "071200",
+      "name": "인피니트헬스케어",
+      "qty": 116,
+      "last_close": 11210.0,
+      "entry": 11221.21,
+      "unrealized_pnl_before_sell_cost": -1300.36,
+      "unrealized_return_pct": -0.0999
     },
     {
       "ticker": "290550",
       "name": "디케이티",
       "qty": 32,
-      "last_close": 33150.0,
+      "last_close": 33750.0,
       "entry": 31681.65,
-      "unrealized_pnl_before_sell_cost": 46987.2,
-      "unrealized_return_pct": 4.6347
+      "unrealized_pnl_before_sell_cost": 66187.2,
+      "unrealized_return_pct": 6.5285
+    },
+    {
+      "ticker": "348030",
+      "name": "모비릭스",
+      "qty": 296,
+      "last_close": 4395.0,
+      "entry": 4399.395,
+      "unrealized_pnl_before_sell_cost": -1300.92,
+      "unrealized_return_pct": -0.0999
     },
     {
       "ticker": "396300",
       "name": "HT로보틱스",
       "qty": 227,
-      "last_close": 6090.0,
+      "last_close": 6070.0,
       "entry": 6096.09,
-      "unrealized_pnl_before_sell_cost": -1382.43,
-      "unrealized_return_pct": -0.0999
+      "unrealized_pnl_before_sell_cost": -5922.43,
+      "unrealized_return_pct": -0.428
     }
   ],
   "next_session_strategy": {
     "mode": "REVIEW_ONLY",
     "pending_orders": [
       {
-        "ticker": "247660",
-        "name": "나노씨엠에스",
-        "side": "SELL",
-        "reason": "10거래일 청산"
-      },
-      {
-        "ticker": "071200",
-        "name": "인피니트헬스케어",
+        "ticker": "042510",
+        "name": "라온시큐어",
         "side": "BUY",
-        "reason": "RS 98 + 수급/거래량/채널"
-      },
-      {
-        "ticker": "348030",
-        "name": "모비릭스",
-        "side": "BUY",
-        "reason": "RS 98 + 수급/거래량/채널"
+        "reason": "RS 99 + 수급/거래량/채널"
       }
     ],
     "checks": [
