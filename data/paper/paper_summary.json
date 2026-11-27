@@ -1,32 +1,17 @@
 {
-  "report_generated_at_kst": "2026-11-28T05:30:13.579480+09:00",
-  "last_processed": "2026-11-26",
+  "report_generated_at_kst": "2026-11-28T05:33:00.365893+09:00",
+  "last_processed": "2026-11-27",
   "initial_cash": 10000000.0,
-  "cash": 4655765.806098251,
-  "equity": 9714935.81,
-  "total_return_pct": -2.851,
-  "positions": 4,
-  "pending_orders": 1,
+  "cash": 3826292.8838202506,
+  "equity": 9711662.88,
+  "total_return_pct": -2.883,
+  "positions": 5,
+  "pending_orders": 0,
   "closed_lots": 15,
   "wins": 8,
   "win_rate_pct": 53.33,
   "realized_pnl": -341977.45,
   "max_drawdown_pct": -6.67,
   "estimate_warning": "Pending prices/quantities are indicative only, not live quotes or actual fills.",
-  "pending": [
-    {
-      "signal_date": "2026-11-26",
-      "side": "BUY",
-      "ticker": "042510",
-      "name": "라온시큐어",
-      "reason": "RS 99 + 수급/거래량/채널",
-      "reference_date": "2026-11-26",
-      "reference_close": 15880.0,
-      "indicative_price": 15895.88,
-      "estimated_qty": 122,
-      "estimated_gross": 1939297.36,
-      "estimated_fee": 290.89,
-      "note": "ESTIMATE ONLY; execution depends on next session close and available cash"
-    }
-  ]
+  "pending": []
 }

@@ -1,19 +1,19 @@
 {
-  "as_of": "2026-11-26",
+  "as_of": "2026-11-27",
   "mode": "PAPER_ONLY",
-  "latest_processed": "2026-11-26",
+  "latest_processed": "2026-11-27",
   "initial_cash": 10000000.0,
-  "cash": 4655765.81,
-  "holdings_value": 5059170.0,
-  "equity": 9714935.81,
-  "daily_pnl_mark_to_market": 7645.88,
-  "daily_return_pct": 0.0788,
-  "cumulative_pnl": -285064.19,
-  "cumulative_return_pct": -2.8506,
-  "trade_count_today": 3,
-  "sell_trade_count_today": 1,
-  "trade_cost_today": 2394.74,
-  "realized_pnl_today": -33339.16,
+  "cash": 3826292.88,
+  "holdings_value": 5885370.0,
+  "equity": 9711662.88,
+  "daily_pnl_mark_to_market": -3272.93,
+  "daily_return_pct": -0.0337,
+  "cumulative_pnl": -288337.12,
+  "cumulative_return_pct": -2.8834,
+  "trade_count_today": 1,
+  "sell_trade_count_today": 0,
+  "trade_cost_today": 124.4,
+  "realized_pnl_today": 0.0,
   "realized_pnl_cumulative": -341977.45,
   "realized_pnl_verified": true,
   "sell_events": 15,
@@ -23,13 +23,22 @@
   "realized_pnl_note": "Win rate counts SELL events (including partial sells), not completed positions.",
   "positions": [
     {
+      "ticker": "042510",
+      "name": "라온시큐어",
+      "qty": 44,
+      "last_close": 18830.0,
+      "entry": 18848.83,
+      "unrealized_pnl_before_sell_cost": -828.52,
+      "unrealized_return_pct": -0.0999
+    },
+    {
       "ticker": "071200",
       "name": "인피니트헬스케어",
       "qty": 116,
-      "last_close": 11210.0,
+      "last_close": 11190.0,
       "entry": 11221.21,
-      "unrealized_pnl_before_sell_cost": -1300.36,
-      "unrealized_return_pct": -0.0999
+      "unrealized_pnl_before_sell_cost": -3620.36,
+      "unrealized_return_pct": -0.2781
     },
     {
       "ticker": "290550",
@@ -61,14 +70,7 @@
   ],
   "next_session_strategy": {
     "mode": "REVIEW_ONLY",
-    "pending_orders": [
-      {
-        "ticker": "042510",
-        "name": "라온시큐어",
-        "side": "BUY",
-        "reason": "RS 99 + 수급/거래량/채널"
-      }
-    ],
+    "pending_orders": [],
     "checks": [
       "Confirm priority OHLCV for positions and pending tickers",
       "Check next-session liquidity, flow, RS and gap before action",

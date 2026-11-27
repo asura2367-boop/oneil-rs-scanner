@@ -1,7 +1,7 @@
 {
   "mode": "paper_only_v1",
   "initial_cash": 10000000,
-  "cash": 4655765.806098251,
+  "cash": 3826292.8838202506,
   "positions": {
     "290550": {
       "name": "디케이티",
@@ -25,7 +25,7 @@
       "entry": 11221.21,
       "entry_idx": 25,
       "partial": false,
-      "last_close": 11210.0
+      "last_close": 11190.0
     },
     "348030": {
       "name": "모비릭스",
@@ -34,17 +34,17 @@
       "entry_idx": 25,
       "partial": false,
       "last_close": 4395.0
+    },
+    "042510": {
+      "name": "라온시큐어",
+      "qty": 44,
+      "entry": 18848.829999999998,
+      "entry_idx": 26,
+      "partial": false,
+      "last_close": 18830.0
     }
   },
-  "pending": [
-    {
-      "signal_date": "2026-11-26",
-      "side": "BUY",
-      "ticker": "042510",
-      "name": "라온시큐어",
-      "reason": "RS 99 + 수급/거래량/채널"
-    }
-  ],
-  "last_processed": "2026-11-26",
-  "session_index": 25
+  "pending": [],
+  "last_processed": "2026-11-27",
+  "session_index": 26
 }
